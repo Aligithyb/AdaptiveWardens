@@ -1,0 +1,121 @@
+version: '3.8'
+
+services:
+  sandbox-store:
+    build: ./sandbox-store
+    container_name: honeypot-sandbox
+    volumes:
+      - sandbox-data:/data
+      - ./sandbox-store/schemas:/app/schemas:ro
+    environment:
+      - DATABASE_PATH=/data/honeypot.db
+    networks:
+      - honeypot-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  ai-engine:
+    build: ./ai-engine
+    container_name: honeypot-ai
+    volumes:
+      - ai-models:/models
+      - ai-cache:/cache
+    environment:
+      - AI_MODEL=${AI_MODEL:-distilgpt2}
+      - AI_DEVICE=${AI_DEVICE:-cpu}
+      - SANDBOX_URL=http://sandbox-store:8001
+      - TRANSFORMERS_CACHE=/cache
+    networks:
+      - honeypot-internal
+    depends_on:
+      - sandbox-store
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+
+  ssh-frontend:
+    build: ./ssh-frontend
+    container_name: honeypot-ssh
+    ports:
+      - "${SSH_PORT:-2222}:2222"
+    volumes:
+      - ssh-configs:/configs
+      - ssh-logs:/logs
+    environment:
+      - SSH_PORT=2222
+      - AI_ENGINE_URL=http://ai-engine:8002
+      - SANDBOX_URL=http://sandbox-store:8001
+    networks:
+      - honeypot-internal
+      - honeypot-external
+    depends_on:
+      - ai-engine
+      - sandbox-store
+    restart: unless-stopped
+
+  http-frontend:
+    build: ./http-frontend
+    container_name: honeypot-http
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+    environment:
+      - HTTP_PORT=8080
+      - AI_ENGINE_URL=http://ai-engine:8002
+      - SANDBOX_URL=http://sandbox-store:8001
+    networks:
+      - honeypot-internal
+      - honeypot-external
+    depends_on:
+      - ai-engine
+      - sandbox-store
+    restart: unless-stopped
+
+  dashboard-backend:
+    build: ./dashboard-backend
+    container_name: honeypot-dashboard-api
+    volumes:
+      - sandbox-data:/data:ro
+    environment:
+      - DATABASE_PATH=/data/honeypot.db
+    ports:
+      - "${API_PORT:-8000}:8000"
+    networks:
+      - honeypot-internal
+    depends_on:
+      - sandbox-store
+    restart: unless-stopped
+
+  dashboard-frontend:
+    build: ./dashboard-frontend
+    container_name: honeypot-dashboard-web
+    ports:
+      - "${DASHBOARD_PORT:-3000}:80"
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+      - REACT_APP_WS_URL=ws://localhost:8000
+    networks:
+      - honeypot-internal
+    depends_on:
+      - dashboard-backend
+    restart: unless-stopped
+
+networks:
+  honeypot-internal:
+    driver: bridge
+    internal: true
+  honeypot-external:
+    driver: bridge
+
+volumes:
+  sandbox-data:
+  ai-models:
+  ai-cache:
+  ssh-configs:
+  ssh-logs:
