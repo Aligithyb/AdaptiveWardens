@@ -8,15 +8,12 @@ env/
 venv/
 *.egg-info/
 .pytest_cache/
-*.pyc
 
 # Node
 node_modules/
 dist/
 build/
 *.log
-package-lock.json
-yarn.lock
 
 # Data & Logs
 *.db
@@ -41,9 +38,3 @@ data/
 # OS
 .DS_Store
 Thumbs.db
-
-# AI Models
-models/
-cache/
-*.pt
-*.bin
