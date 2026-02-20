@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  sandbox-store:
+    build: ./sandbox-store
+    container_name: honeypot-sandbox
+    volumes:
+      - sandbox-data:/data
+      - ./sandbox-store/schemas:/app/schemas:ro
+    environment:
+      - DATABASE_PATH=/data/honeypot.db
+    networks:
+      - honeypot-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  ai-engine:
+    build: ./ai-engine
+    container_name: honeypot-ai
+    volumes:
+      - ai-models:/models
+      - ai-cache:/cache
+    environment:
+      - AI_MODEL=${AI_MODEL:-distilgpt2}
+      - AI_DEVICE=${AI_DEVICE:-cpu}
+      - SANDBOX_URL=http://sandbox-store:8001
+      - TRANSFORMERS_CACHE=/cache
+    networks:
+      - honeypot-internal
+    depends_on:
+      - sandbox-store
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+
+  ssh-frontend:
+    build: ./ssh-frontend
+    container_name: honeypot-s

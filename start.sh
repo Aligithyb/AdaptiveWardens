@@ -1,51 +1,44 @@
 #!/bin/bash
 
-echo "=========================================="
 echo "Starting AdaptiveWardens Honeypot..."
-echo "=========================================="
 
-# Check Docker
+# Check if Docker is installed
 if ! command -v docker &> /dev/null; then
     echo "Error: Docker is not installed"
     exit 1
 fi
 
+# Check if Docker Compose is installed
 if ! command -v docker-compose &> /dev/null; then
     echo "Error: Docker Compose is not installed"
     exit 1
 fi
 
-# Create .env if needed
+# Create .env if it doesn't exist
 if [ ! -f .env ]; then
     echo "Creating .env from template..."
     cp .env.example .env
-    echo "✓ Created .env file"
+    echo "Please edit .env with your configuration"
+    exit 1
 fi
 
-# Build containers
-echo ""
+# Build and start containers
 echo "Building containers..."
 docker-compose build
 
-# Start services
-echo ""
 echo "Starting services..."
 docker-compose up -d
 
-# Wait for services
-echo ""
+# Wait for services to be ready
 echo "Waiting for services to start..."
-sleep 15
+sleep 10
 
 # Check health
-echo ""
-echo "Service Status:"
+echo "Checking service health..."
 docker-compose ps
 
 echo ""
-echo "=========================================="
-echo "✓ AdaptiveWardens is running!"
-echo "=========================================="
+echo "AdaptiveWardens is running!"
 echo ""
 echo "Services:"
 echo "  SSH Honeypot:     localhost:2222"
@@ -53,8 +46,5 @@ echo "  HTTP Honeypot:    localhost:8080"
 echo "  Dashboard:        http://localhost:3000"
 echo "  API:              http://localhost:8000"
 echo ""
-echo "Commands:"
-echo "  View logs:        docker-compose logs -f"
-echo "  Stop services:    docker-compose down"
-echo "  Restart:          docker-compose restart"
-echo ""
+echo "View logs with: docker-compose logs -f"
+echo "Stop with: docker-compose down"
