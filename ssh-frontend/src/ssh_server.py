@@ -10,6 +10,7 @@ from datetime import datetime
 LISTEN_HOST = "0.0.0.0"
 LISTEN_PORT = 2222
 SANDBOX_URL = os.getenv("SANDBOX_URL", "http://localhost:8001")
+AI_ENGINE_URL = os.getenv("AI_ENGINE_URL", None)  # NEW: Optional AI
 SSH_BANNER = "Ubuntu 22.04.3 LTS\n\n"
 
 # Keep some static responses for speed (non-filesystem commands)
@@ -34,8 +35,9 @@ class HoneypotSession(asyncssh.SSHServerSession):
         self.source_ip = source_ip
         self.current_directory = "/root"
         self.context = {"username": username, "current_directory": "/root"}
-        self.http_client = httpx.AsyncClient(timeout=5.0)
+        self.http_client = httpx.AsyncClient(timeout=30.0)  # Increased timeout for AI
         self.session_ready = False
+        self.command_history = []  # NEW: For AI context
     
     def connection_made(self, chan):
         self.chan = chan
@@ -97,21 +99,54 @@ class HoneypotSession(asyncssh.SSHServerSession):
             asyncio.create_task(self._handle_env_command())
             return
         
-        # Static responses for other commands
+        # MODIFIED: Try static, then AI, then fallback
+        asyncio.create_task(self._handle_generic_command(cmd))
+    
+    async def _handle_generic_command(self, cmd: str):
+        """Handle commands: static -> AI -> fallback"""
+        # Check static responses first
         cmd_lower = cmd.lower()
         output = None
         for pattern, handler in STATIC_RESPONSES.items():
             if cmd_lower == pattern or cmd_lower.startswith(pattern + " "):
                 output = handler(self.context)
                 break
+        
+        # NEW: If not static and AI is available, try AI
+        if output is None and AI_ENGINE_URL:
+            output = await self._get_ai_response(cmd)
+        
+        # Fallback
         if output is None:
             output = get_fallback(cmd, self.context)
         
         if output:
             self.chan.write(output + "\n")
         
+        # Track command history for AI context
+        self.command_history.append({"command": cmd, "output": output})
+        
         asyncio.create_task(self._record(cmd, output))
         self.chan.write(f"{self.username}@ubuntu-server:{self.current_directory}$ ")
+    
+    async def _get_ai_response(self, cmd: str):
+        """NEW: Get AI-generated response"""
+        try:
+            r = await self.http_client.post(f"{AI_ENGINE_URL}/generate-response", json={
+                "command": cmd,
+                "context": self.context,
+                "history": self.command_history[-10:]
+            })
+            
+            if r.status_code == 200:
+                data = r.json()
+                cached = "🔄" if data.get("cached") else "🤖"
+                print(f"{cached} AI response for: {cmd}")
+                return data.get("response", None)
+        except Exception as e:
+            print(f"⚠️ AI error: {e}")
+        
+        return None
     
     def _handle_cd(self, cmd: str):
         """Handle cd command"""
@@ -126,7 +161,7 @@ class HoneypotSession(asyncssh.SSHServerSession):
                 if self.current_directory != "/":
                     self.current_directory = "/".join(self.current_directory.rstrip("/").split("/")[:-1]) or "/"
             elif new_dir == ".":
-                pass  # Stay in current directory
+                pass
             else:
                 self.current_directory = f"{self.current_directory.rstrip('/')}/{new_dir}"
         self.context["current_directory"] = self.current_directory
@@ -138,7 +173,6 @@ class HoneypotSession(asyncssh.SSHServerSession):
         if not self.session_ready:
             output = "bash: filesystem not ready"
         elif cmd.startswith("ls"):
-            # List directory from database
             parts = cmd.split()
             path = parts[1] if len(parts) > 1 else self.current_directory
             if not path.startswith("/"):
@@ -149,11 +183,9 @@ class HoneypotSession(asyncssh.SSHServerSession):
                 if r.status_code == 200:
                     entries = r.json().get("entries", [])
                     if "-la" in cmd or "-al" in cmd:
-                        # Long format
                         for e in entries:
                             output += f"{e['permissions']} {e['owner']} {e['group']} {e['size']:>8} {e['name']}\n"
                     else:
-                        # Short format
                         output = "  ".join([e['name'] for e in entries])
                 else:
                     output = f"ls: cannot access '{path}': No such file or directory"
@@ -161,7 +193,6 @@ class HoneypotSession(asyncssh.SSHServerSession):
                 output = f"ls: error: {e}"
         
         elif cmd.startswith("cat "):
-            # Read file from database
             parts = cmd.split()
             if len(parts) < 2:
                 output = "cat: missing operand"
@@ -180,7 +211,6 @@ class HoneypotSession(asyncssh.SSHServerSession):
                     output = f"cat: error: {e}"
         
         elif cmd.startswith("touch "):
-            # Create empty file in database
             parts = cmd.split()
             if len(parts) < 2:
                 output = "touch: missing operand"
@@ -196,19 +226,19 @@ class HoneypotSession(asyncssh.SSHServerSession):
                         "permissions": "644"
                     })
                     if r.status_code == 200:
-                        output = ""  # touch is silent on success
+                        output = ""
                     else:
                         output = f"touch: cannot touch '{path}'"
                 except Exception as e:
                     output = f"touch: error: {e}"
         
         elif cmd.startswith("mkdir "):
-            # Create directory (simplified - just acknowledge)
-            output = ""  # mkdir is silent on success
+            output = ""
         
         if output:
             self.chan.write(output + "\n")
         
+        self.command_history.append({"command": cmd, "output": output})
         asyncio.create_task(self._record(cmd, output))
         self.chan.write(f"{self.username}@ubuntu-server:{self.current_directory}$ ")
     
@@ -224,14 +254,12 @@ class HoneypotSession(asyncssh.SSHServerSession):
                 if r.status_code == 200:
                     processes = r.json().get("processes", [])
                     if "aux" in cmd:
-                        # Full format
                         output = "USER  PID %CPU %MEM    VSZ   RSS TTY STAT START   TIME COMMAND\n"
                         for p in processes:
                             output += f"{p['username']:<6} {p['pid']:>5} {p['cpu_percent']:>4.1f} {p['mem_percent']:>4.1f}      0     0 ?   {p['status'][:2].upper()}      0   0:00 {p['name']}\n"
                     else:
-                        # Simple format
                         output = "  PID TTY          TIME CMD\n"
-                        for p in processes[:5]:  # Show first 5
+                        for p in processes[:5]:
                             output += f"{p['pid']:>5} pts/0    00:00:00 {p['name']}\n"
             except Exception as e:
                 output = f"ps: error: {e}"
@@ -239,6 +267,7 @@ class HoneypotSession(asyncssh.SSHServerSession):
         if output:
             self.chan.write(output)
         
+        self.command_history.append({"command": cmd, "output": output})
         asyncio.create_task(self._record(cmd, output))
         self.chan.write(f"{self.username}@ubuntu-server:{self.current_directory}$ ")
     
@@ -253,6 +282,7 @@ class HoneypotSession(asyncssh.SSHServerSession):
             output = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nHOME=/root\nUSER=root\nSHELL=/bin/bash"
         
         self.chan.write(output + "\n")
+        self.command_history.append({"command": "env", "output": output})
         asyncio.create_task(self._record("env", output))
         self.chan.write(f"{self.username}@ubuntu-server:{self.current_directory}$ ")
     
@@ -297,7 +327,8 @@ class HoneypotServer(asyncssh.SSHServer):
         return HoneypotSession(username, source_ip)
 
 async def start_server():
-    print("🍯 SSH Honeypot (Database-Integrated)")
+    ai_status = "🤖 AI-Enhanced" if AI_ENGINE_URL else "📝 Static"
+    print(f"🍯 SSH Honeypot ({ai_status})")
     print(f"📍 Port {LISTEN_PORT}\n")
     
     try:

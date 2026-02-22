@@ -1,7 +1,6 @@
 version: '3.8'
-services:
 
-  # ===== SANDBOX STORE (Database + API) =====
+services:
   sandbox-store:
     build: ./sandbox-store
     container_name: honeypot-sandbox
@@ -20,7 +19,22 @@ services:
       retries: 3
       start_period: 10s
 
-  # ===== SSH HONEYPOT =====
+  ai-engine:
+    build: ./ai-engine
+    container_name: honeypot-ai
+    networks:
+      - honeypot-internal
+      - honeypot-external
+    ports:
+      - "8002:8002"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - SANDBOX_URL=http://sandbox-store:8001
+    depends_on:
+      sandbox-store:
+        condition: service_healthy
+
   ssh-frontend:
     build: ./ssh-frontend
     container_name: honeypot-ssh
@@ -31,12 +45,14 @@ services:
       - honeypot-external
     environment:
       - SANDBOX_URL=http://sandbox-store:8001
+      - AI_ENGINE_URL=http://ai-engine:8002
       - PYTHONUNBUFFERED=1
     depends_on:
       sandbox-store:
         condition: service_healthy
+      ai-engine:
+        condition: service_started
 
-  # ===== DASHBOARD FRONTEND =====
   dashboard-frontend:
     build: ./dashboard-frontend
     container_name: honeypot-dashboard

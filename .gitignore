@@ -10,3 +10,7 @@ dashboard-frontend/.next/
 
 # General
 .DS_Store
+
+# Env
+.env
+ai-engine/.env
