@@ -1,0 +1,62 @@
+version: '3.8'
+services:
+
+  # ===== SANDBOX STORE (Database + API) =====
+  sandbox-store:
+    build: ./sandbox-store
+    container_name: honeypot-sandbox
+    volumes:
+      - sandbox-data:/data
+    networks:
+      - honeypot-internal
+    ports:
+      - "8001:8001"
+    environment:
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ===== SSH HONEYPOT =====
+  ssh-frontend:
+    build: ./ssh-frontend
+    container_name: honeypot-ssh
+    ports:
+      - "2222:2222"
+    networks:
+      - honeypot-internal
+      - honeypot-external
+    environment:
+      - SANDBOX_URL=http://sandbox-store:8001
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      sandbox-store:
+        condition: service_healthy
+
+  # ===== DASHBOARD FRONTEND =====
+  dashboard-frontend:
+    build: ./dashboard-frontend
+    container_name: honeypot-dashboard
+    ports:
+      - "3000:3000"
+    networks:
+      - honeypot-internal
+      - honeypot-external
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://sandbox-store:8001
+    depends_on:
+      - sandbox-store
+
+networks:
+  honeypot-internal:
+    driver: bridge
+    internal: true
+  honeypot-external:
+    driver: bridge
+
+volumes:
+  sandbox-data:

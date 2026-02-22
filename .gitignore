@@ -1,0 +1,12 @@
+# Python
+.venv/
+venv311/
+__pycache__/
+*.pyc
+
+# Frontend
+dashboard-frontend/node_modules/
+dashboard-frontend/.next/
+
+# General
+.DS_Store
