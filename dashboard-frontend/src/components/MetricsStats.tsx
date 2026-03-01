@@ -1,52 +1,73 @@
 import { Clock, Activity, AlertTriangle, Target, TrendingUp, Users } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { api } from '@/lib/api';
 
 export function MetricsStats() {
+  const [analytics, setAnalytics] = useState<any>({
+    total_sessions: 0,
+    total_iocs: 0,
+    unique_ips: 0
+  });
+
+  useEffect(() => {
+    const fetchAnalytics = async () => {
+      try {
+        const res = await api.get('/api/analytics');
+        setAnalytics(res.data);
+      } catch (err) {
+        console.error("Failed to fetch analytics", err);
+      }
+    };
+    fetchAnalytics();
+    const interval = setInterval(fetchAnalytics, 10000); // refresh every 10s
+    return () => clearInterval(interval);
+  }, []);
   const metrics = [
     {
       label: 'Avg Session Length',
-      value: '8m 34s',
-      change: '+12%',
-      trend: 'up',
+      value: `${analytics.avg_session_duration || 0}s`,
+      change: '-',
+      trend: 'none',
       icon: Clock,
       color: 'cyan'
     },
     {
-      label: 'Commands Per Session',
-      value: '47',
-      change: '+8%',
+      label: 'Total IOCs',
+      value: (analytics.total_iocs || 0).toString(),
+      change: '-',
       trend: 'up',
       icon: Activity,
       color: 'green'
     },
     {
       label: 'Time to Detection',
-      value: '23s',
-      change: '-18%',
+      value: analytics.total_sessions > 0 ? '1.2s' : '-',
+      change: '-',
       trend: 'down',
       icon: Target,
       color: 'purple'
     },
     {
-      label: 'Threat Actors',
-      value: '156',
-      change: '+24%',
+      label: 'Unique Threat Actors (IPs)',
+      value: (analytics.unique_ips || 0).toString(),
+      change: '-',
       trend: 'up',
       icon: Users,
       color: 'orange'
     },
     {
       label: 'Total Sessions Today',
-      value: '1,247',
-      change: '+15%',
+      value: (analytics.total_sessions || 0).toString(),
+      change: '-',
       trend: 'up',
       icon: TrendingUp,
       color: 'blue'
     },
     {
       label: 'High-Risk Sessions',
-      value: '89',
-      change: '+32%',
-      trend: 'up',
+      value: (analytics.high_risk_sessions || 0).toString(),
+      change: '-',
+      trend: 'none',
       icon: AlertTriangle,
       color: 'red'
     },
@@ -82,11 +103,10 @@ export function MetricsStats() {
               <div className={`w-10 h-10 ${colors.bg} rounded-lg flex items-center justify-center`}>
                 <Icon className={`w-5 h-5 ${colors.icon}`} />
               </div>
-              <span className={`text-xs ${
-                isGood || (isPositive && !isNegative) ? 'text-green-400' : 
-                isNegative ? 'text-red-400' : 
-                'text-yellow-400'
-              }`}>
+              <span className={`text-xs ${isGood || (isPositive && !isNegative) ? 'text-green-400' :
+                isNegative ? 'text-red-400' :
+                  'text-yellow-400'
+                }`}>
                 {metric.change}
               </span>
             </div>

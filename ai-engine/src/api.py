@@ -4,6 +4,8 @@ from typing import Optional, List, Dict
 import os
 from llm_provider import LLMProvider
 from response_cache import ResponseCache
+from extractor import extract_iocs
+from mitre import map_command_to_mitre
 
 app = FastAPI(title="AI Engine")
 
@@ -20,10 +22,16 @@ class CommandRequest(BaseModel):
 async def generate_response(req: CommandRequest):
     """Generate shell response using LLM"""
     
+    # Extract IOCs from the command
+    iocs = extract_iocs(req.command)
+    
+    # Map command to MITRE techniques
+    mitre_techniques = map_command_to_mitre(req.command)
+    
     # Check cache first
     cached = cache.get(req.command, req.context)
     if cached:
-        return {"response": cached, "cached": True}
+        return {"response": cached, "cached": True, "iocs": iocs, "mitre_techniques": mitre_techniques}
     
     # Generate new response
     response = llm.generate_shell_response(
@@ -35,7 +43,18 @@ async def generate_response(req: CommandRequest):
     # Cache it
     cache.set(req.command, req.context, response)
     
-    return {"response": response, "cached": False}
+    # Extract IOCs from response as well, optionally
+    response_iocs = extract_iocs(response)
+    
+    # Merge command IOCs and response IOCs
+    all_iocs = iocs + [ioc for ioc in response_iocs if ioc not in iocs]
+    
+    return {
+        "response": response, 
+        "cached": False, 
+        "iocs": all_iocs,
+        "mitre_techniques": mitre_techniques
+    }
 
 @app.get("/health")
 async def health():

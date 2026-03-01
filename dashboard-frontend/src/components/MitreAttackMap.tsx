@@ -1,25 +1,45 @@
 "use client"
 
 import { Map, Info } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { api } from '@/lib/api';
 
 export function MitreAttackMap() {
   const [selectedTechnique, setSelectedTechnique] = useState<string | null>(null);
+  const [techniques, setTechniques] = useState<any[]>([]);
 
-  const techniques = [
-    { id: 'T1190', name: 'Exploit Public-Facing Application', tactic: 'Initial Access', count: 8, severity: 'high' },
-    { id: 'T1078', name: 'Valid Accounts', tactic: 'Defense Evasion', count: 5, severity: 'medium' },
-    { id: 'T1110', name: 'Brute Force', tactic: 'Credential Access', count: 12, severity: 'critical' },
-    { id: 'T1071', name: 'Application Layer Protocol', tactic: 'Command and Control', count: 6, severity: 'high' },
-    { id: 'T1059', name: 'Command and Scripting Interpreter', tactic: 'Execution', count: 15, severity: 'critical' },
-    { id: 'T1003', name: 'OS Credential Dumping', tactic: 'Credential Access', count: 4, severity: 'high' },
-    { id: 'T1082', name: 'System Information Discovery', tactic: 'Discovery', count: 9, severity: 'medium' },
-    { id: 'T1105', name: 'Ingress Tool Transfer', tactic: 'Command and Control', count: 7, severity: 'high' },
-    { id: 'T1567', name: 'Exfiltration Over Web Service', tactic: 'Exfiltration', count: 3, severity: 'critical' },
-    { id: 'T1027', name: 'Obfuscated Files or Information', tactic: 'Defense Evasion', count: 2, severity: 'medium' },
-    { id: 'T1486', name: 'Data Encrypted for Impact', tactic: 'Impact', count: 1, severity: 'critical' },
-    { id: 'T1053', name: 'Scheduled Task/Job', tactic: 'Persistence', count: 3, severity: 'medium' },
-  ];
+  useEffect(() => {
+    const fetchTechniques = async () => {
+      try {
+        const res = await api.get('/api/analytics');
+        if (res.data.mitre_techniques) {
+          // map the obj format to array format expected by the frontend
+          const mappedTechniques = Object.entries(res.data.mitre_techniques).map(([id, data]: [string, any]) => {
+            const tactic = data.tactic || 'Unknown Tactic';
+            // Simple severity mapping based on tactic
+            let severity = 'medium';
+            if (['Impact', 'Credential Access', 'Command and Control'].includes(tactic)) severity = 'high';
+            if (tactic === 'Initial Access') severity = 'critical';
+
+            return {
+              id,
+              name: data.name || 'Unknown Technique',
+              tactic: tactic,
+              count: data.count,
+              severity: severity
+            };
+          });
+          setTechniques(mappedTechniques);
+        }
+      } catch (err) {
+        console.error("Failed to fetch MITRE techniques", err);
+      }
+    };
+    fetchTechniques();
+    const interval = setInterval(fetchTechniques, 10000); // refresh every 10s
+    return () => clearInterval(interval);
+  }, []);
+
 
   const tactics = [
     'Initial Access',
@@ -68,36 +88,33 @@ export function MitreAttackMap() {
             <button
               key={technique.id}
               onClick={() => setSelectedTechnique(technique.id)}
-              className={`relative p-3 rounded-lg border transition-all ${
-                selectedTechnique === technique.id
-                  ? 'border-cyan-500 bg-cyan-500/10'
-                  : 'border-slate-700 hover:border-slate-600'
-              }`}
+              className={`relative p-3 rounded-lg border transition-all ${selectedTechnique === technique.id
+                ? 'border-cyan-500 bg-cyan-500/10'
+                : 'border-slate-700 hover:border-slate-600'
+                }`}
               style={{
                 background: selectedTechnique !== technique.id
-                  ? `linear-gradient(135deg, ${
-                      technique.severity === 'critical' ? 'rgba(239, 68, 68, 0.1)' :
-                      technique.severity === 'high' ? 'rgba(249, 115, 22, 0.1)' :
+                  ? `linear-gradient(135deg, ${technique.severity === 'critical' ? 'rgba(239, 68, 68, 0.1)' :
+                    technique.severity === 'high' ? 'rgba(249, 115, 22, 0.1)' :
                       technique.severity === 'medium' ? 'rgba(234, 179, 8, 0.1)' :
-                      'rgba(59, 130, 246, 0.1)'
-                    } 0%, rgba(15, 23, 42, 0) 100%)`
+                        'rgba(59, 130, 246, 0.1)'
+                  } 0%, rgba(15, 23, 42, 0) 100%)`
                   : undefined
               }}
             >
               <div className="flex items-start justify-between mb-2">
                 <span className="text-xs text-slate-400">{technique.id}</span>
-                <span className={`w-6 h-6 rounded flex items-center justify-center text-xs ${
-                  technique.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
+                <span className={`w-6 h-6 rounded flex items-center justify-center text-xs ${technique.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
                   technique.severity === 'high' ? 'bg-orange-500/20 text-orange-400' :
-                  technique.severity === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
-                  'bg-blue-500/20 text-blue-400'
-                }`}>
+                    technique.severity === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
+                      'bg-blue-500/20 text-blue-400'
+                  }`}>
                   {technique.count}
                 </span>
               </div>
               <div className="text-xs text-slate-300 line-clamp-2">{technique.name}</div>
               <div className="text-xs text-slate-500 mt-1">{technique.tactic}</div>
-              
+
               <div className="absolute bottom-0 left-0 right-0 h-1 bg-slate-800 rounded-b-lg overflow-hidden">
                 <div
                   className={getSeverityColor(technique.severity)}
@@ -118,12 +135,11 @@ export function MitreAttackMap() {
               <div>
                 <div className="flex items-center gap-3 mb-2">
                   <span className="text-slate-100">{selectedTechniqueData.id}</span>
-                  <span className={`px-2 py-1 text-xs rounded ${
-                    selectedTechniqueData.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
+                  <span className={`px-2 py-1 text-xs rounded ${selectedTechniqueData.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
                     selectedTechniqueData.severity === 'high' ? 'bg-orange-500/20 text-orange-400' :
-                    selectedTechniqueData.severity === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
-                    'bg-blue-500/20 text-blue-400'
-                  }`}>
+                      selectedTechniqueData.severity === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
+                        'bg-blue-500/20 text-blue-400'
+                    }`}>
                     {selectedTechniqueData.severity}
                   </span>
                 </div>
