@@ -1,19 +1,34 @@
 import { AlertTriangle, Clock, Activity } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { api } from '@/lib/api';
 
 interface LiveSessionsProps {
-  selectedSession: string;
+  selectedSession: string | null;
   setSelectedSession: (id: string) => void;
 }
 
 export function LiveSessions({ selectedSession, setSelectedSession }: LiveSessionsProps) {
-  const sessions = [
-    { id: 'sess-7f8a9b2c', ip: '45.142.212.61', type: 'SSH', startTime: '14:23:41', status: 'Active', riskLevel: 'High' },
-    { id: 'sess-3c4d5e6f', ip: '103.75.189.44', type: 'HTTP', startTime: '14:18:12', status: 'Active', riskLevel: 'Critical' },
-    { id: 'sess-9a8b7c6d', ip: '185.220.101.33', type: 'FTP', startTime: '14:15:08', status: 'Monitoring', riskLevel: 'Medium' },
-    { id: 'sess-1e2f3a4b', ip: '192.168.1.105', type: 'SMB', startTime: '14:12:55', status: 'Active', riskLevel: 'Low' },
-    { id: 'sess-5d6e7f8a', ip: '210.45.78.92', type: 'SSH', startTime: '14:10:33', status: 'Terminated', riskLevel: 'High' },
-    { id: 'sess-2b3c4d5e', ip: '157.90.123.78', type: 'Telnet', startTime: '14:08:19', status: 'Active', riskLevel: 'Medium' },
-  ];
+  const [sessions, setSessions] = useState<any[]>([]);
+
+  useEffect(() => {
+    const fetchSessions = async () => {
+      try {
+        const res = await api.get('/api/sessions');
+        const fetchedSessions = res.data.sessions || [];
+        setSessions(fetchedSessions);
+
+        // Auto-select the first (latest) session if none is selected
+        if (!selectedSession && fetchedSessions.length > 0) {
+          setSelectedSession(fetchedSessions[0].session_id);
+        }
+      } catch (err) {
+        console.error("Failed to fetch sessions", err);
+      }
+    };
+    fetchSessions();
+    const interval = setInterval(fetchSessions, 5000); // refresh every 5s
+    return () => clearInterval(interval);
+  }, [selectedSession, setSelectedSession]);
 
   const getRiskColor = (risk: string) => {
     switch (risk) {
@@ -41,7 +56,7 @@ export function LiveSessions({ selectedSession, setSelectedSession }: LiveSessio
           <Activity className="w-5 h-5 text-cyan-400" />
           <h2 className="text-slate-100">Live Sessions</h2>
         </div>
-        <span className="text-sm text-slate-400">{sessions.filter(s => s.status === 'Active').length} active</span>
+        <span className="text-sm text-slate-400">{sessions.length} sessions</span>
       </div>
 
       <div className="overflow-x-auto">
@@ -59,29 +74,28 @@ export function LiveSessions({ selectedSession, setSelectedSession }: LiveSessio
           <tbody className="divide-y divide-slate-800">
             {sessions.map((session) => (
               <tr
-                key={session.id}
-                onClick={() => setSelectedSession(session.id)}
-                className={`hover:bg-slate-800/50 transition-colors cursor-pointer ${
-                  selectedSession === session.id ? 'bg-cyan-500/5 border-l-2 border-cyan-500' : ''
-                }`}
+                key={session.session_id}
+                onClick={() => setSelectedSession(session.session_id)}
+                className={`hover:bg-slate-800/50 transition-colors cursor-pointer ${selectedSession === session.session_id ? 'bg-cyan-500/5 border-l-2 border-cyan-500' : ''
+                  }`}
               >
-                <td className="px-6 py-4 text-sm text-cyan-400">{session.id}</td>
-                <td className="px-6 py-4 text-sm text-slate-300">{session.ip}</td>
+                <td className="px-6 py-4 text-sm text-cyan-400">{session.session_id}</td>
+                <td className="px-6 py-4 text-sm text-slate-300">{session.source_ip}</td>
                 <td className="px-6 py-4">
-                  <span className="px-2 py-1 text-xs bg-slate-800 text-slate-300 rounded">
-                    {session.type}
+                  <span className="px-2 py-1 text-xs bg-slate-800 text-slate-300 rounded uppercase">
+                    {session.protocol}
                   </span>
                 </td>
                 <td className="px-6 py-4 text-sm text-slate-400 flex items-center gap-2">
                   <Clock className="w-3 h-3" />
-                  {session.startTime}
+                  {new Date(session.start_time).toLocaleTimeString()}
                 </td>
                 <td className="px-6 py-4 text-sm">
-                  <span className={getStatusColor(session.status)}>{session.status}</span>
+                  <span className={getStatusColor('Active')}>Active</span>
                 </td>
                 <td className="px-6 py-4">
-                  <span className={`px-2 py-1 text-xs rounded border ${getRiskColor(session.riskLevel)}`}>
-                    {session.riskLevel}
+                  <span className={`px-2 py-1 text-xs rounded border ${getRiskColor('High')}`}>
+                    High
                   </span>
                 </td>
               </tr>

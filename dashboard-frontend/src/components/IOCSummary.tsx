@@ -1,26 +1,31 @@
 "use client"
 
 import { Shield, Filter } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { api } from '@/lib/api';
 
 export function IOCSummary() {
   const [filterType, setFilterType] = useState('all');
   const [filterSeverity, setFilterSeverity] = useState('all');
+  const [iocs, setIocs] = useState<any[]>([]);
 
-  const iocs = [
-    { type: 'IP', value: '45.142.212.61', session: 'sess-7f8a9b2c', severity: 'High', confidence: 95 },
-    { type: 'Domain', value: 'malicious-domain.ru', session: 'sess-7f8a9b2c', severity: 'Critical', confidence: 98 },
-    { type: 'IP', value: '103.75.189.44', session: 'sess-3c4d5e6f', severity: 'Critical', confidence: 92 },
-    { type: 'File', value: 'payload.sh', session: 'sess-7f8a9b2c', severity: 'High', confidence: 89 },
-    { type: 'Domain', value: 'c2-server.com', session: 'sess-7f8a9b2c', severity: 'Critical', confidence: 97 },
-    { type: 'IP', value: '185.220.101.33', session: 'sess-9a8b7c6d', severity: 'Medium', confidence: 78 },
-    { type: 'File', value: 'cryptominer.exe', session: 'sess-3c4d5e6f', severity: 'High', confidence: 94 },
-    { type: 'IP', value: '210.45.78.92', session: 'sess-5d6e7f8a', severity: 'High', confidence: 86 },
-  ];
+  useEffect(() => {
+    const fetchIocs = async () => {
+      try {
+        const res = await api.get('/api/iocs');
+        setIocs(res.data.iocs || []);
+      } catch (err) {
+        console.error("Failed to fetch IOCs", err);
+      }
+    };
+    fetchIocs();
+    const interval = setInterval(fetchIocs, 5000);
+    return () => clearInterval(interval);
+  }, []);
 
   const filteredIOCs = iocs.filter(ioc => {
-    if (filterType !== 'all' && ioc.type !== filterType) return false;
-    if (filterSeverity !== 'all' && ioc.severity !== filterSeverity) return false;
+    if (filterType !== 'all' && ioc.ioc_type !== filterType) return false;
+    // Database doesn't have severity right now, default to showing all or handle appropriately
     return true;
   });
 
@@ -92,25 +97,24 @@ export function IOCSummary() {
             {filteredIOCs.map((ioc, idx) => (
               <tr key={idx} className="hover:bg-slate-800/50 transition-colors">
                 <td className="px-6 py-4">
-                  <span className="px-2 py-1 text-xs bg-slate-800 text-slate-300 rounded">
-                    {ioc.type}
+                  <span className="px-2 py-1 text-xs bg-slate-800 text-slate-300 rounded uppercase">
+                    {ioc.ioc_type}
                   </span>
                 </td>
                 <td className="px-6 py-4 text-sm text-slate-300">{ioc.value}</td>
-                <td className="px-6 py-4 text-sm text-cyan-400">{ioc.session}</td>
+                <td className="px-6 py-4 text-sm text-cyan-400">{ioc.session_id}</td>
                 <td className="px-6 py-4">
-                  <span className={`px-2 py-1 text-xs rounded border ${getSeverityColor(ioc.severity)}`}>
-                    {ioc.severity}
+                  <span className={`px-2 py-1 text-xs rounded border ${getSeverityColor('High')}`}>
+                    High
                   </span>
                 </td>
                 <td className="px-6 py-4">
                   <div className="flex items-center gap-2">
                     <div className="flex-1 bg-slate-800 rounded-full h-1.5">
                       <div
-                        className={`h-1.5 rounded-full ${
-                          ioc.confidence >= 90 ? 'bg-green-400' :
-                          ioc.confidence >= 75 ? 'bg-yellow-400' : 'bg-orange-400'
-                        }`}
+                        className={`h-1.5 rounded-full ${ioc.confidence >= 90 ? 'bg-green-400' :
+                            ioc.confidence >= 75 ? 'bg-yellow-400' : 'bg-orange-400'
+                          }`}
                         style={{ width: `${ioc.confidence}%` }}
                       ></div>
                     </div>

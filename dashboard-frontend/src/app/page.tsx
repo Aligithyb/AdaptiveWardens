@@ -11,7 +11,7 @@ import { MetricsStats } from '@/components/MetricsStats';
 
 export default function App() {
   const [activeView, setActiveView] = useState('dashboard');
-  const [selectedSession, setSelectedSession] = useState('sess-7f8a9b2c');
+  const [selectedSession, setSelectedSession] = useState<string | null>(null);
 
   return (
     <div className="flex h-screen bg-slate-950">

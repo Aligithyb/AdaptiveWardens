@@ -11,7 +11,30 @@ LISTEN_HOST = "0.0.0.0"
 LISTEN_PORT = 2222
 SANDBOX_URL = os.getenv("SANDBOX_URL", "http://localhost:8001")
 AI_ENGINE_URL = os.getenv("AI_ENGINE_URL", None)  # NEW: Optional AI
-SSH_BANNER = "Ubuntu 22.04.3 LTS\n\n"
+SSH_BANNER = """Welcome to Ubuntu 22.04.3 LTS (GNU/Linux 5.15.0-91-generic x86_64)
+
+ * Documentation:  https://help.ubuntu.com
+ * Management:     https://landscape.canonical.com
+ * Support:        https://ubuntu.com/advantage
+
+  System information as of Sun Mar  1 11:22:33 UTC 2026
+
+  System load:  0.05               Processes:             156
+  Usage of /:   22.4% of 38.60GB   Users logged in:       0
+  Memory usage: 15%                IPv4 address for eth0: 10.0.2.15
+  Swap usage:   0%
+
+0 updates can be applied immediately.
+
+The programs included with the Ubuntu system are free software;
+the exact distribution terms for each program are described in the
+individual files in /usr/share/doc/*/copyright.
+
+Ubuntu comes with ABSOLUTELY NO WARRANTY, to the extent permitted by
+applicable law.
+
+Last login: Sun Mar 1 10:10:01 2026 from 192.168.1.50
+"""
 
 # Keep some static responses for speed (non-filesystem commands)
 STATIC_RESPONSES = {
@@ -20,7 +43,14 @@ STATIC_RESPONSES = {
     "hostname": lambda ctx: "ubuntu-server",
     "uname -a": lambda ctx: "Linux ubuntu-server 5.15.0-91-generic #101-Ubuntu SMP x86_64 GNU/Linux",
     "uname": lambda ctx: "Linux",
-    "ifconfig": lambda ctx: "eth0: inet 10.0.2.15  netmask 255.255.255.0",
+    "ifconfig": lambda ctx: "eth0: inet 10.0.2.15  netmask 255.255.255.0  broadcast 10.0.2.255\n        inet6 fe80::a00:27ff:fe8f:1234  prefixlen 64  scopeid 0x20<link>\n        RX packets 12345  bytes 1234567 (1.2 MB)\n        TX packets 5432   bytes 987654  (987.6 KB)",
+    "df -h": lambda ctx: "Filesystem      Size  Used Avail Use% Mounted on\n/dev/sda1        40G  8.4G   30G  22% /\ntmpfs           3.9G     0  3.9G   0% /dev/shm\n/dev/sdb1       100G   12G   83G  13% /opt/corp",
+    "df": lambda ctx: "Filesystem     1K-blocks     Used Available Use% Mounted on\n/dev/sda1       41251136  8794112  30340240  23% /\ntmpfs            4031640        0   4031640   0% /dev/shm\n/dev/sdb1      103080896 12582912  85241856  13% /opt/corp",
+    "free -m": lambda ctx: "               total        used        free      shared  buff/cache   available\nMem:            7942         842        5120          12        1980        6850\nSwap:           2047           0        2047",
+    "free": lambda ctx: "               total        used        free      shared  buff/cache   available\nMem:         8132800      862208     5242880       12288     2027712     7014400\nSwap:        2097148           0     2097148",
+    "uptime": lambda ctx: " 10:20:05 up 12 days,  3:14,  1 user,  load average: 0.05, 0.08, 0.12",
+    "lsblk": lambda ctx: "NAME   MAJ:MIN RM  SIZE RO TYPE MOUNTPOINTS\nsda      8:0    0   40G  0 disk \n└─sda1   8:1    0   40G  0 part /\nsdb      8:16   0  100G  0 disk \n└─sdb1   8:17   0  100G  0 part /opt/corp",
+    "mount": lambda ctx: "/dev/sda1 on / type ext4 (rw,relatime,errors=remount-ro)\nproc on /proc type proc (rw,nosuid,nodev,noexec,relatime)\ntmpfs on /dev/shm type tmpfs (rw,nosuid,nodev)\n/dev/sdb1 on /opt/corp type ext4 (rw,relatime)",
 }
 
 def get_fallback(cmd: str, ctx: dict) -> str:
@@ -34,7 +64,7 @@ class HoneypotSession(asyncssh.SSHServerSession):
         self.username = username
         self.source_ip = source_ip
         self.current_directory = "/root"
-        self.context = {"username": username, "current_directory": "/root"}
+        self.context: dict = {"username": username, "current_directory": "/root"}
         self.http_client = httpx.AsyncClient(timeout=30.0)  # Increased timeout for AI
         self.session_ready = False
         self.command_history = []  # NEW: For AI context
@@ -66,41 +96,43 @@ class HoneypotSession(asyncssh.SSHServerSession):
         except Exception as e:
             print(f"⚠️ DB init failed: {e}")
     
+    async def _process_command_string(self, full_data):
+        """Split by newline and process each command"""
+        lines = full_data.split('\n')
+        for raw_line in lines:
+            raw_line = raw_line.strip()
+            if not raw_line:
+                self.chan.write(f"{self.username}@ubuntu-server:{self.current_directory}$ ")
+                continue
+            
+            # Handle comments
+            cmd = raw_line.split('#')[0].strip()
+            if not cmd:
+                # Just a comment - show prompt
+                self.chan.write(f"{self.username}@ubuntu-server:{self.current_directory}$ ")
+                continue
+            
+            if cmd in ["exit", "logout"]:
+                self.chan.write("\nlogout\n")
+                await self._close()
+                self.chan.close()
+                return
+
+            # Normal command processing
+            if cmd.startswith("cd "):
+                self._handle_cd(cmd)
+                self.chan.write(f"{self.username}@ubuntu-server:{self.current_directory}$ ")
+            elif cmd.startswith("ls") or cmd.startswith("cat ") or cmd.startswith("touch ") or cmd.startswith("mkdir "):
+                await self._handle_fs_command(cmd)
+            elif cmd.startswith("ps"):
+                await self._handle_ps_command(cmd)
+            elif cmd == "env":
+                await self._handle_env_command()
+            else:
+                await self._handle_generic_command(cmd)
+
     def data_received(self, data, datatype):
-        cmd = data.strip()
-        if not cmd:
-            self.chan.write(f"{self.username}@ubuntu-server:{self.current_directory}$ ")
-            return
-        
-        if cmd in ["exit", "logout"]:
-            self.chan.write("\nlogout\n")
-            asyncio.create_task(self._close())
-            self.chan.close()
-            return
-        
-        # Handle cd
-        if cmd.startswith("cd "):
-            self._handle_cd(cmd)
-            self.chan.write(f"{self.username}@ubuntu-server:{self.current_directory}$ ")
-            return
-        
-        # Handle filesystem commands (async database calls)
-        if cmd.startswith("ls") or cmd.startswith("cat ") or cmd.startswith("touch ") or cmd.startswith("mkdir "):
-            asyncio.create_task(self._handle_fs_command(cmd))
-            return
-        
-        # Handle ps (process list from database)
-        if cmd.startswith("ps"):
-            asyncio.create_task(self._handle_ps_command(cmd))
-            return
-        
-        # Handle env
-        if cmd == "env":
-            asyncio.create_task(self._handle_env_command())
-            return
-        
-        # MODIFIED: Try static, then AI, then fallback
-        asyncio.create_task(self._handle_generic_command(cmd))
+        asyncio.create_task(self._process_command_string(data))
     
     async def _handle_generic_command(self, cmd: str):
         """Handle commands: static -> AI -> fallback"""
@@ -129,7 +161,7 @@ class HoneypotSession(asyncssh.SSHServerSession):
         asyncio.create_task(self._record(cmd, output))
         self.chan.write(f"{self.username}@ubuntu-server:{self.current_directory}$ ")
     
-    async def _get_ai_response(self, cmd: str):
+    async def _get_ai_response(self, cmd: str) -> str | None:
         """NEW: Get AI-generated response"""
         try:
             r = await self.http_client.post(f"{AI_ENGINE_URL}/generate-response", json={
@@ -142,6 +174,17 @@ class HoneypotSession(asyncssh.SSHServerSession):
                 data = r.json()
                 cached = "🔄" if data.get("cached") else "🤖"
                 print(f"{cached} AI response for: {cmd}")
+                
+                # Report extracted IOCs to Sandbox Store
+                iocs = data.get("iocs", [])
+                for ioc in iocs:
+                    asyncio.create_task(self._record_ioc(ioc))
+                    
+                # Report MITRE techniques to Sandbox Store
+                mitre_techniques = data.get("mitre_techniques", [])
+                for technique in mitre_techniques:
+                    asyncio.create_task(self._record_mitre_technique(technique))
+                    
                 return data.get("response", None)
         except Exception as e:
             print(f"⚠️ AI error: {e}")
@@ -291,6 +334,31 @@ class HoneypotSession(asyncssh.SSHServerSession):
             await self.http_client.post(f"{SANDBOX_URL}/commands/{self.session_id}",
                 json={"command": cmd, "output": out, "exit_code": 0, "duration_ms": 10})
         except: pass
+        
+    async def _record_ioc(self, ioc: dict):
+        try:
+            await self.http_client.post(f"{SANDBOX_URL}/iocs/{self.session_id}",
+                json={
+                    "ioc_type": ioc.get("ioc_type"),
+                    "value": ioc.get("value"),
+                    "confidence": ioc.get("confidence", 0.5),
+                    "context": "AI extracted from command/response"
+                })
+        except Exception as e:
+            print(f"⚠️ Failed to report IOC: {e}")
+            
+    async def _record_mitre_technique(self, technique: dict):
+        try:
+            await self.http_client.post(f"{SANDBOX_URL}/attack-techniques/{self.session_id}",
+                json={
+                    "technique_id": technique.get("technique_id"),
+                    "technique_name": technique.get("technique_name"),
+                    "tactic": technique.get("tactic"),
+                    "confidence": technique.get("confidence", 0.5),
+                    "evidence": technique.get("evidence", "")
+                })
+        except Exception as e:
+            print(f"⚠️ Failed to report MITRE technique: {e}")
     
     async def _close(self):
         try:

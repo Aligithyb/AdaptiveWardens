@@ -10,8 +10,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Sandbox State Store API", version="1.0.0")
 
 # Initialize database
-base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-db_path = os.path.join(base_dir, "data", "honeypot.db")
+db_path = os.getenv("DB_PATH", "/data/honeypot.db")
 os.makedirs(os.path.dirname(db_path), exist_ok=True)
 db = SandboxDatabase(db_path=db_path)
 

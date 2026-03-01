@@ -13,7 +13,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8001/health')"]
+      test: [ "CMD", "python", "-c", "import requests; requests.get('http://localhost:8001/health')" ]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -27,6 +27,8 @@ services:
       - honeypot-external
     ports:
       - "8002:8002"
+    volumes:
+      - ./ai-engine/src:/app
     environment:
       - PYTHONUNBUFFERED=1
       - GEMINI_API_KEY=${GEMINI_API_KEY}
@@ -43,6 +45,8 @@ services:
     networks:
       - honeypot-internal
       - honeypot-external
+    volumes:
+      - ./ssh-frontend/src/ssh_server.py:/app/ssh_server.py
     environment:
       - SANDBOX_URL=http://sandbox-store:8001
       - AI_ENGINE_URL=http://ai-engine:8002
@@ -53,6 +57,44 @@ services:
       ai-engine:
         condition: service_started
 
+  http-frontend:
+    build: ./http-frontend
+    container_name: honeypot-http
+    ports:
+      - "8080:8080"
+    networks:
+      - honeypot-internal
+      - honeypot-external
+    volumes:
+      - ./http-frontend/src:/app
+    environment:
+      - SANDBOX_URL=http://sandbox-store:8001
+      - AI_ENGINE_URL=http://ai-engine:8002
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      sandbox-store:
+        condition: service_healthy
+      ai-engine:
+        condition: service_started
+
+  dashboard-backend:
+    build: ./dashboard-backend
+    container_name: honeypot-dashboard-backend
+    ports:
+      - "8003:8003"
+    networks:
+      - honeypot-internal
+      - honeypot-external
+    volumes:
+      - sandbox-data:/data
+      - ./dashboard-backend/src:/app
+    environment:
+      - DB_PATH=/data/honeypot.db
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      sandbox-store:
+        condition: service_healthy
+
   dashboard-frontend:
     build: ./dashboard-frontend
     container_name: honeypot-dashboard
@@ -61,10 +103,14 @@ services:
     networks:
       - honeypot-internal
       - honeypot-external
+    volumes:
+      - ./dashboard-frontend:/app
+      - /app/node_modules # Don't overwrite node_modules with host ones
     environment:
       - NODE_ENV=production
-      - NEXT_PUBLIC_API_URL=http://sandbox-store:8001
+      - NEXT_PUBLIC_API_URL=http://localhost:8003
     depends_on:
+      - dashboard-backend
       - sandbox-store
 
 networks:
