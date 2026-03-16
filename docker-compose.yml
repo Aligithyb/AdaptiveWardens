@@ -8,10 +8,14 @@ services:
       - sandbox-data:/data
     networks:
       - honeypot-internal
+      - honeypot-external
     ports:
       - "8001:8001"
     environment:
       - PYTHONUNBUFFERED=1
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - SLACK_CHANNEL=${SLACK_CHANNEL}
     healthcheck:
       test: [ "CMD", "python", "-c", "import requests; requests.get('http://localhost:8001/health')" ]
       interval: 10s
