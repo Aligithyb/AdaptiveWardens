@@ -1,8 +1,9 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import logging
 import os
+import requests
 from database import SandboxDatabase
 
 logger = logging.getLogger(__name__)
@@ -58,10 +59,55 @@ class AttackTechnique(BaseModel):
     confidence: float
     evidence: str
 
+def send_slack_alert(ip: str, protocol: str, session_id: str):
+    try:
+        logger.info(f"[Slack] Firing alert for session={session_id} ip={ip} protocol={protocol}")
+
+        # Geolocation
+        country = "Unknown"
+        try:
+            geo_resp = requests.get(f"http://ip-api.com/json/{ip}", timeout=5)
+            if geo_resp.status_code == 200:
+                data = geo_resp.json()
+                if data.get("status") == "success":
+                    country = data.get("country", "Unknown")
+            logger.info(f"[Slack] Geolocated {ip} -> {country}")
+        except Exception as e:
+            logger.error(f"[Slack] Failed to geolocate IP {ip}: {e}")
+
+        # Construct message
+        message = f"\U0001f6a8 *New Honeypot Session Started* \U0001f6a8\n" \
+                  f"\u2022 *Session ID:* `{session_id}`\n" \
+                  f"\u2022 *Protocol:* `{protocol}`\n" \
+                  f"\u2022 *Source IP:* `{ip}`\n" \
+                  f"\u2022 *Country:* {country}\n"
+
+        webhook_url = os.getenv("SLACK_WEBHOOK_URL")
+        bot_token = os.getenv("SLACK_BOT_TOKEN")
+        channel = os.getenv("SLACK_CHANNEL", "#alerts")
+
+        if webhook_url:
+            logger.info(f"[Slack] Posting via webhook...")
+            slack_resp = requests.post(webhook_url, json={"text": message}, timeout=5)
+            logger.info(f"[Slack] Webhook response: {slack_resp.status_code} | {slack_resp.text}")
+        elif bot_token and channel:
+            logger.info(f"[Slack] Posting via bot token to {channel}...")
+            slack_resp = requests.post(
+                "https://slack.com/api/chat.postMessage",
+                headers={"Authorization": f"Bearer {bot_token}"},
+                json={"channel": channel, "text": message},
+                timeout=5
+            )
+            logger.info(f"[Slack] Bot response: {slack_resp.status_code} | {slack_resp.text}")
+        else:
+            logger.warning("[Slack] No SLACK_WEBHOOK_URL or SLACK_BOT_TOKEN configured — alert skipped!")
+    except Exception as e:
+        logger.error(f"[Slack] Error sending alert: {e}")
+
 # ==================== API ENDPOINTS ====================
 
 @app.post("/sessions/")
-async def create_session(session: SessionCreate):
+async def create_session(session: SessionCreate, background_tasks: BackgroundTasks):
     """Create a new honeypot session with initialized state."""
     success = db.create_session(
         session.session_id,
@@ -71,6 +117,7 @@ async def create_session(session: SessionCreate):
         session.password
     )
     if success:
+        background_tasks.add_task(send_slack_alert, session.source_ip, session.protocol, session.session_id)
         return {"status": "created", "session_id": session.session_id}
     else:
         raise HTTPException(status_code=400, detail="Session already exists")
