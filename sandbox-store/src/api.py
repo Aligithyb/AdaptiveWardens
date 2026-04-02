@@ -59,23 +59,30 @@ class AttackTechnique(BaseModel):
     confidence: float
     evidence: str
 
-def send_slack_alert(ip: str, protocol: str, session_id: str):
+def geolocate_and_notify(ip: str, protocol: str, session_id: str):
+    """Geolocate the IP, save country to DB, then fire the Slack alert."""
+    country = "Unknown"
+    try:
+        geo_resp = requests.get(f"http://ip-api.com/json/{ip}", timeout=5)
+        if geo_resp.status_code == 200:
+            data = geo_resp.json()
+            if data.get("status") == "success":
+                country = data.get("country", "Unknown")
+        logger.info(f"[Geo] {ip} -> {country}")
+
+        # Persist country to DB
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE sessions SET country = ? WHERE session_id = ?",
+                (country, session_id)
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"[Geo] Failed to geolocate {ip}: {e}")
+
+    # Send Slack alert
     try:
         logger.info(f"[Slack] Firing alert for session={session_id} ip={ip} protocol={protocol}")
-
-        # Geolocation
-        country = "Unknown"
-        try:
-            geo_resp = requests.get(f"http://ip-api.com/json/{ip}", timeout=5)
-            if geo_resp.status_code == 200:
-                data = geo_resp.json()
-                if data.get("status") == "success":
-                    country = data.get("country", "Unknown")
-            logger.info(f"[Slack] Geolocated {ip} -> {country}")
-        except Exception as e:
-            logger.error(f"[Slack] Failed to geolocate IP {ip}: {e}")
-
-        # Construct message
         message = f"\U0001f6a8 *New Honeypot Session Started* \U0001f6a8\n" \
                   f"\u2022 *Session ID:* `{session_id}`\n" \
                   f"\u2022 *Protocol:* `{protocol}`\n" \
@@ -87,11 +94,9 @@ def send_slack_alert(ip: str, protocol: str, session_id: str):
         channel = os.getenv("SLACK_CHANNEL", "#alerts")
 
         if webhook_url:
-            logger.info(f"[Slack] Posting via webhook...")
             slack_resp = requests.post(webhook_url, json={"text": message}, timeout=5)
             logger.info(f"[Slack] Webhook response: {slack_resp.status_code} | {slack_resp.text}")
         elif bot_token and channel:
-            logger.info(f"[Slack] Posting via bot token to {channel}...")
             slack_resp = requests.post(
                 "https://slack.com/api/chat.postMessage",
                 headers={"Authorization": f"Bearer {bot_token}"},
@@ -117,7 +122,7 @@ async def create_session(session: SessionCreate, background_tasks: BackgroundTas
         session.password
     )
     if success:
-        background_tasks.add_task(send_slack_alert, session.source_ip, session.protocol, session.session_id)
+        background_tasks.add_task(geolocate_and_notify, session.source_ip, session.protocol, session.session_id)
         return {"status": "created", "session_id": session.session_id}
     else:
         raise HTTPException(status_code=400, detail="Session already exists")
