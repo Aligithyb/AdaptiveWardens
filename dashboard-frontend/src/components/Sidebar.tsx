@@ -1,4 +1,4 @@
-import { Activity, Shield, Map, BarChart3, FileText, Layers } from 'lucide-react';
+import { Activity, Shield, Map, BarChart3, FileText, Layers, Globe2 } from 'lucide-react';
 
 interface SidebarProps {
   activeView: string;
@@ -9,6 +9,7 @@ export function Sidebar({ activeView, setActiveView }: SidebarProps) {
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: Layers },
     { id: 'live-sessions', label: 'Live Sessions', icon: Activity },
+    { id: 'attack-map', label: 'Attack Map', icon: Globe2 },
     { id: 'ioc-summary', label: 'IOC Summary', icon: Shield },
     { id: 'mitre-attack', label: 'MITRE ATT&CK', icon: Map },
     { id: 'metrics', label: 'Session Metrics', icon: BarChart3 },

@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     password TEXT,
     status TEXT CHECK(status IN ('active', 'closed', 'timeout')),
     command_count INTEGER DEFAULT 0,
+    country TEXT DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

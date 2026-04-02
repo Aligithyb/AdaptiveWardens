@@ -48,6 +48,13 @@ class SandboxDatabase:
         
         with self.get_connection() as conn:
             conn.executescript(schema)
+            # Safe migration: add country column if it doesn't exist yet
+            try:
+                conn.execute("ALTER TABLE sessions ADD COLUMN country TEXT DEFAULT NULL")
+                conn.commit()
+                logger.info("Migrated sessions table: added 'country' column")
+            except Exception:
+                pass  # Column already exists, that's fine
         
         logger.info(f"Database initialized from {schema_path}")
     
