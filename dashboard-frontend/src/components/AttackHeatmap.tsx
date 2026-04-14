@@ -1,18 +1,17 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import {
-  ComposableMap,
-  Geographies,
-  Geography,
-  ZoomableGroup,
-} from "@vnedyalk0v/react19-simple-maps";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { geoMercator, geoPath } from "d3-geo";
+import { feature } from "topojson-client";
+import type { Topology } from "topojson-specification";
+import type { FeatureCollection, Geometry } from "geojson";
 import { Globe2, RefreshCw, AlertTriangle } from "lucide-react";
 
-const isServer = typeof window === 'undefined';
-const API_URL = isServer 
-    ? (process.env.INTERNAL_API_URL || "http://dashboard-backend:8003")
-    : (process.env.NEXT_PUBLIC_API_URL || "");
+const isServer = typeof window === "undefined";
+const API_URL = isServer
+  ? process.env.INTERNAL_API_URL || "http://dashboard-backend:8003"
+  : process.env.NEXT_PUBLIC_API_URL || "";
+
 const GEO_URL =
   "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
 
@@ -21,16 +20,16 @@ interface HeatmapEntry {
   count: number;
 }
 
-// Maps country names from ip-api.com to the names used in TopoJSON
+// Maps country names from ip-api.com to names used in TopoJSON
 const COUNTRY_NAME_MAP: Record<string, string> = {
   "United States": "United States of America",
-  "Russia": "Russia",
+  Russia: "Russia",
   "South Korea": "South Korea",
   "North Korea": "North Korea",
   "Czech Republic": "Czechia",
-  "Iran": "Iran",
-  "Syria": "Syria",
-  "Vietnam": "Vietnam",
+  Iran: "Iran",
+  Syria: "Syria",
+  Vietnam: "Vietnam",
   "United Kingdom": "United Kingdom",
 };
 
@@ -39,22 +38,31 @@ function normalize(name: string): string {
 }
 
 function getColor(count: number, max: number): string {
-  if (count === 0) return "#1e293b"; // slate-800 — no attacks
+  if (count === 0) return "#1e293b";
   const ratio = count / max;
-  if (ratio < 0.2) return "#7f1d1d";   // very dark red
+  if (ratio < 0.2) return "#7f1d1d";
   if (ratio < 0.4) return "#991b1b";
   if (ratio < 0.6) return "#b91c1c";
   if (ratio < 0.8) return "#dc2626";
-  return "#ef4444";                     // bright red — highest
+  return "#ef4444";
 }
 
 export function AttackHeatmap() {
   const [data, setData] = useState<HeatmapEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  const [tooltip, setTooltip] = useState<{ name: string; count: number; x: number; y: number } | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [tooltip, setTooltip] = useState<{
+    name: string;
+    count: number;
+    x: number;
+    y: number;
+  } | null>(null);
 
+  const svgRef = useRef<SVGSVGElement>(null);
+  const geoDataRef = useRef<FeatureCollection<Geometry> | null>(null);
+
+  // ── Fetch API data ──────────────────────────────────────────────────
   const fetchData = useCallback(async () => {
     try {
       const res = await fetch(`${API_URL}/api/geo-heatmap`);
@@ -76,6 +84,111 @@ export function AttackHeatmap() {
     return () => clearInterval(interval);
   }, [fetchData]);
 
+  // ── Fetch world geography once ─────────────────────────────────────
+  useEffect(() => {
+    fetch(GEO_URL)
+      .then((r) => r.json())
+      .then((topo: Topology) => {
+        const countries = feature(
+          topo,
+          (topo as any).objects.countries
+        ) as unknown as FeatureCollection<Geometry>;
+        geoDataRef.current = countries;
+        renderMap(countries, data);
+      })
+      .catch(() => {/* geo load error — silent */});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Re-render map whenever data changes ────────────────────────────
+  useEffect(() => {
+    if (geoDataRef.current) {
+      renderMap(geoDataRef.current, data);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+
+  // ── D3 render function ─────────────────────────────────────────────
+  function renderMap(
+    countries: FeatureCollection<Geometry>,
+    heatmapData: HeatmapEntry[]
+  ) {
+    const svg = svgRef.current;
+    if (!svg) return;
+
+    const width = svg.clientWidth || 800;
+    const height = svg.clientHeight || 360;
+
+    // Build lookup
+    const countryMap: Record<string, number> = {};
+    let maxCount = 1;
+    for (const entry of heatmapData) {
+      const key = normalize(entry.country);
+      countryMap[key] = entry.count;
+      if (entry.count > maxCount) maxCount = entry.count;
+    }
+
+    const projection = geoMercator()
+      .scale((width / 640) * 100)
+      .center([0, 20])
+      .translate([width / 2, height / 2]);
+
+    const pathGen = geoPath().projection(projection);
+
+    // Clear previous paths
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+    // Draw background
+    const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    bg.setAttribute("width", String(width));
+    bg.setAttribute("height", String(height));
+    bg.setAttribute("fill", "#020617");
+    svg.appendChild(bg);
+
+    // Draw each country
+    for (const feat of countries.features) {
+      const name: string = (feat.properties as any)?.name ?? "";
+      const count = countryMap[name] ?? 0;
+      const fill = getColor(count, maxCount);
+      const d = pathGen(feat);
+      if (!d) continue;
+
+      const path = document.createElementNS(
+        "http://www.w3.org/2000/svg",
+        "path"
+      );
+      path.setAttribute("d", d);
+      path.setAttribute("fill", fill);
+      path.setAttribute("stroke", "#0f172a");
+      path.setAttribute("stroke-width", "0.5");
+      path.style.transition = "fill 0.2s";
+      path.style.cursor = count > 0 ? "pointer" : "default";
+
+      if (count > 0) {
+        path.addEventListener("mouseenter", (e) => {
+          path.setAttribute("fill", "#f87171");
+          setTooltip({ name, count, x: e.clientX, y: e.clientY });
+        });
+        path.addEventListener("mousemove", (e) => {
+          setTooltip((t) => (t ? { ...t, x: e.clientX, y: e.clientY } : null));
+        });
+        path.addEventListener("mouseleave", () => {
+          path.setAttribute("fill", fill);
+          setTooltip(null);
+        });
+      } else {
+        path.addEventListener("mouseenter", () => {
+          path.setAttribute("fill", "#334155");
+        });
+        path.addEventListener("mouseleave", () => {
+          path.setAttribute("fill", fill);
+        });
+      }
+
+      svg.appendChild(path);
+    }
+  }
+
   const countryMap: Record<string, number> = {};
   let maxCount = 1;
   for (const entry of data) {
@@ -83,7 +196,6 @@ export function AttackHeatmap() {
     countryMap[key] = entry.count;
     if (entry.count > maxCount) maxCount = entry.count;
   }
-
   const topAttackers = [...data].sort((a, b) => b.count - a.count).slice(0, 5);
 
   return (
@@ -115,66 +227,20 @@ export function AttackHeatmap() {
       </div>
 
       {/* Map */}
-      <div className="relative bg-slate-950">
-        {loading && (
-          <div className="absolute inset-0 flex items-center justify-center z-10">
-            <div className="flex items-center gap-2 text-slate-400 text-sm">
-              <RefreshCw className="w-4 h-4 animate-spin" />
-              Loading map…
-            </div>
-          </div>
-        )}
+      <div className="relative bg-slate-950" style={{ height: "360px" }}>
         {error && !loading && (
           <div className="absolute inset-0 flex items-center justify-center z-10">
             <div className="flex items-center gap-2 text-red-400 text-sm">
               <AlertTriangle className="w-4 h-4" />
-              Could not reach API
+              Could not reach API — map data unavailable
             </div>
           </div>
         )}
 
-        <ComposableMap
-          projection="geoMercator"
-          projectionConfig={{ scale: 130, center: [0, 20] as any }}
-          style={{ width: "100%", height: "360px" }}
-        >
-          <ZoomableGroup>
-            <Geographies geography={GEO_URL}>
-              {({ geographies }: { geographies: any[] }) =>
-                geographies.map((geo: any) => {
-                  const name: string = geo.properties.name ?? "";
-                  const count = countryMap[name] ?? 0;
-                  const fill = getColor(count, maxCount);
-                  return (
-                    <Geography
-                      key={geo.rsmKey}
-                      geography={geo}
-                      fill={fill}
-                      stroke="#0f172a"
-                      strokeWidth={0.5}
-                      style={{
-                        default: { outline: "none", transition: "fill 0.2s" },
-                        hover: { outline: "none", fill: count > 0 ? "#f87171" : "#334155", cursor: count > 0 ? "pointer" : "default" },
-                        pressed: { outline: "none" },
-                      }}
-                      onMouseEnter={(e: React.MouseEvent) => {
-                        if (count > 0) {
-                          setTooltip({ name, count, x: e.clientX, y: e.clientY });
-                        }
-                      }}
-                      onMouseMove={(e: React.MouseEvent) => {
-                        if (tooltip) {
-                          setTooltip((t) => t ? { ...t, x: e.clientX, y: e.clientY } : null);
-                        }
-                      }}
-                      onMouseLeave={() => setTooltip(null)}
-                    />
-                  );
-                })
-              }
-            </Geographies>
-          </ZoomableGroup>
-        </ComposableMap>
+        <svg
+          ref={svgRef}
+          style={{ width: "100%", height: "360px", display: "block" }}
+        />
 
         {/* Tooltip */}
         {tooltip && (
@@ -183,7 +249,9 @@ export function AttackHeatmap() {
             style={{ left: tooltip.x + 12, top: tooltip.y - 40 }}
           >
             <p className="font-semibold text-slate-100">{tooltip.name}</p>
-            <p className="text-red-400">{tooltip.count} attack{tooltip.count !== 1 ? "s" : ""}</p>
+            <p className="text-red-400">
+              {tooltip.count} attack{tooltip.count !== 1 ? "s" : ""}
+            </p>
           </div>
         )}
 
@@ -191,9 +259,14 @@ export function AttackHeatmap() {
         <div className="absolute bottom-3 left-4 flex items-center gap-2">
           <span className="text-xs text-slate-500">Low</span>
           <div className="flex">
-            {["#7f1d1d", "#991b1b", "#b91c1c", "#dc2626", "#ef4444"].map((c) => (
-              <div key={c} style={{ background: c, width: 20, height: 10 }} />
-            ))}
+            {["#7f1d1d", "#991b1b", "#b91c1c", "#dc2626", "#ef4444"].map(
+              (c) => (
+                <div
+                  key={c}
+                  style={{ background: c, width: 20, height: 10 }}
+                />
+              )
+            )}
           </div>
           <span className="text-xs text-slate-500">High</span>
         </div>
