@@ -1,0 +1,235 @@
+"use client";
+
+import { useEffect, useState, useCallback } from "react";
+import {
+  ComposableMap,
+  Geographies,
+  Geography,
+  ZoomableGroup,
+} from "react-simple-maps";
+import { Globe2, RefreshCw, AlertTriangle } from "lucide-react";
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8003";
+const GEO_URL =
+  "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
+
+interface HeatmapEntry {
+  country: string;
+  count: number;
+}
+
+// Maps country names from ip-api.com to the names used in TopoJSON
+const COUNTRY_NAME_MAP: Record<string, string> = {
+  "United States": "United States of America",
+  "Russia": "Russia",
+  "South Korea": "South Korea",
+  "North Korea": "North Korea",
+  "Czech Republic": "Czechia",
+  "Iran": "Iran",
+  "Syria": "Syria",
+  "Vietnam": "Vietnam",
+  "United Kingdom": "United Kingdom",
+};
+
+function normalize(name: string): string {
+  return COUNTRY_NAME_MAP[name] ?? name;
+}
+
+function getColor(count: number, max: number): string {
+  if (count === 0) return "#1e293b"; // slate-800 — no attacks
+  const ratio = count / max;
+  if (ratio < 0.2) return "#7f1d1d";   // very dark red
+  if (ratio < 0.4) return "#991b1b";
+  if (ratio < 0.6) return "#b91c1c";
+  if (ratio < 0.8) return "#dc2626";
+  return "#ef4444";                     // bright red — highest
+}
+
+export function AttackHeatmap() {
+  const [data, setData] = useState<HeatmapEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [tooltip, setTooltip] = useState<{ name: string; count: number; x: number; y: number } | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+
+  const fetchData = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/geo-heatmap`);
+      if (!res.ok) throw new Error("Failed");
+      const json = await res.json();
+      setData(json.heatmap ?? []);
+      setLastUpdated(new Date());
+      setError(false);
+    } catch {
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 30_000);
+    return () => clearInterval(interval);
+  }, [fetchData]);
+
+  const countryMap: Record<string, number> = {};
+  let maxCount = 1;
+  for (const entry of data) {
+    const key = normalize(entry.country);
+    countryMap[key] = entry.count;
+    if (entry.count > maxCount) maxCount = entry.count;
+  }
+
+  const topAttackers = [...data].sort((a, b) => b.count - a.count).slice(0, 5);
+
+  return (
+    <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 bg-red-500/10 rounded-lg flex items-center justify-center">
+            <Globe2 className="w-5 h-5 text-red-400" />
+          </div>
+          <div>
+            <h2 className="text-slate-100 font-semibold text-sm">
+              Attack Origin Map
+            </h2>
+            <p className="text-xs text-slate-500">
+              {lastUpdated
+                ? `Updated ${lastUpdated.toLocaleTimeString()}`
+                : "Loading…"}
+            </p>
+          </div>
+        </div>
+        <button
+          onClick={fetchData}
+          className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+          title="Refresh"
+        >
+          <RefreshCw className="w-4 h-4" />
+        </button>
+      </div>
+
+      {/* Map */}
+      <div className="relative bg-slate-950">
+        {loading && (
+          <div className="absolute inset-0 flex items-center justify-center z-10">
+            <div className="flex items-center gap-2 text-slate-400 text-sm">
+              <RefreshCw className="w-4 h-4 animate-spin" />
+              Loading map…
+            </div>
+          </div>
+        )}
+        {error && !loading && (
+          <div className="absolute inset-0 flex items-center justify-center z-10">
+            <div className="flex items-center gap-2 text-red-400 text-sm">
+              <AlertTriangle className="w-4 h-4" />
+              Could not reach API
+            </div>
+          </div>
+        )}
+
+        <ComposableMap
+          projection="geoMercator"
+          projectionConfig={{ scale: 130, center: [0, 20] }}
+          style={{ width: "100%", height: "360px" }}
+        >
+          <ZoomableGroup>
+            <Geographies geography={GEO_URL}>
+              {({ geographies }: { geographies: any[] }) =>
+                geographies.map((geo: any) => {
+                  const name: string = geo.properties.name ?? "";
+                  const count = countryMap[name] ?? 0;
+                  const fill = getColor(count, maxCount);
+                  return (
+                    <Geography
+                      key={geo.rsmKey}
+                      geography={geo}
+                      fill={fill}
+                      stroke="#0f172a"
+                      strokeWidth={0.5}
+                      style={{
+                        default: { outline: "none", transition: "fill 0.2s" },
+                        hover: { outline: "none", fill: count > 0 ? "#f87171" : "#334155", cursor: count > 0 ? "pointer" : "default" },
+                        pressed: { outline: "none" },
+                      }}
+                      onMouseEnter={(e: React.MouseEvent) => {
+                        if (count > 0) {
+                          setTooltip({ name, count, x: e.clientX, y: e.clientY });
+                        }
+                      }}
+                      onMouseMove={(e: React.MouseEvent) => {
+                        if (tooltip) {
+                          setTooltip((t) => t ? { ...t, x: e.clientX, y: e.clientY } : null);
+                        }
+                      }}
+                      onMouseLeave={() => setTooltip(null)}
+                    />
+                  );
+                })
+              }
+            </Geographies>
+          </ZoomableGroup>
+        </ComposableMap>
+
+        {/* Tooltip */}
+        {tooltip && (
+          <div
+            className="fixed z-50 pointer-events-none px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg shadow-xl text-xs"
+            style={{ left: tooltip.x + 12, top: tooltip.y - 40 }}
+          >
+            <p className="font-semibold text-slate-100">{tooltip.name}</p>
+            <p className="text-red-400">{tooltip.count} attack{tooltip.count !== 1 ? "s" : ""}</p>
+          </div>
+        )}
+
+        {/* Legend */}
+        <div className="absolute bottom-3 left-4 flex items-center gap-2">
+          <span className="text-xs text-slate-500">Low</span>
+          <div className="flex">
+            {["#7f1d1d", "#991b1b", "#b91c1c", "#dc2626", "#ef4444"].map((c) => (
+              <div key={c} style={{ background: c, width: 20, height: 10 }} />
+            ))}
+          </div>
+          <span className="text-xs text-slate-500">High</span>
+        </div>
+      </div>
+
+      {/* Top Attackers Table */}
+      <div className="px-6 py-4 border-t border-slate-800">
+        <p className="text-xs text-slate-400 font-medium mb-3 uppercase tracking-wider">
+          Top Attack Origins
+        </p>
+        {data.length === 0 && !loading ? (
+          <p className="text-xs text-slate-600 italic">
+            No geo data yet — attacks will appear as sessions come in.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {topAttackers.map((entry, i) => {
+              const pct = Math.round((entry.count / maxCount) * 100);
+              return (
+                <div key={entry.country} className="flex items-center gap-3">
+                  <span className="text-xs text-slate-500 w-4">{i + 1}</span>
+                  <span className="text-xs text-slate-200 w-32 truncate">
+                    {entry.country}
+                  </span>
+                  <div className="flex-1 bg-slate-800 rounded-full h-1.5">
+                    <div
+                      className="h-1.5 rounded-full bg-red-500 transition-all duration-500"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <span className="text-xs text-red-400 w-8 text-right font-mono">
+                    {entry.count}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

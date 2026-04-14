@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from 'react';
+import dynamic from 'next/dynamic';
 import { Sidebar } from '@/components/Sidebar';
 import { Header } from '@/components/Header';
 import { LiveSessions } from '@/components/LiveSessions';
@@ -8,6 +9,15 @@ import { SessionPlayback } from '@/components/SessionPlayback';
 import { IOCSummary } from '@/components/IOCSummary';
 import { MitreAttackMap } from '@/components/MitreAttackMap';
 import { MetricsStats } from '@/components/MetricsStats';
+
+const AttackHeatmap = dynamic(
+  () => import('@/components/AttackHeatmap').then(m => m.AttackHeatmap),
+  { ssr: false, loading: () => (
+    <div className="bg-slate-900 rounded-xl border border-slate-800 p-8 flex items-center justify-center text-slate-500 text-sm">
+      Loading map…
+    </div>
+  )}
+);
 
 export default function App() {
   const [activeView, setActiveView] = useState('dashboard');
@@ -22,6 +32,7 @@ export default function App() {
           {activeView === 'dashboard' && (
             <div className="space-y-6">
               <MetricsStats />
+              <AttackHeatmap />
               <LiveSessions selectedSession={selectedSession} setSelectedSession={setSelectedSession} />
               <SessionPlayback sessionId={selectedSession} />
               <IOCSummary />
@@ -35,6 +46,7 @@ export default function App() {
             </div>
           )}
           {activeView === 'ioc-summary' && <IOCSummary />}
+          {activeView === 'attack-map' && <AttackHeatmap />}
           {activeView === 'mitre-attack' && <MitreAttackMap />}
           {activeView === 'metrics' && <MetricsStats />}
           {activeView === 'reports' && (

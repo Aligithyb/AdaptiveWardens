@@ -167,6 +167,22 @@ def get_analytics():
             "top_tactics": [], "mitre_techniques": {}, "protocols": []
         }
 
+@app.get("/api/geo-heatmap")
+def get_geo_heatmap():
+    """Get attack counts grouped by country for the heatmap."""
+    try:
+        with get_db_connection() as conn:
+            rows = conn.execute("""
+                SELECT country, COUNT(*) as count
+                FROM sessions
+                WHERE country IS NOT NULL AND country != ''
+                GROUP BY country
+                ORDER BY count DESC
+            """).fetchall()
+            return {"heatmap": [dict(r) for r in rows]}
+    except sqlite3.OperationalError:
+        return {"heatmap": []}
+
 @app.get("/health")
 def health():
     return {"status": "healthy"}

