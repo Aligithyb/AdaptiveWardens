@@ -2,10 +2,12 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { geoMercator, geoPath } from "d3-geo";
+import { select } from "d3-selection";
+import { zoom, ZoomBehavior } from "d3-zoom";
 import { feature } from "topojson-client";
 import type { Topology } from "topojson-specification";
 import type { FeatureCollection, Geometry } from "geojson";
-import { Globe2, RefreshCw, AlertTriangle } from "lucide-react";
+import { Globe2, RefreshCw, AlertTriangle, Plus, Minus } from "lucide-react";
 
 const isServer = typeof window === "undefined";
 const API_URL = isServer
@@ -61,6 +63,7 @@ export function AttackHeatmap() {
 
   const svgRef = useRef<SVGSVGElement>(null);
   const geoDataRef = useRef<FeatureCollection<Geometry> | null>(null);
+  const zoomBehaviorRef = useRef<ZoomBehavior<SVGSVGElement, unknown> | null>(null);
 
   // ── Fetch API data ──────────────────────────────────────────────────
   const fetchData = useCallback(async () => {
@@ -135,15 +138,30 @@ export function AttackHeatmap() {
 
     const pathGen = geoPath().projection(projection);
 
+    const svgEl = select(svg);
     // Clear previous paths
-    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    svgEl.selectAll("*").remove();
+
+    // Setup zoom behavior
+    const zoomBehavior = zoom<SVGSVGElement, unknown>()
+      .scaleExtent([1, 8])
+      .translateExtent([[0, 0], [width, height]]);
+
+    zoomBehaviorRef.current = zoomBehavior;
 
     // Draw background
-    const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-    bg.setAttribute("width", String(width));
-    bg.setAttribute("height", String(height));
-    bg.setAttribute("fill", "#020617");
-    svg.appendChild(bg);
+    svgEl.append("rect")
+      .attr("width", width)
+      .attr("height", height)
+      .attr("fill", "#020617");
+
+    const g = svgEl.append("g");
+
+    zoomBehavior.on("zoom", (event) => {
+      g.attr("transform", event.transform);
+    });
+
+    svgEl.call(zoomBehavior);
 
     // Draw each country
     for (const feat of countries.features) {
@@ -153,41 +171,48 @@ export function AttackHeatmap() {
       const d = pathGen(feat);
       if (!d) continue;
 
-      const path = document.createElementNS(
-        "http://www.w3.org/2000/svg",
-        "path"
-      );
-      path.setAttribute("d", d);
-      path.setAttribute("fill", fill);
-      path.setAttribute("stroke", "#0f172a");
-      path.setAttribute("stroke-width", "0.5");
-      path.style.transition = "fill 0.2s";
-      path.style.cursor = count > 0 ? "pointer" : "default";
+      const path = g.append("path")
+        .attr("d", d)
+        .attr("fill", fill)
+        .attr("stroke", "#0f172a")
+        .attr("stroke-width", "0.5")
+        .style("transition", "fill 0.2s")
+        .style("cursor", count > 0 ? "pointer" : "default");
 
       if (count > 0) {
-        path.addEventListener("mouseenter", (e) => {
-          path.setAttribute("fill", "#f87171");
+        path.on("mouseenter", (e) => {
+          path.attr("fill", "#f87171");
           setTooltip({ name, count, x: e.clientX, y: e.clientY });
         });
-        path.addEventListener("mousemove", (e) => {
+        path.on("mousemove", (e) => {
           setTooltip((t) => (t ? { ...t, x: e.clientX, y: e.clientY } : null));
         });
-        path.addEventListener("mouseleave", () => {
-          path.setAttribute("fill", fill);
+        path.on("mouseleave", () => {
+          path.attr("fill", fill);
           setTooltip(null);
         });
       } else {
-        path.addEventListener("mouseenter", () => {
-          path.setAttribute("fill", "#334155");
+        path.on("mouseenter", () => {
+          path.attr("fill", "#334155");
         });
-        path.addEventListener("mouseleave", () => {
-          path.setAttribute("fill", fill);
+        path.on("mouseleave", () => {
+          path.attr("fill", fill);
         });
       }
-
-      svg.appendChild(path);
     }
   }
+
+  const handleZoomIn = () => {
+    if (svgRef.current && zoomBehaviorRef.current) {
+      select(svgRef.current).call(zoomBehaviorRef.current.scaleBy, 1.3);
+    }
+  };
+
+  const handleZoomOut = () => {
+    if (svgRef.current && zoomBehaviorRef.current) {
+      select(svgRef.current).call(zoomBehaviorRef.current.scaleBy, 1 / 1.3);
+    }
+  };
 
   const countryMap: Record<string, number> = {};
   let maxCount = 1;
@@ -256,7 +281,7 @@ export function AttackHeatmap() {
         )}
 
         {/* Legend */}
-        <div className="absolute bottom-3 left-4 flex items-center gap-2">
+        <div className="absolute bottom-3 left-4 flex items-center gap-2 pointer-events-none">
           <span className="text-xs text-slate-500">Low</span>
           <div className="flex">
             {["#7f1d1d", "#991b1b", "#b91c1c", "#dc2626", "#ef4444"].map(
@@ -269,6 +294,24 @@ export function AttackHeatmap() {
             )}
           </div>
           <span className="text-xs text-slate-500">High</span>
+        </div>
+
+        {/* Zoom Controls */}
+        <div className="absolute bottom-3 right-4 flex flex-col gap-1 z-10">
+          <button
+            onClick={handleZoomIn}
+            className="p-1.5 rounded bg-slate-800/80 border border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white transition-colors"
+            title="Zoom In"
+          >
+            <Plus className="w-4 h-4" />
+          </button>
+          <button
+            onClick={handleZoomOut}
+            className="p-1.5 rounded bg-slate-800/80 border border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white transition-colors"
+            title="Zoom Out"
+          >
+            <Minus className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
