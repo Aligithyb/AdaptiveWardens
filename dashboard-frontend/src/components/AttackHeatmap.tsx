@@ -6,10 +6,13 @@ import {
   Geographies,
   Geography,
   ZoomableGroup,
-} from "react-simple-maps";
+} from "@vnedyalk0v/react19-simple-maps";
 import { Globe2, RefreshCw, AlertTriangle } from "lucide-react";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8003";
+const isServer = typeof window === 'undefined';
+const API_URL = isServer 
+    ? (process.env.INTERNAL_API_URL || "http://dashboard-backend:8003")
+    : (process.env.NEXT_PUBLIC_API_URL || "");
 const GEO_URL =
   "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
 
@@ -132,7 +135,7 @@ export function AttackHeatmap() {
 
         <ComposableMap
           projection="geoMercator"
-          projectionConfig={{ scale: 130, center: [0, 20] }}
+          projectionConfig={{ scale: 130, center: [0, 20] as any }}
           style={{ width: "100%", height: "360px" }}
         >
           <ZoomableGroup>
