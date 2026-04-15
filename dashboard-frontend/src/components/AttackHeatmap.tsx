@@ -1,15 +1,19 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import {
-  ComposableMap,
-  Geographies,
-  Geography,
-  ZoomableGroup,
-} from "react-simple-maps";
-import { Globe2, RefreshCw, AlertTriangle } from "lucide-react";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { geoMercator, geoPath } from "d3-geo";
+import { select } from "d3-selection";
+import { zoom, ZoomBehavior } from "d3-zoom";
+import { feature } from "topojson-client";
+import type { Topology } from "topojson-specification";
+import type { FeatureCollection, Geometry } from "geojson";
+import { Globe2, RefreshCw, AlertTriangle, Plus, Minus } from "lucide-react";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8003";
+const isServer = typeof window === "undefined";
+const API_URL = isServer
+  ? process.env.INTERNAL_API_URL || "http://dashboard-backend:8003"
+  : process.env.NEXT_PUBLIC_API_URL || "";
+
 const GEO_URL =
   "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
 
@@ -18,16 +22,16 @@ interface HeatmapEntry {
   count: number;
 }
 
-// Maps country names from ip-api.com to the names used in TopoJSON
+// Maps country names from ip-api.com to names used in TopoJSON
 const COUNTRY_NAME_MAP: Record<string, string> = {
   "United States": "United States of America",
-  "Russia": "Russia",
+  Russia: "Russia",
   "South Korea": "South Korea",
   "North Korea": "North Korea",
   "Czech Republic": "Czechia",
-  "Iran": "Iran",
-  "Syria": "Syria",
-  "Vietnam": "Vietnam",
+  Iran: "Iran",
+  Syria: "Syria",
+  Vietnam: "Vietnam",
   "United Kingdom": "United Kingdom",
 };
 
@@ -36,22 +40,32 @@ function normalize(name: string): string {
 }
 
 function getColor(count: number, max: number): string {
-  if (count === 0) return "#1e293b"; // slate-800 — no attacks
+  if (count === 0) return "#1e293b";
   const ratio = count / max;
-  if (ratio < 0.2) return "#7f1d1d";   // very dark red
+  if (ratio < 0.2) return "#7f1d1d";
   if (ratio < 0.4) return "#991b1b";
   if (ratio < 0.6) return "#b91c1c";
   if (ratio < 0.8) return "#dc2626";
-  return "#ef4444";                     // bright red — highest
+  return "#ef4444";
 }
 
 export function AttackHeatmap() {
   const [data, setData] = useState<HeatmapEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  const [tooltip, setTooltip] = useState<{ name: string; count: number; x: number; y: number } | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [tooltip, setTooltip] = useState<{
+    name: string;
+    count: number;
+    x: number;
+    y: number;
+  } | null>(null);
 
+  const svgRef = useRef<SVGSVGElement>(null);
+  const geoDataRef = useRef<FeatureCollection<Geometry> | null>(null);
+  const zoomBehaviorRef = useRef<ZoomBehavior<SVGSVGElement, unknown> | null>(null);
+
+  // ── Fetch API data ──────────────────────────────────────────────────
   const fetchData = useCallback(async () => {
     try {
       const res = await fetch(`${API_URL}/api/geo-heatmap`);
@@ -73,6 +87,133 @@ export function AttackHeatmap() {
     return () => clearInterval(interval);
   }, [fetchData]);
 
+  // ── Fetch world geography once ─────────────────────────────────────
+  useEffect(() => {
+    fetch(GEO_URL)
+      .then((r) => r.json())
+      .then((topo: Topology) => {
+        const countries = feature(
+          topo,
+          (topo as any).objects.countries
+        ) as unknown as FeatureCollection<Geometry>;
+        geoDataRef.current = countries;
+        renderMap(countries, data);
+      })
+      .catch(() => {/* geo load error — silent */});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Re-render map whenever data changes ────────────────────────────
+  useEffect(() => {
+    if (geoDataRef.current) {
+      renderMap(geoDataRef.current, data);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+
+  // ── D3 render function ─────────────────────────────────────────────
+  function renderMap(
+    countries: FeatureCollection<Geometry>,
+    heatmapData: HeatmapEntry[]
+  ) {
+    const svg = svgRef.current;
+    if (!svg) return;
+
+    const width = svg.clientWidth || 800;
+    const height = svg.clientHeight || 360;
+
+    // Build lookup
+    const countryMap: Record<string, number> = {};
+    let maxCount = 1;
+    for (const entry of heatmapData) {
+      const key = normalize(entry.country);
+      countryMap[key] = entry.count;
+      if (entry.count > maxCount) maxCount = entry.count;
+    }
+
+    const projection = geoMercator()
+      .scale((width / 640) * 100)
+      .center([0, 20])
+      .translate([width / 2, height / 2]);
+
+    const pathGen = geoPath().projection(projection);
+
+    const svgEl = select(svg);
+    // Clear previous paths
+    svgEl.selectAll("*").remove();
+
+    // Setup zoom behavior
+    const zoomBehavior = zoom<SVGSVGElement, unknown>()
+      .scaleExtent([1, 8])
+      .translateExtent([[0, 0], [width, height]]);
+
+    zoomBehaviorRef.current = zoomBehavior;
+
+    // Draw background
+    svgEl.append("rect")
+      .attr("width", width)
+      .attr("height", height)
+      .attr("fill", "#020617");
+
+    const g = svgEl.append("g");
+
+    zoomBehavior.on("zoom", (event) => {
+      g.attr("transform", event.transform);
+    });
+
+    svgEl.call(zoomBehavior);
+
+    // Draw each country
+    for (const feat of countries.features) {
+      const name: string = (feat.properties as any)?.name ?? "";
+      const count = countryMap[name] ?? 0;
+      const fill = getColor(count, maxCount);
+      const d = pathGen(feat);
+      if (!d) continue;
+
+      const path = g.append("path")
+        .attr("d", d)
+        .attr("fill", fill)
+        .attr("stroke", "#0f172a")
+        .attr("stroke-width", "0.5")
+        .style("transition", "fill 0.2s")
+        .style("cursor", count > 0 ? "pointer" : "default");
+
+      if (count > 0) {
+        path.on("mouseenter", (e) => {
+          path.attr("fill", "#f87171");
+          setTooltip({ name, count, x: e.clientX, y: e.clientY });
+        });
+        path.on("mousemove", (e) => {
+          setTooltip((t) => (t ? { ...t, x: e.clientX, y: e.clientY } : null));
+        });
+        path.on("mouseleave", () => {
+          path.attr("fill", fill);
+          setTooltip(null);
+        });
+      } else {
+        path.on("mouseenter", () => {
+          path.attr("fill", "#334155");
+        });
+        path.on("mouseleave", () => {
+          path.attr("fill", fill);
+        });
+      }
+    }
+  }
+
+  const handleZoomIn = () => {
+    if (svgRef.current && zoomBehaviorRef.current) {
+      select(svgRef.current).call(zoomBehaviorRef.current.scaleBy, 1.3);
+    }
+  };
+
+  const handleZoomOut = () => {
+    if (svgRef.current && zoomBehaviorRef.current) {
+      select(svgRef.current).call(zoomBehaviorRef.current.scaleBy, 1 / 1.3);
+    }
+  };
+
   const countryMap: Record<string, number> = {};
   let maxCount = 1;
   for (const entry of data) {
@@ -80,7 +221,6 @@ export function AttackHeatmap() {
     countryMap[key] = entry.count;
     if (entry.count > maxCount) maxCount = entry.count;
   }
-
   const topAttackers = [...data].sort((a, b) => b.count - a.count).slice(0, 5);
 
   return (
@@ -112,66 +252,20 @@ export function AttackHeatmap() {
       </div>
 
       {/* Map */}
-      <div className="relative bg-slate-950">
-        {loading && (
-          <div className="absolute inset-0 flex items-center justify-center z-10">
-            <div className="flex items-center gap-2 text-slate-400 text-sm">
-              <RefreshCw className="w-4 h-4 animate-spin" />
-              Loading map…
-            </div>
-          </div>
-        )}
+      <div className="relative bg-slate-950" style={{ height: "360px" }}>
         {error && !loading && (
           <div className="absolute inset-0 flex items-center justify-center z-10">
             <div className="flex items-center gap-2 text-red-400 text-sm">
               <AlertTriangle className="w-4 h-4" />
-              Could not reach API
+              Could not reach API — map data unavailable
             </div>
           </div>
         )}
 
-        <ComposableMap
-          projection="geoMercator"
-          projectionConfig={{ scale: 130, center: [0, 20] }}
-          style={{ width: "100%", height: "360px" }}
-        >
-          <ZoomableGroup>
-            <Geographies geography={GEO_URL}>
-              {({ geographies }: { geographies: any[] }) =>
-                geographies.map((geo: any) => {
-                  const name: string = geo.properties.name ?? "";
-                  const count = countryMap[name] ?? 0;
-                  const fill = getColor(count, maxCount);
-                  return (
-                    <Geography
-                      key={geo.rsmKey}
-                      geography={geo}
-                      fill={fill}
-                      stroke="#0f172a"
-                      strokeWidth={0.5}
-                      style={{
-                        default: { outline: "none", transition: "fill 0.2s" },
-                        hover: { outline: "none", fill: count > 0 ? "#f87171" : "#334155", cursor: count > 0 ? "pointer" : "default" },
-                        pressed: { outline: "none" },
-                      }}
-                      onMouseEnter={(e: React.MouseEvent) => {
-                        if (count > 0) {
-                          setTooltip({ name, count, x: e.clientX, y: e.clientY });
-                        }
-                      }}
-                      onMouseMove={(e: React.MouseEvent) => {
-                        if (tooltip) {
-                          setTooltip((t) => t ? { ...t, x: e.clientX, y: e.clientY } : null);
-                        }
-                      }}
-                      onMouseLeave={() => setTooltip(null)}
-                    />
-                  );
-                })
-              }
-            </Geographies>
-          </ZoomableGroup>
-        </ComposableMap>
+        <svg
+          ref={svgRef}
+          style={{ width: "100%", height: "360px", display: "block" }}
+        />
 
         {/* Tooltip */}
         {tooltip && (
@@ -180,19 +274,44 @@ export function AttackHeatmap() {
             style={{ left: tooltip.x + 12, top: tooltip.y - 40 }}
           >
             <p className="font-semibold text-slate-100">{tooltip.name}</p>
-            <p className="text-red-400">{tooltip.count} attack{tooltip.count !== 1 ? "s" : ""}</p>
+            <p className="text-red-400">
+              {tooltip.count} attack{tooltip.count !== 1 ? "s" : ""}
+            </p>
           </div>
         )}
 
         {/* Legend */}
-        <div className="absolute bottom-3 left-4 flex items-center gap-2">
+        <div className="absolute bottom-3 left-4 flex items-center gap-2 pointer-events-none">
           <span className="text-xs text-slate-500">Low</span>
           <div className="flex">
-            {["#7f1d1d", "#991b1b", "#b91c1c", "#dc2626", "#ef4444"].map((c) => (
-              <div key={c} style={{ background: c, width: 20, height: 10 }} />
-            ))}
+            {["#7f1d1d", "#991b1b", "#b91c1c", "#dc2626", "#ef4444"].map(
+              (c) => (
+                <div
+                  key={c}
+                  style={{ background: c, width: 20, height: 10 }}
+                />
+              )
+            )}
           </div>
           <span className="text-xs text-slate-500">High</span>
+        </div>
+
+        {/* Zoom Controls */}
+        <div className="absolute bottom-3 right-4 flex flex-col gap-1 z-10">
+          <button
+            onClick={handleZoomIn}
+            className="p-1.5 rounded bg-slate-800/80 border border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white transition-colors"
+            title="Zoom In"
+          >
+            <Plus className="w-4 h-4" />
+          </button>
+          <button
+            onClick={handleZoomOut}
+            className="p-1.5 rounded bg-slate-800/80 border border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white transition-colors"
+            title="Zoom Out"
+          >
+            <Minus className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
