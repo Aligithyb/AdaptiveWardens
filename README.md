@@ -155,11 +155,11 @@ AdaptiveWardens/
 
 ## ⚠️ Important Notes
 
-- **Sandboxed**: No real commands execute on your host machine.
-- **Internal Network**: The honeypot services are isolated in an internal Docker network without internet access (except for the AI engine to call Gemini).
-- **Academic Project**: Developed for the Fall 2025 cohort.
-- **SSH Access**: The honeypot accepts any username/password combination on port 2222.
-- **Consistency**: Gemini responses are cached for 5 minutes to ensure a believable attacker experience.
+- **Never commit your `.env` files** — they contain your API key
+- The honeypot is sandboxed — no real commands execute on your machine
+- The SSH server accepts any username and password by design
+- Gemini responses are cached for 5 minutes to ensure consistency
+- The `honeypot-internal` Docker network has no internet access by design — only the AI engine and dashboard are allowed outbound access
 
 --- 
 

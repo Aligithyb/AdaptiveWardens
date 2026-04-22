@@ -112,7 +112,7 @@ services:
       - /app/node_modules # Don't overwrite node_modules with host ones
     environment:
       - NODE_ENV=production
-      - NEXT_PUBLIC_API_URL=http://localhost:8003
+      - NEXT_PUBLIC_API_URL=http://72.146.184.90:8003
     depends_on:
       - dashboard-backend
       - sandbox-store
