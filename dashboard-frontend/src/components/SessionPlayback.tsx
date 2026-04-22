@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
 
 interface SessionPlaybackProps {
-  sessionId: string;
+  sessionId: string | null;
 }
 
 export function SessionPlayback({ sessionId }: SessionPlaybackProps) {
