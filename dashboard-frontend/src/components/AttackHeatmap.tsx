@@ -1,13 +1,13 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import { geoMercator, geoPath } from "d3-geo";
+import { geoNaturalEarth1, geoPath } from "d3-geo";
 import { select } from "d3-selection";
-import { zoom, ZoomBehavior } from "d3-zoom";
+import { zoom, ZoomBehavior, zoomIdentity } from "d3-zoom";
 import { feature } from "topojson-client";
 import type { Topology } from "topojson-specification";
 import type { FeatureCollection, Geometry } from "geojson";
-import { Globe2, RefreshCw, AlertTriangle, Plus, Minus } from "lucide-react";
+import { Globe2, RefreshCw, AlertTriangle, Plus, Minus, Home } from "lucide-react";
 
 const isServer = typeof window === "undefined";
 const API_URL = isServer
@@ -22,7 +22,6 @@ interface HeatmapEntry {
   count: number;
 }
 
-// Maps country names from ip-api.com to names used in TopoJSON
 const COUNTRY_NAME_MAP: Record<string, string> = {
   "United States": "United States of America",
   Russia: "Russia",
@@ -62,6 +61,7 @@ export function AttackHeatmap() {
   } | null>(null);
 
   const svgRef = useRef<SVGSVGElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const geoDataRef = useRef<FeatureCollection<Geometry> | null>(null);
   const zoomBehaviorRef = useRef<ZoomBehavior<SVGSVGElement, unknown> | null>(null);
 
@@ -111,6 +111,18 @@ export function AttackHeatmap() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
+  // ── ResizeObserver – re-render on container resize ─────────────────
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(() => {
+      if (geoDataRef.current) renderMap(geoDataRef.current, data);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+
   // ── D3 render function ─────────────────────────────────────────────
   function renderMap(
     countries: FeatureCollection<Geometry>,
@@ -119,8 +131,8 @@ export function AttackHeatmap() {
     const svg = svgRef.current;
     if (!svg) return;
 
-    const width = svg.clientWidth || 800;
-    const height = svg.clientHeight || 360;
+    const width = svg.clientWidth || 900;
+    const height = svg.clientHeight || 520;
 
     // Build lookup
     const countryMap: Record<string, number> = {};
@@ -131,35 +143,33 @@ export function AttackHeatmap() {
       if (entry.count > maxCount) maxCount = entry.count;
     }
 
-    const projection = geoMercator()
+    // Natural Earth projection – shows all countries including Antarctica
+    const projection = geoNaturalEarth1()
       .scale((width / 640) * 100)
-      .center([0, 20])
       .translate([width / 2, height / 2]);
 
     const pathGen = geoPath().projection(projection);
 
     const svgEl = select(svg);
-    // Clear previous paths
     svgEl.selectAll("*").remove();
 
-    // Setup zoom behavior
+    // Zoom behaviour with generous translate extent
     const zoomBehavior = zoom<SVGSVGElement, unknown>()
-      .scaleExtent([1, 8])
-      .translateExtent([[0, 0], [width, height]]);
+      .scaleExtent([1, 12])
+      .translateExtent([[-width * 0.5, -height * 0.5], [width * 1.5, height * 1.5]])
+      .on("zoom", (event) => {
+        g.attr("transform", event.transform);
+      });
 
     zoomBehaviorRef.current = zoomBehavior;
 
-    // Draw background
+    // Background
     svgEl.append("rect")
       .attr("width", width)
       .attr("height", height)
       .attr("fill", "#020617");
 
     const g = svgEl.append("g");
-
-    zoomBehavior.on("zoom", (event) => {
-      g.attr("transform", event.transform);
-    });
 
     svgEl.call(zoomBehavior);
 
@@ -204,29 +214,26 @@ export function AttackHeatmap() {
 
   const handleZoomIn = () => {
     if (svgRef.current && zoomBehaviorRef.current) {
-      select(svgRef.current).call(zoomBehaviorRef.current.scaleBy, 1.3);
+      select(svgRef.current).call(zoomBehaviorRef.current.scaleBy, 1.4);
     }
   };
 
   const handleZoomOut = () => {
     if (svgRef.current && zoomBehaviorRef.current) {
-      select(svgRef.current).call(zoomBehaviorRef.current.scaleBy, 1 / 1.3);
+      select(svgRef.current).call(zoomBehaviorRef.current.scaleBy, 1 / 1.4);
     }
   };
 
-  const countryMap: Record<string, number> = {};
-  let maxCount = 1;
-  for (const entry of data) {
-    const key = normalize(entry.country);
-    countryMap[key] = entry.count;
-    if (entry.count > maxCount) maxCount = entry.count;
-  }
-  const topAttackers = [...data].sort((a, b) => b.count - a.count).slice(0, 5);
+  const handleReset = () => {
+    if (svgRef.current && zoomBehaviorRef.current) {
+      select(svgRef.current).call(zoomBehaviorRef.current.transform, zoomIdentity);
+    }
+  };
 
   return (
-    <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
+    <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
+      <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 shrink-0">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 bg-red-500/10 rounded-lg flex items-center justify-center">
             <Globe2 className="w-5 h-5 text-red-400" />
@@ -238,21 +245,32 @@ export function AttackHeatmap() {
             <p className="text-xs text-slate-500">
               {lastUpdated
                 ? `Updated ${lastUpdated.toLocaleTimeString()}`
-                : "Loading…"}
+                : loading ? "Loading…" : "—"}
             </p>
           </div>
         </div>
-        <button
-          onClick={fetchData}
-          className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
-          title="Refresh"
-        >
-          <RefreshCw className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-2">
+          {!loading && data.length > 0 && (
+            <span className="text-xs text-slate-400 mr-2">
+              {data.length} countr{data.length !== 1 ? "ies" : "y"} with attacks
+            </span>
+          )}
+          <button
+            onClick={fetchData}
+            className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+            title="Refresh"
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* Map */}
-      <div className="relative bg-slate-950" style={{ height: "360px" }}>
+      <div
+        ref={containerRef}
+        className="relative bg-slate-950 flex-1"
+        style={{ minHeight: "520px" }}
+      >
         {error && !loading && (
           <div className="absolute inset-0 flex items-center justify-center z-10">
             <div className="flex items-center gap-2 text-red-400 text-sm">
@@ -264,7 +282,7 @@ export function AttackHeatmap() {
 
         <svg
           ref={svgRef}
-          style={{ width: "100%", height: "360px", display: "block" }}
+          style={{ width: "100%", height: "100%", display: "block", minHeight: "520px" }}
         />
 
         {/* Tooltip */}
@@ -281,14 +299,14 @@ export function AttackHeatmap() {
         )}
 
         {/* Legend */}
-        <div className="absolute bottom-3 left-4 flex items-center gap-2 pointer-events-none">
+        <div className="absolute bottom-4 left-4 flex items-center gap-2 pointer-events-none">
           <span className="text-xs text-slate-500">Low</span>
-          <div className="flex">
+          <div className="flex rounded overflow-hidden">
             {["#7f1d1d", "#991b1b", "#b91c1c", "#dc2626", "#ef4444"].map(
               (c) => (
                 <div
                   key={c}
-                  style={{ background: c, width: 20, height: 10 }}
+                  style={{ background: c, width: 22, height: 10 }}
                 />
               )
             )}
@@ -296,58 +314,35 @@ export function AttackHeatmap() {
           <span className="text-xs text-slate-500">High</span>
         </div>
 
-        {/* Zoom Controls */}
-        <div className="absolute bottom-3 right-4 flex flex-col gap-1 z-10">
+        {/* Zoom + Reset Controls */}
+        <div className="absolute bottom-4 right-4 flex flex-col gap-1 z-10">
           <button
             onClick={handleZoomIn}
-            className="p-1.5 rounded bg-slate-800/80 border border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white transition-colors"
+            className="p-1.5 rounded bg-slate-800/90 border border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white transition-colors"
             title="Zoom In"
           >
             <Plus className="w-4 h-4" />
           </button>
           <button
             onClick={handleZoomOut}
-            className="p-1.5 rounded bg-slate-800/80 border border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white transition-colors"
+            className="p-1.5 rounded bg-slate-800/90 border border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white transition-colors"
             title="Zoom Out"
           >
             <Minus className="w-4 h-4" />
           </button>
+          <button
+            onClick={handleReset}
+            className="p-1.5 rounded bg-slate-800/90 border border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white transition-colors"
+            title="Reset View"
+          >
+            <Home className="w-4 h-4" />
+          </button>
         </div>
-      </div>
 
-      {/* Top Attackers Table */}
-      <div className="px-6 py-4 border-t border-slate-800">
-        <p className="text-xs text-slate-400 font-medium mb-3 uppercase tracking-wider">
-          Top Attack Origins
-        </p>
-        {data.length === 0 && !loading ? (
-          <p className="text-xs text-slate-600 italic">
-            No geo data yet — attacks will appear as sessions come in.
-          </p>
-        ) : (
-          <div className="space-y-2">
-            {topAttackers.map((entry, i) => {
-              const pct = Math.round((entry.count / maxCount) * 100);
-              return (
-                <div key={entry.country} className="flex items-center gap-3">
-                  <span className="text-xs text-slate-500 w-4">{i + 1}</span>
-                  <span className="text-xs text-slate-200 w-32 truncate">
-                    {entry.country}
-                  </span>
-                  <div className="flex-1 bg-slate-800 rounded-full h-1.5">
-                    <div
-                      className="h-1.5 rounded-full bg-red-500 transition-all duration-500"
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
-                  <span className="text-xs text-red-400 w-8 text-right font-mono">
-                    {entry.count}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        )}
+        {/* Hint */}
+        <div className="absolute top-3 right-4 text-xs text-slate-600 pointer-events-none select-none">
+          Scroll to zoom · Drag to pan
+        </div>
       </div>
     </div>
   );
