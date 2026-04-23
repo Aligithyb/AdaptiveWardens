@@ -63,7 +63,7 @@ def geolocate_and_notify(ip: str, protocol: str, session_id: str):
     """Geolocate the IP, save country to DB, then fire the Slack alert."""
     country = "Unknown"
     try:
-        geo_resp = requests.get(f"http://ip-api.com/json/{ip}", timeout=5)
+        geo_resp = requests.get(f"https://ip-api.com/json/{ip}", timeout=5)
         if geo_resp.status_code == 200:
             data = geo_resp.json()
             if data.get("status") == "success":
