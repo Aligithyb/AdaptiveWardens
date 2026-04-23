@@ -6,6 +6,15 @@ import uuid
 import os
 import httpx
 from datetime import datetime
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger("ssh-honeypot")
+
 
 LISTEN_HOST = "0.0.0.0"
 LISTEN_PORT = 2222
@@ -152,13 +161,13 @@ class HoneypotSession(asyncssh.SSHServerSession):
                 "protocol": "ssh", "username": self.username, "password": "***"
             })
             if r.status_code == 200:
-                print(f"✅ Session {self.session_id} created")
+                logger.info(f"✅ Session {self.session_id} created")
                 self.session_ready = True
                 state_r = await self.http_client.get(f"{SANDBOX_URL}/sessions/{self.session_id}/state")
                 if state_r.status_code == 200:
                     self.context["environment"] = state_r.json().get("environment", {})
         except Exception as e:
-            print(f"⚠️ DB init failed: {e}")
+            logger.error(f"⚠️ DB init failed: {e}")
     
     async def _process_command_string(self, full_data):
         """Split by newline and process each command"""
@@ -237,7 +246,7 @@ class HoneypotSession(asyncssh.SSHServerSession):
             if r.status_code == 200:
                 data = r.json()
                 cached = "🔄" if data.get("cached") else "🤖"
-                print(f"{cached} AI response for: {cmd}")
+                logger.info(f"[{self.session_id}] {cached} AI response for: {cmd}")
                 
                 # Report extracted IOCs to Sandbox Store
                 iocs = data.get("iocs", [])
@@ -251,7 +260,7 @@ class HoneypotSession(asyncssh.SSHServerSession):
                     
                 return data.get("response", None)
         except Exception as e:
-            print(f"⚠️ AI error: {e}")
+            logger.error(f"⚠️ AI error: {e}")
         
         return None
     
@@ -409,7 +418,7 @@ class HoneypotSession(asyncssh.SSHServerSession):
                     "context": "AI extracted from command/response"
                 })
         except Exception as e:
-            print(f"⚠️ Failed to report IOC: {e}")
+            logger.error(f"⚠️ Failed to report IOC: {e}")
             
     async def _record_mitre_technique(self, technique: dict):
         try:
@@ -422,12 +431,12 @@ class HoneypotSession(asyncssh.SSHServerSession):
                     "evidence": technique.get("evidence", "")
                 })
         except Exception as e:
-            print(f"⚠️ Failed to report MITRE technique: {e}")
+            logger.error(f"⚠️ Failed to report MITRE technique: {e}")
     
     async def _close(self):
         try:
             await self.http_client.delete(f"{SANDBOX_URL}/sessions/{self.session_id}")
-            print(f"🔒 Session {self.session_id} closed")
+            logger.info(f"🔒 Session {self.session_id} closed")
         except: pass
         await self.http_client.aclose()
 
@@ -437,13 +446,13 @@ class HoneypotServer(asyncssh.SSHServer):
     
     def connection_made(self, conn):
         self._conn = conn
-        print(f"🔌 Connection from {conn.get_extra_info('peername')[0]}")
+        logger.info(f"🔌 Connection from {conn.get_extra_info(\'peername\')[0]}")
     
     def connection_lost(self, exc):
-        print("🔌 Connection closed")
+        logger.info("🔌 Connection closed")
     
     def begin_auth(self, username):
-        print(f"🔐 Auth: {username}")
+        logger.info(f"🔐 Auth: {username}")
         return True
     
     def password_auth_supported(self):
@@ -451,12 +460,12 @@ class HoneypotServer(asyncssh.SSHServer):
     
     def validate_password(self, username, password):
       HONEYPOT_PASSWORD = "root123"  # Change this to whatever you want
-      print(f"🔑 Login attempt: {username}/{password}")
+      logger.warning(f"🔑 Login attempt: {username}/{password}")
       if password == HONEYPOT_PASSWORD:
-        print(f"✅ Accepted: {username}")
+        logger.info(f"✅ Accepted: {username}")
         return True
       else:
-        print(f"❌ Rejected: {username}/{password}")
+        logger.warning(f"❌ Rejected: {username}/{password}")
         return False
     
     def session_requested(self):
@@ -466,15 +475,15 @@ class HoneypotServer(asyncssh.SSHServer):
 
 async def start_server():
     ai_status = "🤖 AI-Enhanced" if AI_ENGINE_URL else "📝 Static"
-    print(f"🍯 SSH Honeypot ({ai_status})")
-    print(f"📍 Port {LISTEN_PORT}\n")
+    logger.info(f"🍯 SSH Honeypot ({ai_status})")
+    logger.info(f"📍 Port {LISTEN_PORT}")
     
     try:
         async with httpx.AsyncClient() as client:
             r = await client.get(f"{SANDBOX_URL}/health")
-            print("✅ Sandbox reachable" if r.status_code == 200 else "⚠️ Sandbox issue")
+            logger.info("✅ Sandbox reachable" if r.status_code == 200 else "⚠️ Sandbox issue")
     except:
-        print("⚠️ Sandbox unreachable")
+        logger.error("⚠️ Sandbox unreachable")
     
     print("🚀 Starting...\n")
     
@@ -486,6 +495,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(start_server())
     except KeyboardInterrupt:
-        print("\n👋 Bye")
+        logger.info("👋 Bye")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        logger.error(f"❌ Error: {e}")

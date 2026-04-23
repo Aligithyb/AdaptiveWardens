@@ -16,6 +16,7 @@ services:
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
       - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
       - SLACK_CHANNEL=${SLACK_CHANNEL}
+    restart: unless-stopped
     healthcheck:
       test: [ "CMD", "python", "-c", "import requests; requests.get('http://localhost:8001/health')" ]
       interval: 10s
@@ -37,6 +38,13 @@ services:
       - PYTHONUNBUFFERED=1
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - SANDBOX_URL=http://sandbox-store:8001
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     depends_on:
       sandbox-store:
         condition: service_healthy
@@ -55,6 +63,13 @@ services:
       - SANDBOX_URL=http://sandbox-store:8001
       - AI_ENGINE_URL=http://ai-engine:8002
       - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'x' > /dev/tcp/localhost/2222 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     depends_on:
       sandbox-store:
         condition: service_healthy
@@ -75,6 +90,13 @@ services:
       - SANDBOX_URL=http://sandbox-store:8001
       - AI_ENGINE_URL=http://ai-engine:8002
       - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'x' > /dev/tcp/localhost/8080 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     depends_on:
       sandbox-store:
         condition: service_healthy
@@ -95,6 +117,13 @@ services:
     environment:
       - DB_PATH=/data/honeypot.db
       - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8003/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     depends_on:
       sandbox-store:
         condition: service_healthy
@@ -112,7 +141,8 @@ services:
       - /app/node_modules # Don't overwrite node_modules with host ones
     environment:
       - NODE_ENV=production
-      - NEXT_PUBLIC_API_URL=http://72.146.184.90:8003
+      - NEXT_PUBLIC_API_URL=http://localhost:8003
+    restart: unless-stopped
     depends_on:
       - dashboard-backend
       - sandbox-store
