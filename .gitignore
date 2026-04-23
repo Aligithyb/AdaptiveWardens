@@ -16,5 +16,5 @@ dashboard-frontend/.next/
 ai-engine/.env
 
 # Secrets
-ssh_host_key
-ssh_host_key.pub
+ssh-frontend/src/ssh_host_key
+ssh-frontend/src/ssh_host_key.pub
