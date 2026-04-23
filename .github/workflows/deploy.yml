@@ -45,8 +45,11 @@ jobs:
           target: 'http://localhost:3000'
           fail_action: false
           cmd_options: '-I'
-          issue_title: ''
-          token: ''
+          # This connects the tool to your repo's internal permissions
+          token: ${{ secrets.GITHUB_TOKEN }} 
+        env:
+          # This ensures the underlying engine can talk to GitHub
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   deploy:
     name: Deploy to Azure
