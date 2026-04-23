@@ -49,10 +49,10 @@ jobs:
           target: 'http://localhost:3000'
           fail_action: false
           cmd_options: '-I'
-          # This connects the tool to your repo's internal permissions
+          # FIX: Use a unique name to avoid the "Artifact name is not valid" error
+          artifact_name: 'zap-report-${{ github.run_id }}'
           token: ${{ secrets.GITHUB_TOKEN }} 
         env:
-          # This ensures the underlying engine can talk to GitHub
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   deploy:
