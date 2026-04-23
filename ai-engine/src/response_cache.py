@@ -13,7 +13,7 @@ class ResponseCache:
             'user': context.get('username', 'root'),
         }
         key_data = f"{command}:{json.dumps(relevant_context, sort_keys=True)}"
-        return hashlib.md5(key_data.encode()).hexdigest()
+        return hashlib.sha256(key_data.encode()).hexdigest()
 
     def get(self, command: str, context: dict) -> Optional[str]:
         key = self.get_cache_key(command, context)
