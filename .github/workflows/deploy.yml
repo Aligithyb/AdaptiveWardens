@@ -30,6 +30,11 @@ jobs:
         run: docker compose up -d --build
       - name: Wait for services
         run: sleep 20
+      - name: Debug sandbox logs
+        if: always()
+        run: |
+          docker logs honeypot-sandbox
+          docker inspect honeypot-sandbox --format='{{json .State.Health}}'
       - name: Fix ZAP permissions
         run: |
           touch zap.yaml
