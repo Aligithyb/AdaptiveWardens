@@ -2,8 +2,9 @@ name: Deploy to Azure VM
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
   sast:
@@ -29,6 +30,10 @@ jobs:
         run: docker compose up -d --build
       - name: Wait for services
         run: sleep 20
+      - name: Fix ZAP permissions
+        run: |
+          touch zap.yaml
+          chmod a+rw zap.yaml
       - name: Run ZAP Baseline Scan
         uses: zaproxy/action-baseline@v0.12.0
         with:
