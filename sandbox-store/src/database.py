@@ -21,8 +21,11 @@ class SandboxDatabase:
     
     @contextmanager
     def get_connection(self):
-        """Context manager for database connections with automatic cleanup."""
-        conn = sqlite3.connect(self.db_path, timeout=30)
+        # check_same_thread=False is needed for async applications like FastAPI
+        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
+        # Enable Write-Ahead Logging for better concurrency
+        conn.execute('PRAGMA journal_mode=WAL;')
+        conn.execute('PRAGMA synchronous=NORMAL;')
         conn.row_factory = sqlite3.Row  # Access columns by name
         try:
             yield conn
@@ -61,8 +64,8 @@ class SandboxDatabase:
     # ==================== SESSION MANAGEMENT ====================
     
     def create_session(self, session_id: str, source_ip: str, 
-                       protocol: str, username: str = None, 
-                       password: str = None) -> bool:
+                       protocol: str, username: Optional[str] = None, 
+                       password: Optional[str] = None) -> bool:
         """Create a new honeypot session."""
         try:
             with self.get_connection() as conn:
@@ -407,7 +410,7 @@ class SandboxDatabase:
             """, (session_id, log_source, log_level, message))
             conn.commit()
     
-    def get_logs(self, session_id: str, source: str = None, 
+    def get_logs(self, session_id: str, source: Optional[str] = None, 
                  limit: int = 100) -> List[Dict]:
         """Retrieve system logs."""
         with self.get_connection() as conn:
@@ -443,7 +446,7 @@ class SandboxDatabase:
             """, (session_id, ioc_type, value, confidence, context))
             conn.commit()
     
-    def get_iocs(self, session_id: str = None, ioc_type: str = None) -> List[Dict]:
+    def get_iocs(self, session_id: Optional[str] = None, ioc_type: Optional[str] = None) -> List[Dict]:
         """Retrieve IOCs with optional filtering."""
         with self.get_connection() as conn:
             query = "SELECT * FROM iocs WHERE 1=1"
@@ -476,7 +479,7 @@ class SandboxDatabase:
             """, (session_id, technique_id, technique_name, tactic, confidence, evidence))
             conn.commit()
     
-    def get_attack_techniques(self, session_id: str = None) -> List[Dict]:
+    def get_attack_techniques(self, session_id: Optional[str] = None) -> List[Dict]:
         """Retrieve detected attack techniques."""
         with self.get_connection() as conn:
             if session_id:

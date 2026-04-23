@@ -13,6 +13,12 @@ if ! command -v docker-compose &> /dev/null; then
   exit 1
 fi
 
+if [ ! -f .env ]; then
+  echo "Error: .env file not found."
+  echo "Please create one by running: cp .env.example .env"
+  exit 1
+fi
+
 echo ""
 echo "Building containers..."
 docker-compose build --no-cache

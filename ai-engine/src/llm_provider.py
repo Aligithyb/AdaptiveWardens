@@ -1,6 +1,7 @@
 import os
 import json
 import google.generativeai as genai
+from typing import Optional, List, Dict, Any
 
 class LLMProvider:
     def __init__(self, provider: str = "gemini"):
@@ -15,7 +16,7 @@ class LLMProvider:
             genai.configure(api_key=api_key)
             self.model = genai.GenerativeModel('gemini-2.5-flash-lite')
 
-    def generate_shell_response(self, command: str, context: dict, conversation_history: list = None) -> str:
+    def generate_shell_response(self, command: str, context: dict, conversation_history: Optional[List] = None) -> str:
         system_prompt = f"""You are simulating a compromised Ubuntu 22.04 corporate server shell.
 
 CRITICAL RULES:
@@ -120,13 +121,23 @@ Respond with ONLY the terminal output:"""
             else:
                 return f"bash: {base}: command not found"
 
-        try:
-            response = self.model.generate_content(
-                system_prompt,
-                generation_config={"max_output_tokens": 200, "temperature": 0.2}
-            )
-            return response.text.strip()
-        except Exception as e:
-            print(f"Gemini error: {e}")
-            base = command.split()[0] if command.split() else command
-            return f"bash: {base}: command not found"
+        retries = 3
+        last_exception = None
+        for attempt in range(retries):
+            try:
+                # Add request_options for timeout
+                response = self.model.generate_content(
+                    system_prompt,
+                    generation_config={"max_output_tokens": 200, "temperature": 0.2},
+                    request_options={"timeout": 15.0}
+                )
+                return response.text.strip()
+            except Exception as e:
+                import time
+                last_exception = e
+                print(f"Gemini error (attempt {attempt+1}/{retries}): {e}")
+                time.sleep(1) # simple backoff
+                
+        # If all retries fail
+        base = command.split()[0] if command.split() else command
+        return f"bash: {base}: command not found"

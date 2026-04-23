@@ -23,6 +23,7 @@ cp .env.example .env
 **Required Keys:**
 - **Gemini API Key**: Get it at [ai.studio.google.com](https://aistudio.google.com/app/apikey).
 - **Slack Configuration**: See the [Slack Setup](#-slack-alerts-setup) section below.
+*(See `.env.example` for additional customizable parameters like rate limits, timezone, and logs).*
 
 ### 3. Launch
 ```bash
@@ -43,6 +44,8 @@ graph TD
     D -->|Cache| D
     C -->|Real-time Data| F[SOC Dashboard]
 ```
+
+> 📚 **Detailed Architecture**: Please see our full architectural breakdown in [docs/architecture.md](docs/architecture.md) for a deeper look into our service isolation, state management, and scalability.
 
 | Service | Port | Description |
 |---|---|---|
@@ -134,6 +137,10 @@ docker-compose restart ai-engine
 # Rebuild after code changes
 docker-compose build --no-cache
 docker-compose up -d
+
+# Run Load Test against SSH Honeypot
+pip install asyncssh
+./scripts/load_test_ssh.py -c 10 -n 50
 ```
 
 ---
@@ -153,15 +160,29 @@ AdaptiveWardens/
 
 ---
 
-## ⚠️ Important Notes
+## ⚠️ Important Notes & Security Clarifications
 
 - **Never commit your `.env` files** — they contain your API key
-- The honeypot is sandboxed — no real commands execute on your machine
-- The SSH server accepts any username and password by design
+- **Intentional "Accept All" Design**: The SSH server accepts any username and password by design. This is to maximize attacker capture rates. **Do not run this on standard SSH ports (22) without robust routing.**
+- **Isolation/Sandboxing**: The honeypot operates entirely within an internal Docker network overlay (`honeypot-internal`). Attackers interact with a SQLite-backed virtual file system (`sandbox-store`), meaning **no real lateral movement or code execution** is possible against the Linux host machine.
 - Gemini responses are cached for 5 minutes to ensure consistency
-- The `honeypot-internal` Docker network has no internet access by design — only the AI engine and dashboard are allowed outbound access
+- Only the AI engine and dashboard are allowed outbound physical access
 
---- 
+---
+
+## 🛠️ Debugging Guide
+
+When dealing with failures or crashes, consult these debug steps:
+
+1. **AI Outputting Fallbacks ("command not found")**:
+   - Usually indicates a problem with the Gemini API (Rate limits or timeout). Check `docker-compose logs ai-engine`.
+   - Ensure your `.env` contains a valid `GEMINI_API_KEY`.
+2. **Missing Sandbox Persistence (Empty Filesystem)**:
+   - The SQLite WAL database might have locked due to extreme concurrency. Check `docker-compose logs sandbox-store`.
+   - Running `./scripts/simulate_failure.sh` explicitly validates service resurrections.
+3. **Containers Refusing to Connect/Timeout**:
+   - Double check the underlying docker bridge network: `docker network ls`.
+   - Verify healthchecks via `docker-compose ps`. All nodes should read `(healthy)`. 
 
 ## 📄 License
 MIT License. See [LICENSE](LICENSE) for details.
