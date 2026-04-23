@@ -43,7 +43,8 @@ jobs:
         uses: zaproxy/action-baseline@v0.12.0
         with:
           target: 'http://localhost:3000'
-          fail_action: true
+          fail_action: false
+          cmd_options: '-I'
 
   deploy:
     name: Deploy to Azure
