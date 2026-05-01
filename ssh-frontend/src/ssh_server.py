@@ -630,7 +630,8 @@ class HoneypotServer(asyncssh.SSHServer):
     
     def connection_made(self, conn):
         self._conn = conn
-        logger.info(f"🔌 Connection from {conn.get_extra_info(\'peername\')[0]}")
+        peer = conn.get_extra_info('peername')[0]
+        logger.info(f"🔌 Connection from {peer}")
     
     def connection_lost(self, exc):
         logger.info("🔌 Connection closed")
