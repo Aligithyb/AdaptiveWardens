@@ -16,6 +16,10 @@ services:
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
       - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
       - SLACK_CHANNEL=${SLACK_CHANNEL}
+      - CANARY_AWS_ACCESS_KEY=${CANARY_AWS_ACCESS_KEY}
+      - CANARY_AWS_SECRET_KEY=${CANARY_AWS_SECRET_KEY}
+      - CANARY_STRIPE_KEY=${CANARY_STRIPE_KEY}
+      - CANARY_DNS_HOSTNAME=${CANARY_DNS_HOSTNAME}
     healthcheck:
       test: [ "CMD", "python", "-c", "import requests; requests.get('http://localhost:8001/health')" ]
       interval: 10s
