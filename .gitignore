@@ -13,4 +13,5 @@ dashboard-frontend/.next/
 
 # Env
 .env
+.env.local
 ai-engine/.env
