@@ -15,7 +15,7 @@ class SandboxDatabase:
     Implements ACID transactions and state consistency.
     """
     
-    def __init__(self, db_path: str = "/data/honeypot.db"):
+    def __init__(self, db_path: str = "/data/app_state.db"):
         self.db_path = db_path
         self.init_database()
     
@@ -66,7 +66,7 @@ class SandboxDatabase:
     def create_session(self, session_id: str, source_ip: str, 
                        protocol: str, username: Optional[str] = None, 
                        password: Optional[str] = None) -> bool:
-        """Create a new honeypot session."""
+        """Create a new session record."""
         try:
             with self.get_connection() as conn:
                 conn.execute("""
@@ -764,8 +764,17 @@ class SandboxDatabase:
         """Check if file or directory exists."""
         with self.get_connection() as conn:
             result = conn.execute("""
-                SELECT 1 FROM filesystem 
+                SELECT 1 FROM filesystem
                 WHERE session_id = ? AND path = ?
+            """, (session_id, path)).fetchone()
+            return result is not None
+
+    def is_directory(self, session_id: str, path: str) -> bool:
+        """Check if path exists as a directory."""
+        with self.get_connection() as conn:
+            result = conn.execute("""
+                SELECT 1 FROM filesystem
+                WHERE session_id = ? AND path = ? AND file_type = 'directory'
             """, (session_id, path)).fetchone()
             return result is not None
     
