@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Sandbox State Store API", version="1.0.0")
 
 # Initialize database
-db_path = os.getenv("DB_PATH", "/data/honeypot.db")
+db_path = os.getenv("DB_PATH", "/data/app_state.db")
 os.makedirs(os.path.dirname(db_path), exist_ok=True)
 db = SandboxDatabase(db_path=db_path)
 
@@ -113,7 +113,7 @@ def geolocate_and_notify(ip: str, protocol: str, session_id: str):
 
 @app.post("/sessions/")
 async def create_session(session: SessionCreate, background_tasks: BackgroundTasks):
-    """Create a new honeypot session with initialized state."""
+    """Create a new session with initialized state."""
     success = db.create_session(
         session.session_id,
         session.source_ip,
@@ -146,6 +146,8 @@ async def read_file(session_id: str, path: str):
     """Read a file from the sandbox filesystem."""
     content = db.read_file(session_id, path)
     if content is None:
+        if db.is_directory(session_id, path):
+            raise HTTPException(status_code=422, detail="Is a directory")
         raise HTTPException(status_code=404, detail="File not found")
     return {"path": path, "content": content}
 

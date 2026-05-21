@@ -24,8 +24,8 @@ export function Sidebar({ activeView, setActiveView }: SidebarProps) {
             <Shield className="w-6 h-6" />
           </div>
           <div>
-            <h1 className="text-slate-100">AI Honeypot</h1>
-            <p className="text-xs text-slate-500">SOC Dashboard</p>
+            <h1 className="text-slate-100">AdaptiveWardens</h1>
+            <p className="text-xs text-slate-500">SOC Platform</p>
           </div>
         </div>
       </div>
@@ -62,7 +62,7 @@ export function Sidebar({ activeView, setActiveView }: SidebarProps) {
               Active
             </span>
           </div>
-          <p className="text-xs text-slate-500">All honeypots operational</p>
+          <p className="text-xs text-slate-500">All systems operational</p>
         </div>
       </div>
     </div>

@@ -1,5 +1,5 @@
 database:
-  path: /data/honeypot.db
+  path: /data/app_state.db
   timeout: 30
   
 api:
