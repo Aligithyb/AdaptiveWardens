@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HTTP Web Honeypot"""
+"""HTTP ingestion service."""
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 import httpx

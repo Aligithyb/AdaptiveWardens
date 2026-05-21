@@ -6,7 +6,7 @@ import sqlite3
 import os
 from typing import List, Dict, Any
 
-app = FastAPI(title="HoneyOps Dashboard API")
+app = FastAPI(title="SOC Dashboard API")
 
 # Allow CORS for dashboard UI
 app.add_middleware(
@@ -20,7 +20,7 @@ app.add_middleware(
 # Connect directly to the sandbox database volume
 # In a real microservices arch we might use httpx to talk to Sandbox API,
 # but direct DB read here is faster for large analytical dashboard queries.
-DB_PATH = os.getenv("DB_PATH", "/data/honeypot.db")
+DB_PATH = os.getenv("DB_PATH", "/data/app_state.db")
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH, timeout=10)
