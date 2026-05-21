@@ -3,6 +3,7 @@
 venv311/
 __pycache__/
 *.pyc
+*.pyo
 
 # Frontend
 dashboard-frontend/node_modules/
@@ -10,8 +11,28 @@ dashboard-frontend/.next/
 
 # General
 .DS_Store
+Thumbs.db
+logs.txt
+*.log
 
-# Env
+# Env — never commit real secrets
 .env
 .env.local
 ai-engine/.env
+
+# SSH keys — generated at build time, must not leak
+ssh_host_key
+ssh_host_key.pub
+*.pem
+*.key
+id_rsa
+id_rsa.pub
+
+# Databases — runtime state, not source
+*.db
+*.sqlite
+*.sqlite3
+sandbox-store/data/
+
+# Claude Code workspace (local only)
+.claude/

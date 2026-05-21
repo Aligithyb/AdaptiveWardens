@@ -3,12 +3,12 @@ version: '3.8'
 services:
   sandbox-store:
     build: ./sandbox-store
-    container_name: honeypot-sandbox
+    container_name: app-state-store
     volumes:
       - sandbox-data:/data
     networks:
-      - honeypot-internal
-      - honeypot-external
+      - prod-internal
+      - dmz
     ports:
       - "8001:8001"
     environment:
@@ -30,10 +30,10 @@ services:
 
   ai-engine:
     build: ./ai-engine
-    container_name: honeypot-ai
+    container_name: inference-svc
     networks:
-      - honeypot-internal
-      - honeypot-external
+      - prod-internal
+      - dmz
     ports:
       - "8002:8002"
     volumes:
@@ -55,12 +55,12 @@ services:
 
   ssh-frontend:
     build: ./ssh-frontend
-    container_name: honeypot-ssh
+    container_name: auth-gateway
     ports:
       - "2222:2222"
     networks:
-      - honeypot-internal
-      - honeypot-external
+      - prod-internal
+      - dmz
     volumes:
       - ./ssh-frontend/src/ssh_server.py:/app/ssh_server.py
     environment:
@@ -82,12 +82,12 @@ services:
 
   http-frontend:
     build: ./http-frontend
-    container_name: honeypot-http
+    container_name: web-gateway
     ports:
       - "8080:8080"
     networks:
-      - honeypot-internal
-      - honeypot-external
+      - prod-internal
+      - dmz
     volumes:
       - ./http-frontend/src:/app
     environment:
@@ -109,17 +109,17 @@ services:
 
   dashboard-backend:
     build: ./dashboard-backend
-    container_name: honeypot-dashboard-backend
+    container_name: dashboard-backend-svc
     ports:
       - "8003:8003"
     networks:
-      - honeypot-internal
-      - honeypot-external
+      - prod-internal
+      - dmz
     volumes:
       - sandbox-data:/data
       - ./dashboard-backend/src:/app
     environment:
-      - DB_PATH=/data/honeypot.db
+      - DB_PATH=/data/app_state.db
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
     healthcheck:
@@ -134,12 +134,12 @@ services:
 
   dashboard-frontend:
     build: ./dashboard-frontend
-    container_name: honeypot-dashboard
+    container_name: soc-dashboard
     ports:
       - "3000:3000"
     networks:
-      - honeypot-internal
-      - honeypot-external
+      - prod-internal
+      - dmz
     volumes:
       - ./dashboard-frontend:/app
       - /app/node_modules # Don't overwrite node_modules with host ones
@@ -151,10 +151,10 @@ services:
       - sandbox-store
 
 networks:
-  honeypot-internal:
+  prod-internal:
     driver: bridge
     internal: true
-  honeypot-external:
+  dmz:
     driver: bridge
 
 volumes:
