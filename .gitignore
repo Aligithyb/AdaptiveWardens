@@ -17,6 +17,7 @@ logs.txt
 
 # Env — never commit real secrets
 .env
+.env.local
 ai-engine/.env
 
 # SSH keys — generated at build time, must not leak
