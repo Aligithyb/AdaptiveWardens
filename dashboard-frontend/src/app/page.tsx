@@ -9,6 +9,7 @@ import { SessionPlayback } from '@/components/SessionPlayback';
 import { IOCSummary } from '@/components/IOCSummary';
 import { MitreAttackMap } from '@/components/MitreAttackMap';
 import { MetricsStats } from '@/components/MetricsStats';
+import { Reports } from '@/components/Reports';
 
 const AttackHeatmap = dynamic(
   () => import('@/components/AttackHeatmap').then(m => m.AttackHeatmap),
@@ -49,11 +50,7 @@ export default function App() {
           {activeView === 'attack-map' && <AttackHeatmap />}
           {activeView === 'mitre-attack' && <MitreAttackMap />}
           {activeView === 'metrics' && <MetricsStats />}
-          {activeView === 'reports' && (
-            <div className="bg-slate-900 rounded-lg border border-slate-800 p-6 text-slate-400">
-              Reports coming soon...
-            </div>
-          )}
+          {activeView === 'reports' && <Reports />}
         </main>
       </div>
     </div>
