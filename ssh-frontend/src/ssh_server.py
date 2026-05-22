@@ -28,6 +28,18 @@ HOSTNAME = "api-prod-01"
 SERVER_VERSION = 'OpenSSH_8.9p1 Ubuntu-3ubuntu0.4'
 
 BOOT_TIME = time.time() - random.uniform(15, 22) * 86400
+ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_API_KEY", "")
+
+_PROMPT_INJECTION_PATTERNS = [
+    "ignore previous", "ignore all previous", "disregard", "forget everything",
+    "you are now", "pretend to be", "act as if", "new instructions",
+    "system prompt", "jailbreak", "override instructions",
+    "you are an ai", "you are a language model", "as an ai",
+]
+
+def _is_prompt_injection(cmd: str) -> bool:
+    c = cmd.lower()
+    return any(p in c for p in _PROMPT_INJECTION_PATTERNS)
 
 SSH_BANNER = """\r
 Welcome to Ubuntu 22.04.3 LTS (GNU/Linux 5.15.0-91-generic x86_64)\r
@@ -96,12 +108,63 @@ def _meminfo_mb(ctx: dict) -> str:
             f"Mem:           {total:>5}       {used:>5}       {free:>5}         100       {buff:>5}       {avail:>5}\n"
             "Swap:           2047           0        2047")
 
+def _proc_cpuinfo(ctx: dict) -> str:
+    blocks = []
+    for i in range(4):
+        mhz = 2400 + random.randint(-50, 50)
+        blocks.append(
+            f"processor\t: {i}\nvendor_id\t: GenuineIntel\ncpu family\t: 6\n"
+            f"model\t\t: 85\nmodel name\t: Intel(R) Xeon(R) Silver 4214R CPU @ 2.40GHz\n"
+            f"stepping\t: 7\nmicrocode\t: 0x5003302\ncpu MHz\t\t: {mhz}.000\n"
+            f"cache size\t: 16384 KB\nphysical id\t: {i // 2}\nsiblings\t: 2\n"
+            f"core id\t\t: {i % 2}\ncpu cores\t: 2\napicid\t\t: {i}\n"
+            f"initial apicid\t: {i}\nfpu\t\t: yes\nfpu_exception\t: yes\n"
+            f"cpuid level\t: 22\nwp\t\t: yes\n"
+            f"flags\t\t: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov "
+            f"pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx rdtscp lm "
+            f"constant_tsc arch_perfmon rep_good nopl xtopology nonstop_tsc cpuid "
+            f"pni pclmulqdq ssse3 fma cx16 sse4_1 sse4_2 x2apic movbe popcnt aes "
+            f"xsave avx f16c rdrand hypervisor lahf_lm avx2 avx512f avx512dq avx512cd "
+            f"avx512bw avx512vl ibrs ibpb stibp md_clear\n"
+            f"bugs\t\t: spectre_v1 spectre_v2 spec_store_bypass mds swapgs\n"
+            f"bogomips\t: 4800.00\nclflush size\t: 64\ncache_alignment\t: 64\n"
+            f"address sizes\t: 46 bits physical, 48 bits virtual\npower management:\n"
+        )
+    return "\n".join(blocks)
+
+def _proc_meminfo_file(ctx: dict) -> str:
+    total = 16384000
+    used = 5234512 + int(800000 * math.sin(time.time() / 200.0)) + random.randint(-60000, 60000)
+    buff = 8026076 + random.randint(-120000, 120000)
+    free = max(0, total - used - buff)
+    avail = max(0, free + buff // 2)
+    swap = 2097148
+    cached = max(0, buff - 524288)
+    return (
+        f"MemTotal:       {total} kB\nMemFree:        {free} kB\nMemAvailable:   {avail} kB\n"
+        f"Buffers:          524288 kB\nCached:         {cached} kB\nSwapCached:            0 kB\n"
+        f"Active:         {used // 2} kB\nInactive:       {used // 3} kB\n"
+        f"Active(anon):   {used // 3} kB\nInactive(anon):        0 kB\n"
+        f"Active(file):   {used // 6} kB\nInactive(file): {used // 3} kB\n"
+        f"Unevictable:           0 kB\nMlocked:               0 kB\n"
+        f"SwapTotal:      {swap} kB\nSwapFree:       {swap} kB\n"
+        f"Dirty:               256 kB\nWriteback:             0 kB\n"
+        f"AnonPages:      {used // 3} kB\nMapped:           512000 kB\nShmem:            102344 kB\n"
+        f"KReclaimable:     524288 kB\nSlab:             786432 kB\n"
+        f"SReclaimable:     524288 kB\nSUnreclaim:       262144 kB\n"
+        f"KernelStack:       18432 kB\nPageTables:        32768 kB\n"
+        f"CommitLimit:    10289148 kB\nCommitted_AS:    6291456 kB\n"
+        f"VmallocTotal:   34359738367 kB\nVmallocUsed:      131072 kB\n"
+        f"HugePages_Total:       0\nHugePages_Free:        0\n"
+        f"Hugepagesize:       2048 kB\nHugetlb:               0 kB"
+    )
+
 def _meminfo_kb(ctx: dict) -> str:
     total = 16384000
     used = 5234512 + int(800000 * math.sin(time.time() / 200.0)) + random.randint(-60000, 60000)
     buff = 8026076 + random.randint(-120000, 120000)
-    free = total - used - buff
-    avail = free + buff
+    free = max(0, total - used - buff)
+    avail = max(0, free + buff)
     return ("               total        used        free      shared  buff/cache   available\n"
             f"Mem:        {total:>8}     {used:>8}     {free:>8}      102344     {buff:>8}     {avail:>8}\n"
             "Swap:        2097148           0     2097148")
@@ -303,6 +366,88 @@ STATIC_RESPONSES = {
     ),
     "find / -name '*.db'": lambda ctx: "/opt/nexopay/data/payments.db",
     "find / -name '*.db' 2>/dev/null": lambda ctx: "/opt/nexopay/data/payments.db",
+    # /proc virtual filesystem
+    "cat /proc/version": lambda ctx: (
+        "Linux version 5.15.0-91-generic (buildd@lcy02-amd64-013) "
+        "(gcc (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0, GNU ld (GNU Binutils for Ubuntu) 2.38) "
+        "#101-Ubuntu SMP Tue Nov 14 13:30:08 UTC 2023"
+    ),
+    "cat /proc/cpuinfo":  _proc_cpuinfo,
+    "cat /proc/meminfo":  _proc_meminfo_file,
+    "cat /proc/net/dev":  lambda ctx: (
+        "Inter-|   Receive                                                |  Transmit\n"
+        " face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n"
+        f"    lo:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n"
+        f"  eth0: {2345678901 + random.randint(-100000,100000)} 3456789    0    0    0     0          0"
+        f"         0 {987654321 + random.randint(-100000,100000)} 1234567    0    0    0     0       0          0"
+    ),
+    "cat /proc/net/tcp": lambda ctx: (
+        "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+        "   0: 00000000:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 12481 1 0000000000000000 100 0 0 10 0\n"
+        "   1: 00000000:0050 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 13024 1 0000000000000000 100 0 0 10 0\n"
+        "   2: 2D01000A:0016 0501000A:A8B2 01 00000000:00000000 02:000ACD3E 00000000     0        0 23891 4 0000000000000000 20 4 24 10 -1"
+    ),
+    # /sys virtual filesystem
+    "cat /sys/class/net/eth0/address":   lambda ctx: "02:00:01:2d:45:01",
+    "cat /sys/class/net/eth0/speed":     lambda ctx: "1000",
+    "cat /sys/class/net/eth0/mtu":       lambda ctx: "1500",
+    "cat /sys/class/net/eth0/operstate": lambda ctx: "up",
+    "cat /sys/class/net/eth0/carrier":   lambda ctx: "1",
+    "cat /sys/kernel/hostname":          lambda ctx: HOSTNAME,
+    # Network routing (consistent with 10.0.1.45 on eth0)
+    "ip route":      lambda ctx: (
+        "default via 10.0.1.1 dev eth0 proto dhcp src 10.0.1.45 metric 100\n"
+        "10.0.1.0/24 dev eth0 proto kernel scope link src 10.0.1.45"
+    ),
+    "ip route show": lambda ctx: (
+        "default via 10.0.1.1 dev eth0 proto dhcp src 10.0.1.45 metric 100\n"
+        "10.0.1.0/24 dev eth0 proto kernel scope link src 10.0.1.45"
+    ),
+    "ip link": lambda ctx: (
+        "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\n"
+        "    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\n"
+        "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT group default qlen 1000\n"
+        "    link/ether 02:00:01:2d:45:01 brd ff:ff:ff:ff:ff:ff"
+    ),
+    "ip link show": lambda ctx: (
+        "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\n"
+        "    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\n"
+        "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT group default qlen 1000\n"
+        "    link/ether 02:00:01:2d:45:01 brd ff:ff:ff:ff:ff:ff"
+    ),
+    "route": lambda ctx: (
+        "Kernel IP routing table\n"
+        "Destination     Gateway         Genmask         Flags Metric Ref    Use Iface\n"
+        "0.0.0.0         10.0.1.1        0.0.0.0         UG    100    0        0 eth0\n"
+        "10.0.1.0        0.0.0.0         255.255.255.0   U     100    0        0 eth0"
+    ),
+    "route -n": lambda ctx: (
+        "Kernel IP routing table\n"
+        "Destination     Gateway         Genmask         Flags Metric Ref    Use Iface\n"
+        "0.0.0.0         10.0.1.1        0.0.0.0         UG    100    0        0 eth0\n"
+        "10.0.1.0        0.0.0.0         255.255.255.0   U     100    0        0 eth0"
+    ),
+    "arp": lambda ctx: (
+        "Address                  HWtype  HWaddress           Flags Mask  Iface\n"
+        "10.0.1.1                 ether   00:50:56:e0:01:01   C           eth0\n"
+        "10.0.1.5                 ether   00:50:56:e0:01:05   C           eth0"
+    ),
+    "arp -n": lambda ctx: (
+        "Address                  HWtype  HWaddress           Flags Mask  Iface\n"
+        "10.0.1.1                 ether   00:50:56:e0:01:01   C           eth0\n"
+        "10.0.1.5                 ether   00:50:56:e0:01:05   C           eth0"
+    ),
+    "w": lambda ctx: (
+        f" {datetime.utcnow().strftime('%H:%M:%S')} up "
+        f"{int((time.time()-BOOT_TIME)//86400)} days, "
+        f"{int(((time.time()-BOOT_TIME)%86400)//3600)}:{int(((time.time()-BOOT_TIME)%3600)//60):02d},"
+        f"  1 user,  load average: {_loadavg()[0]:.2f}, {_loadavg()[1]:.2f}, {_loadavg()[2]:.2f}\n"
+        "USER     TTY      FROM             LOGIN@   IDLE JCPU   PCPU WHAT\n"
+        f"root     pts/0    {ctx.get('source_ip','10.0.1.5'):<16}  00:22    0.00s  0.01s  0.00s w"
+    ),
+    "who": lambda ctx: (
+        f"root     pts/0        2026-04-29 00:22 ({ctx.get('source_ip','10.0.1.5')})"
+    ),
 }
 
 # Commands available for Tab completion
@@ -318,6 +463,26 @@ _COMPLETABLE_CMDS = sorted({
     'tar', 'gzip', 'gunzip', 'zip', 'unzip', 'openssl', 'base64',
 })
 
+
+_KERNEL_THREADS = (
+    "root           1  0.0  0.0  167524 11120 ?  Ss   Apr10   0:05 /sbin/init splash\n"
+    "root           2  0.0  0.0       0     0 ?  S    Apr10   0:00 [kthreadd]\n"
+    "root           3  0.0  0.0       0     0 ?  I<   Apr10   0:00 [rcu_gp]\n"
+    "root           4  0.0  0.0       0     0 ?  I<   Apr10   0:00 [rcu_par_gp]\n"
+    "root           6  0.0  0.0       0     0 ?  I<   Apr10   0:00 [kworker/0:0H-events_highpri]\n"
+    "root           9  0.0  0.0       0     0 ?  I<   Apr10   0:00 [mm_percpu_wq]\n"
+    "root          10  0.0  0.0       0     0 ?  S    Apr10   0:00 [ksoftirqd/0]\n"
+    "root          11  0.0  0.0       0     0 ?  I    Apr10   0:16 [rcu_sched]\n"
+    "root          12  0.0  0.0       0     0 ?  S    Apr10   0:00 [migration/0]\n"
+    "root          13  0.0  0.0       0     0 ?  S    Apr10   0:00 [idle_inject/0]\n"
+    "root          34  0.0  0.0       0     0 ?  S<   Apr10   0:00 [kdevtmpfs]\n"
+    "root         134  0.0  0.0   14476  7248 ?  Ss   Apr10   0:00 /usr/sbin/sshd -D\n"
+    "root         892  0.1  0.0   55280  9512 ?  Ss   Apr10   0:43 nginx: master process /etc/nginx/nginx.conf\n"
+    "www-data     893  0.0  0.0   55720  5412 ?  S    Apr10   0:12 nginx: worker process\n"
+    "root        2048  0.0  0.1   65116 18432 ?  Ssl  Apr10   0:08 /usr/bin/redis-server 127.0.0.1:6379\n"
+    "postgres    2150  0.0  0.2  222532 38912 ?  Ss   Apr10   0:22 /usr/lib/postgresql/14/bin/postgres\n"
+    "root        3100  0.1  0.4  896512 68512 ?  Ssl  Apr10   1:24 node /opt/nexopay/server.js\n"
+)
 
 def _realistic_delay(cmd: str) -> float:
     parts = cmd.split()
@@ -363,6 +528,10 @@ class SessionHandler(asyncssh.SSHServerSession):
         self.command_history = []
 
         # PTY / line-editor state
+        self.context["source_ip"] = self.source_ip
+        self._technique_count = 0
+        self._alerted_high    = False
+
         self._pty_mode   = False
         self._line_buf   = ""
         self._cmd_history: list = []
@@ -406,6 +575,7 @@ class SessionHandler(asyncssh.SSHServerSession):
             if r.status_code == 200:
                 logger.info(f"Session {self.session_id} created")
                 self.session_ready = True
+                asyncio.create_task(self._lookup_threat_intel())
                 state_r = await self.http_client.get(
                     f"{SANDBOX_URL}/sessions/{self.session_id}/state")
                 if state_r.status_code == 200:
@@ -596,6 +766,20 @@ class SessionHandler(asyncssh.SSHServerSession):
     # Core command dispatcher (used by both PTY and batch paths)
     # ------------------------------------------------------------------
     async def _process_single_command(self, cmd: str):
+        if _is_prompt_injection(cmd):
+            logger.warning(f"[{self.session_id}] Prompt injection attempt: {cmd[:100]}")
+            base = cmd.split()[0] if cmd.split() else cmd
+            output = f"bash: {base}: command not found"
+            self._write_line(output)
+            asyncio.create_task(self._record(cmd, output, 8))
+            asyncio.create_task(self._record_mitre_technique({
+                "technique_id": "T1059", "technique_name": "Command and Scripting Interpreter",
+                "tactic": "Execution", "confidence": 0.95,
+                "evidence": f"Prompt injection attempt: {cmd[:80]}",
+            }))
+            self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
+            return
+
         if cmd in ["exit", "logout"]:
             self.chan.write("logout\r\n")
             await self._close()
@@ -717,6 +901,46 @@ class SessionHandler(asyncssh.SSHServerSession):
                 )})
             except Exception:
                 pass
+
+    async def _alert_high_risk(self):
+        if not SLACK_WEBHOOK_URL:
+            return
+        try:
+            await self.http_client.post(SLACK_WEBHOOK_URL, json={"text": (
+                f":red_circle: *HIGH-RISK SESSION — `{self.session_id[:8]}`*\n"
+                f"*Attacker IP:* `{self.source_ip}`\n"
+                f"*MITRE techniques detected:* {self._technique_count}\n"
+                f"*Server:* `{HOSTNAME}` (NexoPay prod)\n"
+                f"*Action:* Review session in the SOC dashboard"
+            )})
+            logger.warning(f"[{self.session_id}] High-risk Slack alert sent ({self._technique_count} techniques)")
+        except Exception as e:
+            logger.error(f"Slack high-risk alert failed: {e}")
+
+    async def _lookup_threat_intel(self):
+        if not ABUSEIPDB_KEY:
+            return
+        try:
+            r = await self.http_client.get(
+                "https://api.abuseipdb.com/api/v2/check",
+                params={"ipAddress": self.source_ip, "maxAgeInDays": 90},
+                headers={"Key": ABUSEIPDB_KEY, "Accept": "application/json"},
+                timeout=5.0,
+            )
+            if r.status_code == 200:
+                d = r.json().get("data", {})
+                score   = d.get("abuseConfidenceScore", 0)
+                country = d.get("countryCode", "Unknown")
+                reports = d.get("totalReports", 0)
+                logger.info(f"[{self.session_id}] AbuseIPDB {self.source_ip}: score={score} country={country} reports={reports}")
+                if score >= 25:
+                    asyncio.create_task(self._record_ioc({
+                        "ioc_type": "ip", "value": self.source_ip,
+                        "confidence": score / 100.0,
+                        "context": f"AbuseIPDB: score={score}, country={country}, reports={reports}",
+                    }))
+        except Exception as e:
+            logger.debug(f"AbuseIPDB lookup failed: {e}")
 
     async def _get_ai_response(self, cmd: str):
         try:
@@ -863,12 +1087,15 @@ class SessionHandler(asyncssh.SSHServerSession):
                 if r.status_code == 200:
                     processes = r.json().get("processes", [])
                     if "aux" in cmd:
-                        output = "USER     PID %CPU %MEM    VSZ   RSS TTY STAT START   TIME COMMAND\n"
+                        output = "USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND\n"
+                        output += _KERNEL_THREADS
                         for p in processes:
-                            output += (f"{p['username']:<8} {p['pid']:>5} {p['cpu_percent']:>4.1f} "
-                                       f"{p['mem_percent']:>4.1f}      0     0 ?   Ss   Apr29   0:00 {p['name']}\n")
+                            output += (f"{p['username']:<10} {p['pid']:>5} {p['cpu_percent']:>4.1f} "
+                                       f"{p['mem_percent']:>4.1f}      0     0 ?        Ss   Apr29   0:00 {p['name']}\n")
                     else:
                         output = "  PID TTY          TIME CMD\n"
+                        output += "    1 ?        00:00:05 init\n"
+                        output += "  134 ?        00:00:00 sshd\n"
                         for p in processes[:5]:
                             output += f"{p['pid']:>5} pts/0    00:00:00 {p['name']}\n"
             except Exception as e:
@@ -924,6 +1151,10 @@ class SessionHandler(asyncssh.SSHServerSession):
                       "tactic": technique.get("tactic"),
                       "confidence": technique.get("confidence", 0.5),
                       "evidence": technique.get("evidence", "")})
+            self._technique_count += 1
+            if not self._alerted_high and self._technique_count >= 3:
+                self._alerted_high = True
+                asyncio.create_task(self._alert_high_risk())
         except Exception as e:
             logger.error(f"Failed to report MITRE technique: {e}")
 
