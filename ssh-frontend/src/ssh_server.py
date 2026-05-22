@@ -4,11 +4,13 @@ import asyncio
 import asyncssh
 import uuid
 import os
+import re
 import time
 import math
 import random
+import json
 import httpx
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 
 logging.basicConfig(
@@ -448,6 +450,103 @@ STATIC_RESPONSES = {
     "who": lambda ctx: (
         f"root     pts/0        2026-04-29 00:22 ({ctx.get('source_ip','10.0.1.5')})"
     ),
+    # Story-consistency: files, DNS, services all tell the same NexoPay story
+    "cat /etc/passwd": lambda ctx: (
+        "root:x:0:0:root:/root:/bin/bash\n"
+        "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n"
+        "bin:x:2:2:bin:/bin:/usr/sbin/nologin\n"
+        "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin\n"
+        "postgres:x:108:116:PostgreSQL administrator,,,:/var/lib/postgresql:/bin/bash\n"
+        "deploy:x:1001:1001:NexoPay Deploy,,,:/home/deploy:/bin/bash\n"
+        "nexopay:x:1002:1002:NexoPay Service,,,:/opt/nexopay:/usr/sbin/nologin"
+    ),
+    "cat /etc/shadow": lambda ctx: (
+        "cat: /etc/shadow: Permission denied"
+    ),
+    "cat /etc/hosts": lambda ctx: (
+        "127.0.0.1   localhost\n"
+        "127.0.1.1   api-prod-01\n"
+        "10.0.1.45   api-prod-01.nexopay.internal api-prod-01\n"
+        "10.0.1.10   db-primary.nexopay.internal db-primary\n"
+        "10.0.1.11   db-secondary.nexopay.internal db-secondary\n"
+        "10.0.1.20   cache-01.nexopay.internal cache-01\n"
+        "10.0.1.5    bastion.nexopay.internal bastion"
+    ),
+    "cat /etc/resolv.conf": lambda ctx: (
+        "nameserver 10.0.1.2\nsearch nexopay.internal\noptions ndots:5"
+    ),
+    "cat /etc/os-release": lambda ctx: (
+        'NAME="Ubuntu"\nVERSION="22.04.3 LTS (Jammy Jellyfish)"\n'
+        'ID=ubuntu\nID_LIKE=debian\nPRETTY_NAME="Ubuntu 22.04.3 LTS"\n'
+        'VERSION_ID="22.04"\nHOME_URL="https://www.ubuntu.com/"\n'
+        'SUPPORT_URL="https://help.ubuntu.com/"\n'
+        'BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"\n'
+        'PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"\n'
+        'VERSION_CODENAME=jammy\nUBUNTU_CODENAME=jammy'
+    ),
+    "nslookup db-primary.nexopay.internal": lambda ctx: (
+        "Server:\t\t10.0.1.2\nAddress:\t10.0.1.2#53\n\n"
+        "Name:\tdb-primary.nexopay.internal\nAddress: 10.0.1.10"
+    ),
+    "nslookup cache-01.nexopay.internal": lambda ctx: (
+        "Server:\t\t10.0.1.2\nAddress:\t10.0.1.2#53\n\n"
+        "Name:\tcache-01.nexopay.internal\nAddress: 10.0.1.20"
+    ),
+    "dig db-primary.nexopay.internal": lambda ctx: (
+        "; <<>> DiG 9.18.12-0ubuntu0.22.04.3-Ubuntu <<>> db-primary.nexopay.internal\n"
+        ";; ANSWER SECTION:\n"
+        "db-primary.nexopay.internal. 300 IN A 10.0.1.10\n\n"
+        ";; Query time: 1 msec\n;; SERVER: 10.0.1.2#53(10.0.1.2)"
+    ),
+    "systemctl status nexopay-api": lambda ctx: (
+        "● nexopay-api.service - NexoPay Payment API\n"
+        "     Loaded: loaded (/lib/systemd/system/nexopay-api.service; enabled)\n"
+        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:42 UTC; 18 days ago\n"
+        "   Main PID: 3100 (node)\n"
+        "      Tasks: 22 (limit: 19158)\n"
+        "     Memory: 67.3M\n"
+        "        CPU: 1h 24min 15.231s\n"
+        "     CGroup: /system.slice/nexopay-api.service\n"
+        "             └─3100 node /opt/nexopay/server.js\n\n"
+        "Apr 29 00:22:01 api-prod-01 node[3100]: [INFO] POST /v2/payments 200 142ms\n"
+        "Apr 29 00:22:09 api-prod-01 node[3100]: [INFO] GET /v2/balance 200 38ms\n"
+        "Apr 29 00:22:14 api-prod-01 node[3100]: [INFO] POST /v2/webhooks/stripe 200 89ms"
+    ),
+    "systemctl status nginx": lambda ctx: (
+        "● nginx.service - A high performance web server\n"
+        "     Loaded: loaded (/lib/systemd/system/nginx.service; enabled)\n"
+        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:41 UTC; 18 days ago\n"
+        "   Main PID: 892 (nginx)\n"
+        "     CGroup: /system.slice/nginx.service\n"
+        "             ├─892 nginx: master process /usr/sbin/nginx -g daemon on;\n"
+        "             └─893 nginx: worker process"
+    ),
+    "systemctl status postgresql": lambda ctx: (
+        "● postgresql.service - PostgreSQL RDBMS\n"
+        "     Loaded: loaded (/lib/systemd/system/postgresql.service; enabled)\n"
+        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:40 UTC; 18 days ago"
+    ),
+    "journalctl -u nexopay-api": lambda ctx: (
+        "-- Logs begin at Thu 2026-04-10 17:37:41 UTC, end at Tue 2026-04-29 00:22:14 UTC. --\n"
+        "Apr 10 17:37:42 api-prod-01 systemd[1]: Started NexoPay Payment API.\n"
+        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Server listening on 0.0.0.0:3000\n"
+        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Database connected: db-primary.nexopay.internal\n"
+        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Redis connected: cache-01.nexopay.internal:6379\n"
+        "Apr 29 00:22:01 api-prod-01 node[3100]: [INFO] POST /v2/payments 200 142ms\n"
+        "Apr 29 00:22:09 api-prod-01 node[3100]: [INFO] GET /v2/balance 200 38ms"
+    ),
+    "tail -f /opt/nexopay/logs/error.log": lambda ctx: (
+        "[2026-04-29 00:18:22] WARN  stripe: Webhook signature verification slow for evt_3OxNpY...\n"
+        "[2026-04-29 00:19:01] INFO  payment processed: txn_01HXB1C2D3E4F5 amount=9999 status=succeeded\n"
+        "[2026-04-29 00:20:11] WARN  rate_limit: 429 returned for IP 185.220.101.45\n"
+        "[2026-04-29 00:21:33] INFO  webhook dispatched: merchant m_3xNp4y1234ABCD"
+    ),
+    "cat /opt/nexopay/logs/error.log": lambda ctx: (
+        "[2026-04-29 00:18:22] WARN  stripe: Webhook signature verification slow for evt_3OxNpY...\n"
+        "[2026-04-29 00:19:01] INFO  payment processed: txn_01HXB1C2D3E4F5 amount=9999 status=succeeded\n"
+        "[2026-04-29 00:20:11] WARN  rate_limit: 429 returned for IP 185.220.101.45\n"
+        "[2026-04-29 00:21:33] INFO  webhook dispatched: merchant m_3xNp4y1234ABCD"
+    ),
 }
 
 # Commands available for Tab completion
@@ -463,6 +562,62 @@ _COMPLETABLE_CMDS = sorted({
     'tar', 'gzip', 'gunzip', 'zip', 'unzip', 'openssl', 'base64',
 })
 
+
+# ---------------------------------------------------------------------------
+# AWS Instance Metadata Service (169.254.169.254) — Advanced Deception
+# ---------------------------------------------------------------------------
+_IMDS_BASE = "http://169.254.169.254/latest/meta-data"
+_IMDS_ROUTES = {
+    f"{_IMDS_BASE}/":                                          "ami-id\nhostname\niam/\ninstance-id\ninstance-type\nlocal-ipv4\nplacement/\npublic-hostname\npublic-ipv4\n",
+    f"{_IMDS_BASE}/instance-id":                               "i-0a1b2c3d4e5f67890",
+    f"{_IMDS_BASE}/instance-type":                             "c5.2xlarge",
+    f"{_IMDS_BASE}/local-ipv4":                                "10.0.1.45",
+    f"{_IMDS_BASE}/public-ipv4":                               "54.204.17.133",
+    f"{_IMDS_BASE}/public-hostname":                           "ec2-54-204-17-133.compute-1.amazonaws.com",
+    f"{_IMDS_BASE}/hostname":                                  "ip-10-0-1-45.ec2.internal",
+    f"{_IMDS_BASE}/ami-id":                                    "ami-0c02fb55956c7d316",
+    f"{_IMDS_BASE}/placement/":                                "availability-zone\nregion\n",
+    f"{_IMDS_BASE}/placement/availability-zone":               "us-east-1a",
+    f"{_IMDS_BASE}/placement/region":                          "us-east-1",
+    f"{_IMDS_BASE}/iam/":                                      "info\nsecurity-credentials/\n",
+    f"{_IMDS_BASE}/iam/security-credentials/":                 "nexopay-prod-role",
+}
+_IMDS_CREDS_PATH = f"{_IMDS_BASE}/iam/security-credentials/nexopay-prod-role"
+
+def _aws_imds_creds() -> str:
+    now = datetime.now(timezone.utc)
+    exp = now.replace(hour=(now.hour + 6) % 24)
+    return json.dumps({
+        "Code": "Success",
+        "LastUpdated": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "Type": "AWS-HMAC",
+        "AccessKeyId": os.getenv("CANARY_AWS_ACCESS_KEY", "AKIAVLQNEXOPAY1PROD7"),
+        "SecretAccessKey": os.getenv("CANARY_AWS_SECRET_KEY", "nxp/FakeK3y+wJalrXUtnFEMI/K7MDENG/bPxRfi"),
+        "Token": "IQoJb3JpZ2luX2VjEMj//////////wEaCXVzLWVhc3QtMSJHMEUCIQDNExoPay+FakeSessionToken+For+Prod+Role==",
+        "Expiration": exp.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Internal network topology (consistent across ping/ssh/nslookup/dig)
+# ---------------------------------------------------------------------------
+_INTERNAL_HOSTS = {
+    "db-primary.nexopay.internal": "10.0.1.10",
+    "db-primary":                  "10.0.1.10",
+    "db-secondary.nexopay.internal":"10.0.1.11",
+    "db-secondary":                "10.0.1.11",
+    "cache-01.nexopay.internal":   "10.0.1.20",
+    "cache-01":                    "10.0.1.20",
+    "bastion.nexopay.internal":    "10.0.1.5",
+    "bastion":                     "10.0.1.5",
+    "10.0.1.10":                   "10.0.1.10",
+    "10.0.1.11":                   "10.0.1.11",
+    "10.0.1.20":                   "10.0.1.20",
+    "10.0.1.5":                    "10.0.1.5",
+    "10.0.1.1":                    "10.0.1.1",
+    "localhost":                   "127.0.0.1",
+    "127.0.0.1":                   "127.0.0.1",
+}
 
 _KERNEL_THREADS = (
     "root           1  0.0  0.0  167524 11120 ?  Ss   Apr10   0:05 /sbin/init splash\n"
@@ -800,6 +955,12 @@ class SessionHandler(asyncssh.SSHServerSession):
             await self._handle_ps_command(cmd)
         elif cmd in ("env", "printenv"):
             await self._handle_env_command()
+        elif cmd.startswith("ping "):
+            await self._handle_ping(cmd)
+        elif cmd.startswith("ssh "):
+            await self._handle_ssh_internal(cmd)
+        elif re.match(r'^(nc|ncat|netcat|telnet)\s', cmd):
+            await self._handle_decoy_service(cmd)
         else:
             await self._handle_generic_command(cmd)
 
@@ -826,6 +987,8 @@ class SessionHandler(asyncssh.SSHServerSession):
         if cmd_lower.startswith("sqlite3"):
             output = self._handle_sqlite3(cmd)
             asyncio.create_task(self._alert_honeytoken("/opt/nexopay/data/payments.db"))
+        elif "169.254.169.254" in cmd_lower:
+            output = await self._handle_imds(cmd)
         else:
             for pattern, handler in STATIC_RESPONSES.items():
                 if cmd_lower == pattern or cmd_lower.startswith(pattern + " "):
@@ -880,6 +1043,114 @@ class SessionHandler(asyncssh.SSHServerSession):
                 "m_3xNp4y5678EFGH|whsec_9z8y7x6w5v4u3t2s1r0q9p8o7n6m5l4k3j2i1|2025-11-15"
             )
         return "SQLite version 3.37.2 2022-01-06 13:25:41\nEnter \".help\" for usage hints.\nsqlite>"
+
+    # ------------------------------------------------------------------
+    # Phase 4 handlers: IMDS, ping, internal SSH, decoy services
+    # ------------------------------------------------------------------
+
+    async def _handle_imds(self, cmd: str) -> str:
+        url_match = re.search(r'https?://169\.254\.169\.254[^\s"\']*', cmd)
+        if not url_match:
+            return "curl: (7) Failed to connect to 169.254.169.254 port 80: Connection refused"
+        url = url_match.group(0).rstrip('/')
+        await asyncio.sleep(random.uniform(0.05, 0.2))
+        if "nexopay-prod-role" in url:
+            asyncio.create_task(self._alert_honeytoken("aws-imds://iam/security-credentials/nexopay-prod-role"))
+            return _aws_imds_creds()
+        for route_url, body in _IMDS_ROUTES.items():
+            if url == route_url.rstrip('/') or url + '/' == route_url:
+                return body
+        return "<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>\n<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\"\n         \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\n<html><head><title>404 - Not Found</title></head><body><h1>404 - Not Found</h1></body></html>"
+
+    async def _handle_ping(self, cmd: str):
+        t0 = time.monotonic()
+        parts = cmd.split()
+        host = parts[-1]
+        for i, p in enumerate(parts[1:], 1):
+            if not p.startswith('-') and (i == 1 or parts[i - 1] not in ('-c', '-i', '-W', '-w', '-s')):
+                host = p
+                break
+        await asyncio.sleep(random.uniform(0.1, 0.3))
+        ip = _INTERNAL_HOSTS.get(host)
+        if ip:
+            ms = [random.uniform(0.2, 2.5) for _ in range(3)]
+            output = (
+                f"PING {host} ({ip}) 56(84) bytes of data.\n"
+                + "".join(f"64 bytes from {ip}: icmp_seq={i+1} ttl=64 time={m:.3f} ms\n" for i, m in enumerate(ms))
+                + f"\n--- {host} ping statistics ---\n"
+                f"3 packets transmitted, 3 received, 0% packet loss, time 2002ms\n"
+                f"rtt min/avg/max/mdev = {min(ms):.3f}/{sum(ms)/3:.3f}/{max(ms):.3f}/0.200 ms"
+            )
+        else:
+            output = (
+                f"PING {host} ({host}) 56(84) bytes of data.\n\n"
+                f"--- {host} ping statistics ---\n"
+                f"3 packets transmitted, 0 received, 100% packet loss, time 2001ms"
+            )
+        self._write_line(output)
+        self.command_history.append({"command": cmd, "output": output})
+        asyncio.create_task(self._record(cmd, output, int((time.monotonic() - t0) * 1000)))
+        self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
+
+    async def _handle_ssh_internal(self, cmd: str):
+        t0 = time.monotonic()
+        parts = cmd.split()
+        target = next((p for p in parts[1:] if not p.startswith('-')), "")
+        hostname = target.split('@')[-1] if '@' in target else target
+        user = target.split('@')[0] if '@' in target else "root"
+        await asyncio.sleep(random.uniform(0.3, 0.8))
+        if hostname in _INTERNAL_HOSTS:
+            # DB hosts refuse SSH (correct for a hardened DB server)
+            if "db-" in hostname or _INTERNAL_HOSTS.get(hostname) in ("10.0.1.10", "10.0.1.11"):
+                output = f"ssh: connect to host {hostname} port 22: Connection refused"
+            elif "bastion" in hostname or _INTERNAL_HOSTS.get(hostname) == "10.0.1.5":
+                output = (f"The authenticity of host '{hostname} ({_INTERNAL_HOSTS[hostname]})' can't be established.\n"
+                          f"ED25519 key fingerprint is SHA256:Zq8mJ3nP1xKvLtRwBhYcDfGsEaOiUy2+NexoPay/Bastion.\n"
+                          f"Are you sure you want to continue connecting (yes/no/[fingerprint])? ")
+                self._write_line(output)
+                # Don't re-show prompt — just drop (bastion would need interactive yes/no)
+                self.command_history.append({"command": cmd, "output": output})
+                asyncio.create_task(self._record(cmd, output, int((time.monotonic() - t0) * 1000)))
+                return
+            else:
+                output = f"ssh: connect to host {hostname} port 22: No route to host"
+        else:
+            output = f"ssh: Could not resolve hostname {hostname}: Name or service not known"
+        self._write_line(output)
+        self.command_history.append({"command": cmd, "output": output})
+        asyncio.create_task(self._record(cmd, output, int((time.monotonic() - t0) * 1000)))
+        self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
+
+    async def _handle_decoy_service(self, cmd: str):
+        t0 = time.monotonic()
+        parts = cmd.split()
+        # Extract host and port from nc/telnet args
+        host, port = "", ""
+        non_flags = [p for p in parts[1:] if not p.startswith('-')]
+        if len(non_flags) >= 2:
+            host, port = non_flags[0], non_flags[1]
+        elif len(non_flags) == 1:
+            host = non_flags[0]
+
+        await asyncio.sleep(random.uniform(0.1, 0.4))
+        port_banners = {
+            "6379": "+PONG\r\n",
+            "5432": "connection to server at \"" + (host or "localhost") + "\", failed: FATAL:  password authentication failed for user \"root\"",
+            "3306": "\x4a\x00\x00\x00\x0a8.0.32\x00",  # MySQL greeting start
+            "11211": "VERSION 1.6.18\r\n",              # Memcached
+            "27017": "MongoDB connection attempt denied",
+        }
+        if port in port_banners:
+            output = port_banners[port]
+        elif host and not port:
+            output = f"Ncat: Connection refused."
+        else:
+            output = f"Ncat: No route to host."
+
+        self._write_line(output)
+        self.command_history.append({"command": cmd, "output": output})
+        asyncio.create_task(self._record(cmd, output, int((time.monotonic() - t0) * 1000)))
+        self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
 
     async def _alert_honeytoken(self, path: str):
         logger.warning(f"honeytoken accessed: {path} by {self.source_ip}")
