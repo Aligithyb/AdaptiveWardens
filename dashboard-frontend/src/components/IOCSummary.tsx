@@ -23,9 +23,17 @@ export function IOCSummary() {
     return () => clearInterval(interval);
   }, []);
 
+  const severityFromConfidence = (confidence: number) => {
+    const pct = confidence * 100;
+    if (pct >= 95) return 'Critical';
+    if (pct >= 80) return 'High';
+    if (pct >= 60) return 'Medium';
+    return 'Low';
+  };
+
   const filteredIOCs = iocs.filter(ioc => {
-    if (filterType !== 'all' && ioc.ioc_type !== filterType) return false;
-    // Database doesn't have severity right now, default to showing all or handle appropriately
+    if (filterType !== 'all' && ioc.ioc_type !== filterType.toLowerCase()) return false;
+    if (filterSeverity !== 'all' && severityFromConfidence(ioc.confidence) !== filterSeverity) return false;
     return true;
   });
 
@@ -63,9 +71,12 @@ export function IOCSummary() {
             className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded text-sm text-slate-300 focus:outline-none focus:border-cyan-500"
           >
             <option value="all">All Types</option>
-            <option value="IP">IP</option>
-            <option value="Domain">Domain</option>
-            <option value="File">File</option>
+            <option value="ip">IP</option>
+            <option value="domain">Domain</option>
+            <option value="url">URL</option>
+            <option value="hash">Hash</option>
+            <option value="filepath">File</option>
+            <option value="command">Command</option>
           </select>
 
           <select
@@ -104,22 +115,22 @@ export function IOCSummary() {
                 <td className="px-6 py-4 text-sm text-slate-300">{ioc.value}</td>
                 <td className="px-6 py-4 text-sm text-cyan-400">{ioc.session_id}</td>
                 <td className="px-6 py-4">
-                  <span className={`px-2 py-1 text-xs rounded border ${getSeverityColor('High')}`}>
-                    High
+                  <span className={`px-2 py-1 text-xs rounded border ${getSeverityColor(severityFromConfidence(ioc.confidence))}`}>
+                    {severityFromConfidence(ioc.confidence)}
                   </span>
                 </td>
                 <td className="px-6 py-4">
                   <div className="flex items-center gap-2">
                     <div className="flex-1 bg-slate-800 rounded-full h-1.5">
                       <div
-                        className={`h-1.5 rounded-full ${ioc.confidence >= 90 ? 'bg-green-400' :
-                            ioc.confidence >= 75 ? 'bg-yellow-400' : 'bg-orange-400'
+                        className={`h-1.5 rounded-full ${ioc.confidence * 100 >= 90 ? 'bg-green-400' :
+                            ioc.confidence * 100 >= 75 ? 'bg-yellow-400' : 'bg-orange-400'
                           }`}
-                        style={{ width: `${ioc.confidence}%` }}
+                        style={{ width: `${ioc.confidence * 100}%` }}
                       ></div>
                     </div>
-                    <span className={`text-xs ${getConfidenceColor(ioc.confidence)}`}>
-                      {ioc.confidence}%
+                    <span className={`text-xs ${getConfidenceColor(ioc.confidence * 100)}`}>
+                      {Math.round(ioc.confidence * 100)}%
                     </span>
                   </div>
                 </td>
