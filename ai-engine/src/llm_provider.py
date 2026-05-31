@@ -21,6 +21,9 @@ from typing import Optional, List
 
 from openai import OpenAI
 
+from budget import BudgetTracker
+from rate_limit import PerIPRateLimiter
+
 logger = logging.getLogger("ai-engine.llm")
 
 
@@ -118,6 +121,8 @@ def _sanitize(text: str, command: str) -> str:
 
 class LLMProvider:
     def __init__(self):
+        self.budget = BudgetTracker()
+        self.rate_limiter = PerIPRateLimiter()
         api_key = os.getenv("DEEPSEEK_API_KEY")
         if not api_key:
             logger.warning("DEEPSEEK_API_KEY not set. Using fallback responses.")
@@ -133,8 +138,23 @@ class LLMProvider:
         self._total_input_tokens = 0
 
     def generate_shell_response(self, command: str, context: dict,
-                                conversation_history: Optional[List] = None) -> str:
+                                conversation_history: Optional[List] = None,
+                                source_ip: Optional[str] = None) -> str:
         if self.client is None:
+            return _sanitize(self._fallback(command), command)
+
+        # Circuit breaker #1: per-IP rate limit so one noisy attacker can't
+        # burn the daily budget in seconds.
+        if source_ip and not self.rate_limiter.allow(source_ip):
+            logger.warning(f"rate_limit_block source_ip={source_ip}")
+            return _sanitize(self._fallback(command), command)
+
+        # Circuit breaker #2: daily token budget. Once exhausted we serve
+        # deterministic / static fallbacks for the rest of the UTC day so a
+        # $2 DeepSeek credit can't get drained overnight.
+        if not self.budget.can_call():
+            self.budget.record_blocked()
+            logger.warning("llm_budget_exhausted serving_fallback")
             return _sanitize(self._fallback(command), command)
 
         user_prompt = self._build_user_prompt(command, context, conversation_history)
@@ -144,7 +164,9 @@ class LLMProvider:
                            history: Optional[List]) -> str:
         env = (context.get("environment") or {})
         env_compact = {k: v for k, v in list(env.items())[:20]} if env else {}
-        hist = history[-10:] if history else []
+        # Trim history from 10 → 3. The last few commands are what actually
+        # informs response continuity; the rest just bloats input tokens.
+        hist = history[-3:] if history else []
 
         return (
             f"Current user: {context.get('username', 'root')}\n"
@@ -196,13 +218,20 @@ class LLMProvider:
             elif hasattr(resp, "model_extra") and resp.model_extra:
                 cached = resp.model_extra.get("prompt_cache_hit_tokens", 0) or 0
             total_in = getattr(usage, "prompt_tokens", 0) or 0
+            total_out = getattr(usage, "completion_tokens", 0) or 0
             self._cache_hit_tokens += cached
             self._total_input_tokens += total_in
+            # Charge the budget for uncached input tokens + output. Cached input
+            # tokens are ~50× cheaper on DeepSeek, so treating them as free here
+            # is a small but acceptable approximation that biases the limiter
+            # toward "let the call through" rather than "block aggressively".
+            uncached_in = max(0, total_in - cached)
+            self.budget.record(uncached_in, total_out)
             if total_in:
                 rate = (cached / total_in) * 100
                 logger.info(
                     f"deepseek_usage in={total_in} cached={cached} "
-                    f"out={getattr(usage, 'completion_tokens', 0)} prefix_hit={rate:.1f}%"
+                    f"out={total_out} prefix_hit={rate:.1f}%"
                 )
         except Exception:
             pass
