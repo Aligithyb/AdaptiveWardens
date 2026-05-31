@@ -672,6 +672,103 @@ STATIC_RESPONSES = {
         "[2026-04-29 00:20:11] WARN  rate_limit: 429 returned for IP 185.220.101.45\n"
         "[2026-04-29 00:21:33] INFO  webhook dispatched: merchant m_3xNp4y1234ABCD"
     ),
+    # Story-consistency: files, DNS, services all tell the same NexoPay story
+    "cat /etc/passwd": lambda ctx: (
+        "root:x:0:0:root:/root:/bin/bash\n"
+        "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n"
+        "bin:x:2:2:bin:/bin:/usr/sbin/nologin\n"
+        "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin\n"
+        "postgres:x:108:116:PostgreSQL administrator,,,:/var/lib/postgresql:/bin/bash\n"
+        "deploy:x:1001:1001:NexoPay Deploy,,,:/home/deploy:/bin/bash\n"
+        "nexopay:x:1002:1002:NexoPay Service,,,:/opt/nexopay:/usr/sbin/nologin"
+    ),
+    "cat /etc/shadow": lambda ctx: (
+        "cat: /etc/shadow: Permission denied"
+    ),
+    "cat /etc/hosts": lambda ctx: (
+        "127.0.0.1   localhost\n"
+        "127.0.1.1   api-prod-01\n"
+        "10.0.1.45   api-prod-01.nexopay.internal api-prod-01\n"
+        "10.0.1.10   db-primary.nexopay.internal db-primary\n"
+        "10.0.1.11   db-secondary.nexopay.internal db-secondary\n"
+        "10.0.1.20   cache-01.nexopay.internal cache-01\n"
+        "10.0.1.5    bastion.nexopay.internal bastion"
+    ),
+    "cat /etc/resolv.conf": lambda ctx: (
+        "nameserver 10.0.1.2\nsearch nexopay.internal\noptions ndots:5"
+    ),
+    "cat /etc/os-release": lambda ctx: (
+        'NAME="Ubuntu"\nVERSION="22.04.3 LTS (Jammy Jellyfish)"\n'
+        'ID=ubuntu\nID_LIKE=debian\nPRETTY_NAME="Ubuntu 22.04.3 LTS"\n'
+        'VERSION_ID="22.04"\nHOME_URL="https://www.ubuntu.com/"\n'
+        'SUPPORT_URL="https://help.ubuntu.com/"\n'
+        'BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"\n'
+        'PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"\n'
+        'VERSION_CODENAME=jammy\nUBUNTU_CODENAME=jammy'
+    ),
+    "nslookup db-primary.nexopay.internal": lambda ctx: (
+        "Server:\t\t10.0.1.2\nAddress:\t10.0.1.2#53\n\n"
+        "Name:\tdb-primary.nexopay.internal\nAddress: 10.0.1.10"
+    ),
+    "nslookup cache-01.nexopay.internal": lambda ctx: (
+        "Server:\t\t10.0.1.2\nAddress:\t10.0.1.2#53\n\n"
+        "Name:\tcache-01.nexopay.internal\nAddress: 10.0.1.20"
+    ),
+    "dig db-primary.nexopay.internal": lambda ctx: (
+        "; <<>> DiG 9.18.12-0ubuntu0.22.04.3-Ubuntu <<>> db-primary.nexopay.internal\n"
+        ";; ANSWER SECTION:\n"
+        "db-primary.nexopay.internal. 300 IN A 10.0.1.10\n\n"
+        ";; Query time: 1 msec\n;; SERVER: 10.0.1.2#53(10.0.1.2)"
+    ),
+    "systemctl status nexopay-api": lambda ctx: (
+        "● nexopay-api.service - NexoPay Payment API\n"
+        "     Loaded: loaded (/lib/systemd/system/nexopay-api.service; enabled)\n"
+        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:42 UTC; 18 days ago\n"
+        "   Main PID: 3100 (node)\n"
+        "      Tasks: 22 (limit: 19158)\n"
+        "     Memory: 67.3M\n"
+        "        CPU: 1h 24min 15.231s\n"
+        "     CGroup: /system.slice/nexopay-api.service\n"
+        "             └─3100 node /opt/nexopay/server.js\n\n"
+        "Apr 29 00:22:01 api-prod-01 node[3100]: [INFO] POST /v2/payments 200 142ms\n"
+        "Apr 29 00:22:09 api-prod-01 node[3100]: [INFO] GET /v2/balance 200 38ms\n"
+        "Apr 29 00:22:14 api-prod-01 node[3100]: [INFO] POST /v2/webhooks/stripe 200 89ms"
+    ),
+    "systemctl status nginx": lambda ctx: (
+        "● nginx.service - A high performance web server\n"
+        "     Loaded: loaded (/lib/systemd/system/nginx.service; enabled)\n"
+        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:41 UTC; 18 days ago\n"
+        "   Main PID: 892 (nginx)\n"
+        "     CGroup: /system.slice/nginx.service\n"
+        "             ├─892 nginx: master process /usr/sbin/nginx -g daemon on;\n"
+        "             └─893 nginx: worker process"
+    ),
+    "systemctl status postgresql": lambda ctx: (
+        "● postgresql.service - PostgreSQL RDBMS\n"
+        "     Loaded: loaded (/lib/systemd/system/postgresql.service; enabled)\n"
+        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:40 UTC; 18 days ago"
+    ),
+    "journalctl -u nexopay-api": lambda ctx: (
+        "-- Logs begin at Thu 2026-04-10 17:37:41 UTC, end at Tue 2026-04-29 00:22:14 UTC. --\n"
+        "Apr 10 17:37:42 api-prod-01 systemd[1]: Started NexoPay Payment API.\n"
+        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Server listening on 0.0.0.0:3000\n"
+        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Database connected: db-primary.nexopay.internal\n"
+        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Redis connected: cache-01.nexopay.internal:6379\n"
+        "Apr 29 00:22:01 api-prod-01 node[3100]: [INFO] POST /v2/payments 200 142ms\n"
+        "Apr 29 00:22:09 api-prod-01 node[3100]: [INFO] GET /v2/balance 200 38ms"
+    ),
+    "tail -f /opt/nexopay/logs/error.log": lambda ctx: (
+        "[2026-04-29 00:18:22] WARN  stripe: Webhook signature verification slow for evt_3OxNpY...\n"
+        "[2026-04-29 00:19:01] INFO  payment processed: txn_01HXB1C2D3E4F5 amount=9999 status=succeeded\n"
+        "[2026-04-29 00:20:11] WARN  rate_limit: 429 returned for IP 185.220.101.45\n"
+        "[2026-04-29 00:21:33] INFO  webhook dispatched: merchant m_3xNp4y1234ABCD"
+    ),
+    "cat /opt/nexopay/logs/error.log": lambda ctx: (
+        "[2026-04-29 00:18:22] WARN  stripe: Webhook signature verification slow for evt_3OxNpY...\n"
+        "[2026-04-29 00:19:01] INFO  payment processed: txn_01HXB1C2D3E4F5 amount=9999 status=succeeded\n"
+        "[2026-04-29 00:20:11] WARN  rate_limit: 429 returned for IP 185.220.101.45\n"
+        "[2026-04-29 00:21:33] INFO  webhook dispatched: merchant m_3xNp4y1234ABCD"
+    ),
 }
 
 # Commands available for Tab completion
