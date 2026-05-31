@@ -1,13 +1,36 @@
 # Python
 .venv/
+venv/
 venv311/
+env/
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-# Frontend
-dashboard-frontend/node_modules/
-dashboard-frontend/.next/
+# Frontend / Node
+node_modules/
+.next/
+.turbo/
+.swc/
+out/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Stray nested-path folders accidentally created by tools running with bad cwd
+F:AdaptiveWardens*/
 
 # General
 .DS_Store
@@ -17,7 +40,8 @@ logs.txt
 
 # Env — never commit real secrets
 .env
-.env.local
+.env.*
+!.env.example
 ai-engine/.env
 
 # SSH keys — generated at build time, must not leak
@@ -33,6 +57,16 @@ id_rsa.pub
 *.sqlite
 *.sqlite3
 sandbox-store/data/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Docker runtime artifacts
+*.pid
 
 # Claude Code workspace (local only)
 .claude/
