@@ -117,13 +117,14 @@ CREATE TABLE IF NOT EXISTS network_connections (
 );
 
 -- IOCs (Indicators of Compromise) Table
+-- NOTE: no CHECK constraint on ioc_type so we can store honeytoken_access, ssh_pubkey, etc.
 CREATE TABLE IF NOT EXISTS iocs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
-    ioc_type TEXT CHECK(ioc_type IN ('ip', 'domain', 'url', 'hash', 'email', 'filename', 'command')),
+    ioc_type TEXT,
     value TEXT NOT NULL,
-    confidence REAL DEFAULT 0.5, -- 0.0 to 1.0
-    context TEXT, -- where it was found
+    confidence REAL DEFAULT 0.5,
+    context TEXT,
     extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
 );
@@ -159,3 +160,14 @@ CREATE TABLE IF NOT EXISTS state_snapshots (
 );
 
 CREATE INDEX IF NOT EXISTS idx_snapshots_session ON state_snapshots(session_id);
+
+-- Persistent attacker state: env vars, aliases, cwd survive reconnects (keyed by source IP)
+CREATE TABLE IF NOT EXISTS persistent_state (
+    source_ip TEXT NOT NULL,
+    kind      TEXT NOT NULL,   -- 'env', 'alias', 'cwd'
+    name      TEXT NOT NULL,
+    value     TEXT NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source_ip, kind, name)
+);
+CREATE INDEX IF NOT EXISTS idx_persistent_ip ON persistent_state(source_ip);
