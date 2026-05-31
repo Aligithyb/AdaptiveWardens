@@ -2,14 +2,17 @@
 
 Operating a high-interaction, AI-supported honeypot implies recurring scaling costs mostly dictated by language model usage.
 
-## AI Engine Costs (Google Gemini)
-AdaptiveWardens leverages `gemini-2.5-flash-lite`, the most efficient tier available under the Gemini umbrella.
-- **Estimated Prompt Cost**: $0.075 / 1 Million Tokens.
-- **Estimated Response Cost**: $0.30 / 1 Million Tokens.
-- **Average Interaction Metric**: A standard SSH command + its session context uses about 150 prompt tokens and generates 50 output tokens.
-- **Monthly Approximation**: Simulating 10,000 distinct AI-triggered attacker commands costs approximately **$0.02 - $0.05 per month**.
+## AI Engine Costs (DeepSeek - default)
+AdaptiveWardens uses `deepseek-v4-flash` in non-thinking mode via DeepSeek's OpenAI-compatible API.
+- **Input (cache miss)**: $0.14 / 1M tokens
+- **Input (cache hit)**: $0.0028 / 1M tokens
+- **Output**: $0.28 / 1M tokens
+- **Average Interaction Metric**: ~150 prompt tokens + ~50 output tokens per SSH command.
+- **Per-call cost**: ~$0.000035 uncached; ~$0.000014 with server-side prefix caching.
+- **Monthly Approximation**: 10,000 attacker commands ≈ **$0.10 - $0.35 / month**.
 
-*(Note: Cache collisions naturally reduce cost to $0.00 since repeated commands fetch cached data without hitting Gemini).*
+*(Note: The in-process 5-minute `ResponseCache` short-circuits repeated commands entirely, dropping the effective rate further.)*
+
 
 ## Hosting and Infrastructure
 The microservices require minimal computational resources:

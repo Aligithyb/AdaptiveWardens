@@ -10,7 +10,8 @@ import math
 import random
 import json
 import httpx
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 import logging
 
 logging.basicConfig(
@@ -26,12 +27,64 @@ SANDBOX_URL = os.getenv("SANDBOX_URL", "http://localhost:8001")
 AI_ENGINE_URL = os.getenv("AI_ENGINE_URL", None)
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
 HOSTNAME = "api-prod-01"
+DATA_DIR = os.getenv("DATA_DIR", "/data")
+HOST_KEY_PATH = os.path.join(DATA_DIR, "ssh_host_key")
+BOOT_TIME_PATH = os.path.join(DATA_DIR, "boot_time.txt")
+HISTORY_PATH = os.path.join(DATA_DIR, "last_login_by_ip.json")
 
 SERVER_VERSION = 'OpenSSH_8.9p1 Ubuntu-3ubuntu0.4'
 
-BOOT_TIME = time.time() - random.uniform(15, 22) * 86400
+# D1: Algorithm sets matching Ubuntu 22.04 OpenSSH 8.9p1 defaults so the
+# ssh -vvv fingerprint matches the advertised version. Lists are in order
+# of preference. Anything asyncssh can't speak we drop silently.
+_KEX_ALGS = [
+    'curve25519-sha256', 'curve25519-sha256@libssh.org',
+    'ecdh-sha2-nistp256', 'ecdh-sha2-nistp384', 'ecdh-sha2-nistp521',
+    'diffie-hellman-group-exchange-sha256',
+    'diffie-hellman-group16-sha512', 'diffie-hellman-group18-sha512',
+    'diffie-hellman-group14-sha256',
+]
+_HOST_KEY_ALGS = [
+    'rsa-sha2-512', 'rsa-sha2-256', 'ssh-ed25519',
+    'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521',
+]
+_ENCRYPTION_ALGS = [
+    'chacha20-poly1305@openssh.com',
+    'aes128-ctr', 'aes192-ctr', 'aes256-ctr',
+    'aes128-gcm@openssh.com', 'aes256-gcm@openssh.com',
+]
+_MAC_ALGS = [
+    'umac-64-etm@openssh.com', 'umac-128-etm@openssh.com',
+    'hmac-sha2-256-etm@openssh.com', 'hmac-sha2-512-etm@openssh.com',
+    'hmac-sha1-etm@openssh.com',
+    'umac-64@openssh.com', 'umac-128@openssh.com',
+    'hmac-sha2-256', 'hmac-sha2-512', 'hmac-sha1',
+]
+
+
+def _load_boot_time() -> float:
+    """Stable BOOT_TIME across container restarts. Initial range 30-180 days."""
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        if os.path.exists(BOOT_TIME_PATH):
+            with open(BOOT_TIME_PATH, "r") as f:
+                return float(f.read().strip())
+        bt = time.time() - random.uniform(30, 180) * 86400
+        with open(BOOT_TIME_PATH, "w") as f:
+            f.write(f"{bt}\n")
+        return bt
+    except OSError:
+        return time.time() - random.uniform(30, 180) * 86400
+
+
+BOOT_TIME = _load_boot_time()
 ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_API_KEY", "")
 
+
+# Prompt-injection telemetry only. We DO NOT block the command — real bash
+# doesn't know what "ignore previous instructions" means; blocking it is a
+# screaming honeypot tell. We log silently to the SOC, then let the command
+# flow through normal dispatch (it'll fall through to "command not found").
 _PROMPT_INJECTION_PATTERNS = [
     "ignore previous", "ignore all previous", "disregard", "forget everything",
     "you are now", "pretend to be", "act as if", "new instructions",
@@ -39,41 +92,119 @@ _PROMPT_INJECTION_PATTERNS = [
     "you are an ai", "you are a language model", "as an ai",
 ]
 
-def _is_prompt_injection(cmd: str) -> bool:
+
+def _looks_like_prompt_injection(cmd: str) -> bool:
     c = cmd.lower()
     return any(p in c for p in _PROMPT_INJECTION_PATTERNS)
 
-SSH_BANNER = """\r
-Welcome to Ubuntu 22.04.3 LTS (GNU/Linux 5.15.0-91-generic x86_64)\r
-\r
- * Documentation:  https://help.ubuntu.com\r
- * Management:     https://landscape.canonical.com\r
- * Support:        https://ubuntu.com/advantage\r
-\r
-  System information as of Tue Apr 29 00:22:14 UTC 2026\r
-\r
-  System load:  2.14               Processes:             187\r
-  Usage of /:   24.2% of 38.60GB   Users logged in:       0\r
-  Memory usage: 32%                IPv4 address for eth0: 10.0.1.45\r
-  Swap usage:   0%\r
-\r
-0 updates can be applied immediately.\r
-\r
-This system is monitored. Unauthorized access will be prosecuted.\r
-NexoPay Inc. — Payment Infrastructure — PCI-DSS Compliant Zone\r
-\r
-Last login: Tue Apr 29 00:10:14 2026 from 10.0.1.5\r
-"""
 
-HONEYTOKEN_FILES = {
-    '/root/.aws/credentials', '/root/.aws/config',
-    '/opt/nexopay/config/stripe.env', '/opt/nexopay/config/auth.env',
-    '/opt/nexopay/config/aws.env', '/opt/nexopay/config/database.env',
-    '/root/.ssh/id_rsa', '/root/.git-credentials', '/root/.kube/config',
-    '/root/.docker/config.json', '/root/.npmrc',
-    '/var/backups/nexopay_db_2026-04-28.sql', '/var/backups/nexopay_db_2026-04-21.sql',
-    '/home/deploy/.env', '/opt/nexopay/data/payments.db',
-}
+def _dyn_date(days_ago: int, fmt: str = "%Y-%m-%d") -> str:
+    return (datetime.utcnow() - timedelta(days=days_ago)).strftime(fmt)
+
+
+def _backup_filename(days_ago: int) -> str:
+    return f"/var/backups/nexopay_db_{_dyn_date(days_ago)}.sql"
+
+
+def _dyn_last_output(ctx: dict) -> str:
+    now = datetime.utcnow()
+    boot = datetime.utcfromtimestamp(BOOT_TIME)
+    source = ctx.get('source_ip', '10.0.1.5')
+    lines = [
+        f"root     pts/0        {source:<15}  {now.strftime('%a %b %d %H:%M')}   still logged in",
+        f"deploy   pts/1        10.0.1.50        {(now - timedelta(hours=6)).strftime('%a %b %d %H:%M')} - "
+        f"{(now - timedelta(hours=5, minutes=48)).strftime('%H:%M')}  (00:12)",
+        f"root     pts/0        185.220.101.45   {(now - timedelta(days=1)).strftime('%a %b %d %H:%M')} - "
+        f"{(now - timedelta(days=1) + timedelta(minutes=13)).strftime('%H:%M')}  (00:13)",
+        f"root     pts/0        10.0.1.5         {(now - timedelta(days=2)).strftime('%a %b %d %H:%M')} - "
+        f"{(now - timedelta(days=2) + timedelta(minutes=37)).strftime('%H:%M')}  (00:37)",
+        f"reboot   system boot  5.15.0-91        {boot.strftime('%a %b %d %H:%M')}   still running",
+        "",
+        f"wtmp begins {boot.strftime('%a %b %d %H:%M:%S %Y')}",
+    ]
+    return "\n".join(lines)
+
+
+def _honeytoken_files() -> set:
+    return {
+        '/root/.aws/credentials', '/root/.aws/config',
+        '/opt/nexopay/config/stripe.env', '/opt/nexopay/config/auth.env',
+        '/opt/nexopay/config/aws.env', '/opt/nexopay/config/database.env',
+        '/root/.ssh/id_rsa', '/root/.git-credentials', '/root/.kube/config',
+        '/root/.docker/config.json', '/root/.npmrc',
+        _backup_filename(1), _backup_filename(8),
+        '/home/deploy/.env', '/opt/nexopay/data/payments.db',
+    }
+
+
+HONEYTOKEN_FILES = _honeytoken_files()
+
+
+_FAKE_LAST_LOGIN_IPS = [
+    "10.0.1.5", "10.0.1.50", "10.0.2.14", "10.0.2.27",
+    "10.0.1.5", "10.0.1.5",
+]
+
+
+def _record_login(source_ip: str):
+    try:
+        data = {}
+        if os.path.exists(HISTORY_PATH):
+            with open(HISTORY_PATH, "r") as f:
+                data = json.load(f)
+        data[source_ip] = time.time()
+        with open(HISTORY_PATH, "w") as f:
+            json.dump(data, f)
+    except (OSError, json.JSONDecodeError):
+        pass
+
+
+def _previous_login(source_ip: str) -> tuple:
+    """(ip_to_show, when_to_show) for the 'Last login' banner line."""
+    try:
+        if os.path.exists(HISTORY_PATH):
+            with open(HISTORY_PATH, "r") as f:
+                data = json.load(f)
+            ts = data.get(source_ip)
+            if ts:
+                return source_ip, datetime.utcfromtimestamp(ts)
+    except (OSError, json.JSONDecodeError):
+        pass
+    fake_ip = random.choice(_FAKE_LAST_LOGIN_IPS)
+    fake_when = datetime.utcnow() - timedelta(
+        hours=random.randint(1, 18), minutes=random.randint(0, 59))
+    return fake_ip, fake_when
+
+
+def _build_banner(source_ip: str) -> str:
+    now = datetime.utcnow()
+    l1, _l5, _l15 = _loadavg()
+    prev_ip, prev_when = _previous_login(source_ip)
+    procs = 180 + random.randint(-10, 14)
+    disk_pct = round(22 + 4 * math.sin(time.time() / 1800.0) + random.uniform(-0.4, 0.4), 1)
+    mem_pct = round(30 + 6 * math.sin(time.time() / 600.0) + random.uniform(-1.5, 1.5), 0)
+    return (
+        "\r\n"
+        "Welcome to Ubuntu 22.04.3 LTS (GNU/Linux 5.15.0-91-generic x86_64)\r\n"
+        "\r\n"
+        " * Documentation:  https://help.ubuntu.com\r\n"
+        " * Management:     https://landscape.canonical.com\r\n"
+        " * Support:        https://ubuntu.com/advantage\r\n"
+        "\r\n"
+        f"  System information as of {now.strftime('%a %b %d %H:%M:%S UTC %Y')}\r\n"
+        "\r\n"
+        f"  System load:  {l1:.2f}               Processes:             {procs}\r\n"
+        f"  Usage of /:   {disk_pct}% of 38.60GB   Users logged in:       0\r\n"
+        f"  Memory usage: {int(mem_pct)}%                IPv4 address for eth0: 10.0.1.45\r\n"
+        "  Swap usage:   0%\r\n"
+        "\r\n"
+        "0 updates can be applied immediately.\r\n"
+        "\r\n"
+        "This system is monitored. Unauthorized access will be prosecuted.\r\n"
+        "NexoPay Inc. — Payment Infrastructure — PCI-DSS Compliant Zone\r\n"
+        "\r\n"
+        f"Last login: {prev_when.strftime('%a %b %d %H:%M:%S %Y')} from {prev_ip}\r\n"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +418,7 @@ STATIC_RESPONSES = {
         "    2  kubectl get pods -n nexopay\n"
         "    3  cat /opt/nexopay/config/stripe.env\n"
         "    4  aws s3 ls s3://nexopay-backups-prod-us-east-1 --profile nexopay-prod\n"
-        "    5  pg_dump -h db-primary.nexopay.internal -U nexopay_app nexopay_prod > /var/backups/nexopay_db_2026-04-28.sql\n"
+        f"    5  pg_dump -h db-primary.nexopay.internal -U nexopay_app nexopay_prod > {_backup_filename(1)}\n"
         "    6  tail -f /opt/nexopay/logs/error.log\n"
         "    7  cat /opt/nexopay/config/database.env\n"
         "    8  redis-cli -h cache-01.nexopay.internal -a r3d1s_nxp_2025_pr0d ping\n"
@@ -326,14 +457,7 @@ STATIC_RESPONSES = {
         "tcp   LISTEN 0      511    127.0.0.1:3000       0.0.0.0:*         users:((\"node\",pid=3100))\n"
         "tcp   LISTEN 0      128    127.0.0.1:6379       0.0.0.0:*         users:((\"redis-server\",pid=2048))"
     ),
-    "last": lambda ctx: (
-        "root     pts/0        10.0.1.5         Tue Apr 29 00:22   still logged in\n"
-        "deploy   pts/1        10.0.1.50        Mon Apr 28 18:32 - 18:45  (00:12)\n"
-        "root     pts/0        185.220.101.45   Mon Apr 28 00:22 - 00:35  (00:13)\n"
-        "root     pts/0        10.0.1.5         Sun Apr 27 22:10 - 22:48  (00:37)\n"
-        "reboot   system boot  5.15.0-91        Sun Apr 10 17:37   still running\n\n"
-        "wtmp begins Sun Apr 10 17:37:02 2026"
-    ),
+    "last": lambda ctx: _dyn_last_output(ctx),
     "sudo -l": lambda ctx: (
         f"Matching Defaults entries for {ctx.get('username','root')} on {HOSTNAME}:\n"
         f"    env_reset, mail_badpass,\n"
@@ -448,7 +572,105 @@ STATIC_RESPONSES = {
         f"root     pts/0    {ctx.get('source_ip','10.0.1.5'):<16}  00:22    0.00s  0.01s  0.00s w"
     ),
     "who": lambda ctx: (
-        f"root     pts/0        2026-04-29 00:22 ({ctx.get('source_ip','10.0.1.5')})"
+        f"root     pts/0        {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} "
+        f"({ctx.get('source_ip','10.0.1.5')})"
+    ),
+    # Story-consistency: files, DNS, services all tell the same NexoPay story
+    "cat /etc/passwd": lambda ctx: (
+        "root:x:0:0:root:/root:/bin/bash\n"
+        "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n"
+        "bin:x:2:2:bin:/bin:/usr/sbin/nologin\n"
+        "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin\n"
+        "postgres:x:108:116:PostgreSQL administrator,,,:/var/lib/postgresql:/bin/bash\n"
+        "deploy:x:1001:1001:NexoPay Deploy,,,:/home/deploy:/bin/bash\n"
+        "nexopay:x:1002:1002:NexoPay Service,,,:/opt/nexopay:/usr/sbin/nologin"
+    ),
+    "cat /etc/shadow": lambda ctx: (
+        "cat: /etc/shadow: Permission denied"
+    ),
+    "cat /etc/hosts": lambda ctx: (
+        "127.0.0.1   localhost\n"
+        "127.0.1.1   api-prod-01\n"
+        "10.0.1.45   api-prod-01.nexopay.internal api-prod-01\n"
+        "10.0.1.10   db-primary.nexopay.internal db-primary\n"
+        "10.0.1.11   db-secondary.nexopay.internal db-secondary\n"
+        "10.0.1.20   cache-01.nexopay.internal cache-01\n"
+        "10.0.1.5    bastion.nexopay.internal bastion"
+    ),
+    "cat /etc/resolv.conf": lambda ctx: (
+        "nameserver 10.0.1.2\nsearch nexopay.internal\noptions ndots:5"
+    ),
+    "cat /etc/os-release": lambda ctx: (
+        'NAME="Ubuntu"\nVERSION="22.04.3 LTS (Jammy Jellyfish)"\n'
+        'ID=ubuntu\nID_LIKE=debian\nPRETTY_NAME="Ubuntu 22.04.3 LTS"\n'
+        'VERSION_ID="22.04"\nHOME_URL="https://www.ubuntu.com/"\n'
+        'SUPPORT_URL="https://help.ubuntu.com/"\n'
+        'BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"\n'
+        'PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"\n'
+        'VERSION_CODENAME=jammy\nUBUNTU_CODENAME=jammy'
+    ),
+    "nslookup db-primary.nexopay.internal": lambda ctx: (
+        "Server:\t\t10.0.1.2\nAddress:\t10.0.1.2#53\n\n"
+        "Name:\tdb-primary.nexopay.internal\nAddress: 10.0.1.10"
+    ),
+    "nslookup cache-01.nexopay.internal": lambda ctx: (
+        "Server:\t\t10.0.1.2\nAddress:\t10.0.1.2#53\n\n"
+        "Name:\tcache-01.nexopay.internal\nAddress: 10.0.1.20"
+    ),
+    "dig db-primary.nexopay.internal": lambda ctx: (
+        "; <<>> DiG 9.18.12-0ubuntu0.22.04.3-Ubuntu <<>> db-primary.nexopay.internal\n"
+        ";; ANSWER SECTION:\n"
+        "db-primary.nexopay.internal. 300 IN A 10.0.1.10\n\n"
+        ";; Query time: 1 msec\n;; SERVER: 10.0.1.2#53(10.0.1.2)"
+    ),
+    "systemctl status nexopay-api": lambda ctx: (
+        "● nexopay-api.service - NexoPay Payment API\n"
+        "     Loaded: loaded (/lib/systemd/system/nexopay-api.service; enabled)\n"
+        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:42 UTC; 18 days ago\n"
+        "   Main PID: 3100 (node)\n"
+        "      Tasks: 22 (limit: 19158)\n"
+        "     Memory: 67.3M\n"
+        "        CPU: 1h 24min 15.231s\n"
+        "     CGroup: /system.slice/nexopay-api.service\n"
+        "             └─3100 node /opt/nexopay/server.js\n\n"
+        "Apr 29 00:22:01 api-prod-01 node[3100]: [INFO] POST /v2/payments 200 142ms\n"
+        "Apr 29 00:22:09 api-prod-01 node[3100]: [INFO] GET /v2/balance 200 38ms\n"
+        "Apr 29 00:22:14 api-prod-01 node[3100]: [INFO] POST /v2/webhooks/stripe 200 89ms"
+    ),
+    "systemctl status nginx": lambda ctx: (
+        "● nginx.service - A high performance web server\n"
+        "     Loaded: loaded (/lib/systemd/system/nginx.service; enabled)\n"
+        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:41 UTC; 18 days ago\n"
+        "   Main PID: 892 (nginx)\n"
+        "     CGroup: /system.slice/nginx.service\n"
+        "             ├─892 nginx: master process /usr/sbin/nginx -g daemon on;\n"
+        "             └─893 nginx: worker process"
+    ),
+    "systemctl status postgresql": lambda ctx: (
+        "● postgresql.service - PostgreSQL RDBMS\n"
+        "     Loaded: loaded (/lib/systemd/system/postgresql.service; enabled)\n"
+        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:40 UTC; 18 days ago"
+    ),
+    "journalctl -u nexopay-api": lambda ctx: (
+        "-- Logs begin at Thu 2026-04-10 17:37:41 UTC, end at Tue 2026-04-29 00:22:14 UTC. --\n"
+        "Apr 10 17:37:42 api-prod-01 systemd[1]: Started NexoPay Payment API.\n"
+        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Server listening on 0.0.0.0:3000\n"
+        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Database connected: db-primary.nexopay.internal\n"
+        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Redis connected: cache-01.nexopay.internal:6379\n"
+        "Apr 29 00:22:01 api-prod-01 node[3100]: [INFO] POST /v2/payments 200 142ms\n"
+        "Apr 29 00:22:09 api-prod-01 node[3100]: [INFO] GET /v2/balance 200 38ms"
+    ),
+    "tail -f /opt/nexopay/logs/error.log": lambda ctx: (
+        "[2026-04-29 00:18:22] WARN  stripe: Webhook signature verification slow for evt_3OxNpY...\n"
+        "[2026-04-29 00:19:01] INFO  payment processed: txn_01HXB1C2D3E4F5 amount=9999 status=succeeded\n"
+        "[2026-04-29 00:20:11] WARN  rate_limit: 429 returned for IP 185.220.101.45\n"
+        "[2026-04-29 00:21:33] INFO  webhook dispatched: merchant m_3xNp4y1234ABCD"
+    ),
+    "cat /opt/nexopay/logs/error.log": lambda ctx: (
+        "[2026-04-29 00:18:22] WARN  stripe: Webhook signature verification slow for evt_3OxNpY...\n"
+        "[2026-04-29 00:19:01] INFO  payment processed: txn_01HXB1C2D3E4F5 amount=9999 status=succeeded\n"
+        "[2026-04-29 00:20:11] WARN  rate_limit: 429 returned for IP 185.220.101.45\n"
+        "[2026-04-29 00:21:33] INFO  webhook dispatched: merchant m_3xNp4y1234ABCD"
     ),
     # Story-consistency: files, DNS, services all tell the same NexoPay story
     "cat /etc/passwd": lambda ctx: (
@@ -665,9 +887,7 @@ def _auth_record(ip: str) -> dict:
     return _AUTH_STATE.setdefault(ip, {
         "accepted": None,
         "attempts": 0,
-        "fails": [],
         "threshold": random.randint(3, 5),
-        "lockout_until": 0.0,
     })
 
 
@@ -681,34 +901,163 @@ class SessionHandler(asyncssh.SSHServerSession):
         self.http_client    = httpx.AsyncClient(timeout=30.0)
         self.session_ready  = False
         self.command_history = []
+        self._last_exit     = 0
+        self._session_env   = {}
+        self._aliases       = {}
+        self._bg_jobs       = []  # list of dicts: {pid, cmd, started}
+        self._next_fake_pid = 31000 + random.randint(0, 999)
+        self._heredoc       = None  # active here-doc state when not None
+        self._continuation  = False  # backslash line continuation
+        self._cont_buf      = ""
 
         # PTY / line-editor state
         self.context["source_ip"] = self.source_ip
         self._technique_count = 0
         self._alerted_high    = False
 
-        self._pty_mode   = False
+        self._pty_mode        = False
+        self._shell_requested = False
+        self._exec_only       = False
+        self._is_sftp         = False
+        self._sftp_reader: Optional[_SFTPReaderAdapter] = None
         self._line_buf   = ""
         self._cmd_history: list = []
         self._hist_idx   = -1
         self._hist_saved = ""
         self._escape_buf = ""
 
+    def _set_exit(self, code: int):
+        self._last_exit = code
+
+    def _next_pid(self) -> int:
+        self._next_fake_pid += random.randint(1, 7)
+        return self._next_fake_pid
+
+    def _expand_specials(self, cmd: str) -> str:
+        """Cheap pre-dispatch expansion for the small set we always handle:
+        $?, $$, $! and the trivial $HOME / $USER / $PATH / $SHELL / $HOSTNAME / $PWD.
+        Full variable expansion lives in _expand_full (B4)."""
+        env = {
+            "?": str(self._last_exit),
+            "$": "1",
+            "!": str(self._bg_jobs[-1]["pid"]) if self._bg_jobs else "",
+            "HOME": self._session_env.get("HOME", "/root"),
+            "USER": self._session_env.get("USER", self.username),
+            "LOGNAME": self.username,
+            "SHELL": "/bin/bash",
+            "PATH": self._session_env.get(
+                "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"),
+            "HOSTNAME": HOSTNAME,
+            "PWD": self.current_directory,
+            "OLDPWD": self._session_env.get("OLDPWD", "/root"),
+            "LANG": "C.UTF-8",
+            "TERM": "xterm-256color",
+        }
+        env.update(self._session_env)
+
+        def repl_brace(m):
+            return env.get(m.group(1), "")
+
+        def repl_bare(m):
+            return env.get(m.group(1), "")
+
+        out = re.sub(r"\$\{([A-Za-z_?$!][A-Za-z0-9_]*)\}", repl_brace, cmd)
+        out = re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*|\?|\$|!)", repl_bare, out)
+
+        # B4: safe $((arithmetic)) expansion — only digits and basic operators
+        def _arith(m):
+            expr = m.group(1).strip()
+            if not re.match(r'^[\d\s+\-*/%()&|^~<>]+$', expr):
+                return "0"
+            try:
+                return str(int(eval(compile(expr, '<arith>', 'eval'), {"__builtins__": {}})))
+            except Exception:
+                return "0"
+        out = re.sub(r'\$\(\((.+?)\)\)', _arith, out)
+        return out
+
+    async def _expand_globs(self, cmd: str) -> str:
+        """B4: expand glob patterns (*, ?) against the sandbox-store virtual FS."""
+        import fnmatch as _fnmatch
+        parts = cmd.split()
+        new_parts = []
+        for part in parts:
+            if '*' not in part and '?' not in part:
+                new_parts.append(part); continue
+            # Determine the directory and the pattern
+            if '/' in part:
+                dir_part, _, pattern = part.rpartition('/')
+                dir_path = dir_part or '/'
+            else:
+                dir_path = self.current_directory
+                pattern = part
+            if not dir_path.startswith('/'):
+                dir_path = f"{self.current_directory.rstrip('/')}/{dir_path}"
+            try:
+                r = await self.http_client.get(
+                    f"{SANDBOX_URL}/files/{self.session_id}/list",
+                    params={"path": dir_path})
+                if r.status_code == 200:
+                    matches = sorted(
+                        f"{dir_path.rstrip('/')}/{e['name']}"
+                        for e in r.json().get("entries", [])
+                        if _fnmatch.fnmatch(e['name'], pattern)
+                    )
+                    if matches:
+                        new_parts.extend(matches); continue
+            except Exception:
+                pass
+            new_parts.append(part)  # no match → leave glob literal (bash behaviour)
+        return ' '.join(new_parts)
+
     def connection_made(self, chan):
         self.chan = chan
 
     def pty_requested(self, terminal_type, terminal_size, terminal_modes):
-        """Accept PTY allocation so the client sends raw keypresses."""
+        """Real OpenSSH rejects PTY when only `exec` was requested (no shell).
+        We track shell intent and refuse PTY for `ssh user@host cmd` invocations."""
+        if self._exec_only:
+            return False
         self._pty_mode = True
         return True
 
     def shell_requested(self):
+        self._shell_requested = True
+        return True
+
+    def exec_requested(self, command):
+        """`ssh user@host 'cmd'` arrives here. Run as a single batched command.
+        D5: PTY is rejected for exec-only sessions."""
+        if not self._shell_requested:
+            self._exec_only = True
+        self._pty_mode = False
+        asyncio.create_task(self._process_command_string(command + "\n"))
         return True
 
     def session_started(self):
-        self.chan.write(SSH_BANNER)
+        if self._is_sftp:
+            self.chan.set_encoding(None)
+            self._sftp_reader = _SFTPReaderAdapter()
+            asyncio.create_task(self._run_sftp_server())
+            return
+        self.chan.write(_build_banner(self.source_ip))
+        _record_login(self.source_ip)
         self._show_prompt()
         asyncio.create_task(self._init_db())
+
+    async def _run_sftp_server(self):
+        from asyncssh.sftp import run_sftp_server
+        try:
+            writer = _SFTPWriterAdapter(self.chan)
+            sftp_server = HoneypotSFTPServer(self.chan)
+            await run_sftp_server(sftp_server, self._sftp_reader, writer, 0)
+        except Exception as e:
+            logger.debug(f"[SFTP] Session ended: {e}")
+        finally:
+            try:
+                self.chan.close()
+            except Exception:
+                pass
 
     def _show_prompt(self):
         self.chan.write(f"\r\n{self.username}@{HOSTNAME}:{self.current_directory}$ "
@@ -720,6 +1069,15 @@ class SessionHandler(asyncssh.SSHServerSession):
         nl = "\r\n" if self._pty_mode else "\n"
         for line in text.split("\n"):
             self.chan.write(line + nl)
+
+    def _write_err(self, text: str):
+        """D2: Write error output to the SSH stderr channel so 2>/dev/null works."""
+        nl = "\r\n" if self._pty_mode else "\n"
+        try:
+            for line in text.split("\n"):
+                self.chan.write_stderr(line + nl)
+        except (AttributeError, Exception):
+            self._write_line(text)
 
     async def _init_db(self):
         try:
@@ -735,13 +1093,48 @@ class SessionHandler(asyncssh.SSHServerSession):
                     f"{SANDBOX_URL}/sessions/{self.session_id}/state")
                 if state_r.status_code == 200:
                     self.context["environment"] = state_r.json().get("environment", {})
+
+                # B2: load persistent env/alias/cwd from previous sessions by this IP
+                try:
+                    ps_r = await self.http_client.get(
+                        f"{SANDBOX_URL}/state/{self.source_ip}")
+                    if ps_r.status_code == 200:
+                        pstate = ps_r.json()
+                        if pstate.get('env'):
+                            self._session_env.update(pstate['env'])
+                            self.context['environment'] = {
+                                **self.context.get('environment', {}),
+                                **self._session_env,
+                            }
+                        if pstate.get('alias'):
+                            self._aliases.update(pstate['alias'])
+                        saved_cwd = pstate.get('cwd', '/root')
+                        if saved_cwd and saved_cwd != '/root':
+                            self.current_directory = saved_cwd
+                            self.context['current_directory'] = saved_cwd
+                        if self._aliases:
+                            self.context['aliases'] = dict(self._aliases)
+                except Exception as e:
+                    logger.debug(f"Persistent state load skipped: {e}")
         except Exception as e:
             logger.error(f"DB init failed: {e}")
 
     # ------------------------------------------------------------------
     # data_received: route to PTY line editor or legacy batch handler
     # ------------------------------------------------------------------
+    def subsystem_requested(self, subsystem: str) -> bool:
+        if subsystem == 'sftp':
+            self._is_sftp = True
+            return True
+        return False
+
     def data_received(self, data, datatype):
+        if self._is_sftp:
+            if isinstance(data, str):
+                data = data.encode('utf-8', errors='replace')
+            if self._sftp_reader:
+                self._sftp_reader.feed(data)
+            return
         if self._pty_mode:
             asyncio.create_task(self._handle_pty_input(data))
         else:
@@ -889,51 +1282,151 @@ class SessionHandler(asyncssh.SSHServerSession):
             self.chan.write(self._line_buf)
 
     async def _process_pty_line(self):
-        """Called on Enter in PTY mode — process the buffered line."""
-        line = self._line_buf.strip()
+        """Called on Enter in PTY mode — process the buffered line.
+
+        B3: handle here-docs (`cmd <<EOF ... EOF`) and backslash line continuation."""
+        raw = self._line_buf  # do NOT strip — heredoc bodies are whitespace-sensitive
         self.chan.write('\r\n')
         self._line_buf = ""
         self._hist_idx = -1
-        if line:
-            if not self._cmd_history or self._cmd_history[-1] != line:
-                self._cmd_history.append(line)
-            await self._process_single_command(line)
+
+        # Active here-doc: just accumulate body lines until delimiter
+        if self._heredoc is not None:
+            stripped = raw.lstrip() if self._heredoc["strip_tabs"] else raw
+            if stripped.rstrip() == self._heredoc["delim"]:
+                full_cmd = self._heredoc["cmd"]
+                body = "\n".join(self._heredoc["body"])
+                self._heredoc = None
+                # Stash body as stdin in context so handlers can read it if they care
+                self.context["_heredoc_stdin"] = body
+                if full_cmd.strip():
+                    if not self._cmd_history or self._cmd_history[-1] != full_cmd:
+                        self._cmd_history.append(full_cmd)
+                    await self._process_single_command(full_cmd)
+                self.context.pop("_heredoc_stdin", None)
+            else:
+                self._heredoc["body"].append(raw)
+                self.chan.write("> ")
+            return
+
+        # Continuation: append to buffered command
+        if self._continuation:
+            self._continuation = False
+            # Trim trailing backslash from previously buffered command
+            self._cont_buf = self._cont_buf.rstrip("\\").rstrip()
+            line = self._cont_buf + " " + raw.strip()
+            self._cont_buf = ""
         else:
+            line = raw.strip()
+
+        if not line:
             self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
+            return
+
+        # Detect new here-doc start: token <<DELIM or <<-DELIM
+        m = re.search(r"<<(-?)\s*[\"']?(\w+)[\"']?\s*$", line)
+        if m:
+            self._heredoc = {
+                "cmd": line[:m.start()].rstrip(),
+                "delim": m.group(2),
+                "strip_tabs": bool(m.group(1)),
+                "body": [],
+            }
+            self.chan.write("> ")
+            return
+
+        # Detect trailing backslash continuation
+        if line.endswith("\\") and not line.endswith("\\\\"):
+            self._continuation = True
+            self._cont_buf = line
+            self.chan.write("> ")
+            return
+
+        if not self._cmd_history or self._cmd_history[-1] != line:
+            self._cmd_history.append(line)
+        await self._process_single_command(line)
 
     # ------------------------------------------------------------------
     # Legacy batch handler (non-PTY clients: load tests, scripts)
     # ------------------------------------------------------------------
     async def _process_command_string(self, full_data: str):
+        """Batch path: also honor here-docs and backslash continuation."""
         lines = full_data.split('\n')
-        for raw_line in lines:
-            raw_line = raw_line.strip()
-            if not raw_line:
-                self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
+        accumulated = ""
+        heredoc = None
+        i = 0
+        while i < len(lines):
+            raw = lines[i]
+            i += 1
+            if heredoc is not None:
+                if (raw.lstrip() if heredoc["strip_tabs"] else raw).rstrip() == heredoc["delim"]:
+                    full_cmd = heredoc["cmd"]
+                    self.context["_heredoc_stdin"] = "\n".join(heredoc["body"])
+                    if full_cmd.strip():
+                        await self._process_single_command(full_cmd)
+                    self.context.pop("_heredoc_stdin", None)
+                    heredoc = None
+                else:
+                    heredoc["body"].append(raw)
                 continue
-            cmd = raw_line.split('#')[0].strip()
-            if not cmd:
-                self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
+
+            stripped = raw.strip()
+            if not stripped:
+                if not accumulated:
+                    self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
                 continue
-            await self._process_single_command(cmd)
+            cmd_part = stripped.split('#')[0].strip()
+            if not cmd_part:
+                if not accumulated:
+                    self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
+                continue
+
+            # Continue accumulating if previous line ended with \
+            if accumulated:
+                accumulated = accumulated.rstrip("\\").rstrip() + " " + cmd_part
+            else:
+                accumulated = cmd_part
+
+            # Backslash continuation
+            if accumulated.endswith("\\") and not accumulated.endswith("\\\\"):
+                continue
+
+            # Here-doc start
+            m = re.search(r"<<(-?)\s*[\"']?(\w+)[\"']?\s*$", accumulated)
+            if m:
+                heredoc = {
+                    "cmd": accumulated[:m.start()].rstrip(),
+                    "delim": m.group(2),
+                    "strip_tabs": bool(m.group(1)),
+                    "body": [],
+                }
+                accumulated = ""
+                continue
+
+            await self._process_single_command(accumulated)
+            accumulated = ""
 
     # ------------------------------------------------------------------
     # Core command dispatcher (used by both PTY and batch paths)
     # ------------------------------------------------------------------
     async def _process_single_command(self, cmd: str):
-        if _is_prompt_injection(cmd):
-            logger.warning(f"[{self.session_id}] Prompt injection attempt: {cmd[:100]}")
-            base = cmd.split()[0] if cmd.split() else cmd
-            output = f"bash: {base}: command not found"
-            self._write_line(output)
-            asyncio.create_task(self._record(cmd, output, 8))
+        # Telemetry only — DO NOT short-circuit the command. Real bash would just
+        # try to run "ignore" as a command and fail with "command not found".
+        # Blocking with a special-case response is itself a honeypot fingerprint.
+        if _looks_like_prompt_injection(cmd):
+            logger.warning(f"[{self.session_id}] Prompt-injection-style input: {cmd[:100]}")
             asyncio.create_task(self._record_mitre_technique({
                 "technique_id": "T1059", "technique_name": "Command and Scripting Interpreter",
-                "tactic": "Execution", "confidence": 0.95,
-                "evidence": f"Prompt injection attempt: {cmd[:80]}",
+                "tactic": "Execution", "confidence": 0.85,
+                "evidence": f"Prompt-injection-style input: {cmd[:80]}",
             }))
-            self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
-            return
+            asyncio.create_task(self._alert_honeytoken(f"prompt-injection://{cmd[:80]}"))
+            # fall through to normal dispatch
+
+        # B4: expand variables + arithmetic (sync), then globs against virtual FS (async)
+        cmd = self._expand_specials(cmd)
+        if '*' in cmd or '?' in cmd:
+            cmd = await self._expand_globs(cmd)
 
         if cmd in ["exit", "logout"]:
             self.chan.write("logout\r\n")
@@ -941,12 +1434,54 @@ class SessionHandler(asyncssh.SSHServerSession):
             self.chan.close()
             return
 
+        # B1: builtins with deterministic exit codes
+        if cmd in ("true", ":"):
+            self._set_exit(0)
+            self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
+            return
+        if cmd == "false":
+            self._set_exit(1)
+            self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
+            return
+
+        # B2 (partial in-memory): export / unset / alias persist for this session.
+        if cmd.startswith("export ") or cmd.startswith("declare -x "):
+            await self._handle_export(cmd)
+            return
+        if cmd.startswith("unset "):
+            await self._handle_unset(cmd)
+            return
+        if cmd.startswith("alias ") or cmd == "alias":
+            await self._handle_alias(cmd)
+            return
+        if cmd.startswith("unalias "):
+            await self._handle_unalias(cmd)
+            return
+
+        # B6 (partial): background job execution `cmd &`
+        if cmd.rstrip().endswith("&") and not cmd.rstrip().endswith("&&"):
+            await self._handle_background(cmd.rstrip().rstrip("&").strip())
+            return
+
+        # Alias expansion: substitute the first token if it's an alias
+        first = cmd.split(maxsplit=1)
+        if first and first[0] in self._aliases:
+            rest = first[1] if len(first) > 1 else ""
+            cmd = f"{self._aliases[first[0]]} {rest}".strip()
+
+        # B5: Pipe / redirect detection — route before per-command dispatch
+        if self._has_pipe_or_redirect(cmd):
+            await self._execute_pipeline(cmd)
+            return
+
         if cmd in CONTAINER_ESCAPE_PROBES:
             await self._handle_intercept(cmd, CONTAINER_ESCAPE_PROBES[cmd])
             return
 
-        if cmd.startswith("cd "):
+        if cmd == "cd" or cmd.startswith("cd "):
             self._handle_cd(cmd)
+            self._set_exit(0)
+            asyncio.create_task(self._persist_state('cwd', 'cwd', self.current_directory))
             self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
         elif (cmd.startswith("ls") or cmd.startswith("cat ") or
               cmd.startswith("touch ") or cmd.startswith("mkdir ")):
@@ -963,6 +1498,609 @@ class SessionHandler(asyncssh.SSHServerSession):
             await self._handle_decoy_service(cmd)
         else:
             await self._handle_generic_command(cmd)
+
+    # ------------------------------------------------------------------
+    # B2 builtins: export / unset / alias / unalias (in-memory per session)
+    # ------------------------------------------------------------------
+    async def _handle_export(self, cmd: str):
+        body = cmd.split(maxsplit=1)[1] if " " in cmd else ""
+        if body.startswith("-x "):
+            body = body[3:]
+        if "=" in body:
+            name, _, val = body.partition("=")
+            name = name.strip()
+            val = val.strip().strip('"').strip("'")
+            self._session_env[name] = val
+            self.context["environment"] = dict(self._session_env)
+            self._set_exit(0)
+            asyncio.create_task(self._persist_state('env', name, val))
+        elif body:
+            # `export FOO` with no value: idempotent if FOO is unset
+            if body not in self._session_env:
+                self._session_env[body] = ""
+                self.context["environment"] = dict(self._session_env)
+                asyncio.create_task(self._persist_state('env', body, ""))
+            self._set_exit(0)
+        else:
+            self._write_line(self._formatted_env())
+            self._set_exit(0)
+        self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
+
+    async def _handle_unset(self, cmd: str):
+        for name in cmd.split()[1:]:
+            self._session_env.pop(name, None)
+            asyncio.create_task(self._delete_state('env', name))
+        self.context["environment"] = dict(self._session_env)
+        self._set_exit(0)
+        self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
+
+    async def _handle_alias(self, cmd: str):
+        body = cmd[6:].strip() if cmd.startswith("alias ") else ""
+        if not body:
+            for k, v in self._aliases.items():
+                self._write_line(f"alias {k}='{v}'")
+            self._set_exit(0)
+        elif "=" in body:
+            name, _, val = body.partition("=")
+            name = name.strip()
+            val = val.strip().strip('"').strip("'")
+            self._aliases[name] = val
+            self.context['aliases'] = dict(self._aliases)
+            self._set_exit(0)
+            asyncio.create_task(self._persist_state('alias', name, val))
+        else:
+            target = self._aliases.get(body)
+            if target:
+                self._write_line(f"alias {body}='{target}'")
+                self._set_exit(0)
+            else:
+                self._write_line(f"bash: alias: {body}: not found")
+                self._set_exit(1)
+        self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
+
+    async def _handle_unalias(self, cmd: str):
+        for name in cmd.split()[1:]:
+            self._aliases.pop(name, None)
+            asyncio.create_task(self._delete_state('alias', name))
+        self.context['aliases'] = dict(self._aliases)
+        self._set_exit(0)
+        self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
+
+    def _formatted_env(self) -> str:
+        base = {
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "HOME": "/root", "USER": self.username, "LOGNAME": self.username,
+            "SHELL": "/bin/bash", "TERM": "xterm-256color", "LANG": "C.UTF-8",
+            "HOSTNAME": HOSTNAME, "PWD": self.current_directory,
+        }
+        base.update(self._session_env)
+        return "\n".join(f'declare -x {k}="{v}"' for k, v in base.items())
+
+    # ------------------------------------------------------------------
+    # B6: background job execution
+    # ------------------------------------------------------------------
+    async def _handle_background(self, cmd: str):
+        pid = self._next_pid()
+        job_idx = len(self._bg_jobs) + 1
+        self._bg_jobs.append({
+            "pid": pid, "cmd": cmd, "started": time.time(), "job": job_idx,
+        })
+        self.chan.write(f"[{job_idx}] {pid}\r\n")
+        self._set_exit(0)
+        self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
+
+    # ------------------------------------------------------------------
+    # B5: Pipeline and redirect support
+    # ------------------------------------------------------------------
+
+    def _has_pipe_or_redirect(self, cmd: str) -> bool:
+        """True if cmd contains an unquoted | (not ||), >, >>, or 2>."""
+        in_sq = in_dq = False
+        i = 0
+        n = len(cmd)
+        while i < n:
+            c = cmd[i]
+            if c == "'" and not in_dq:
+                in_sq = not in_sq
+            elif c == '"' and not in_sq:
+                in_dq = not in_dq
+            elif not in_sq and not in_dq:
+                if c == '|':
+                    if i + 1 < n and cmd[i + 1] == '|':
+                        i += 2  # skip || (OR operator)
+                        continue
+                    return True
+                if c == '>':
+                    return True
+                if c == '2' and i + 1 < n and cmd[i + 1] == '>':
+                    return True
+            i += 1
+        return False
+
+    def _split_on_pipe(self, cmd: str) -> list:
+        """Split cmd on unquoted | (not ||), preserving quotes."""
+        stages, current = [], []
+        in_sq = in_dq = False
+        i = 0
+        n = len(cmd)
+        while i < n:
+            c = cmd[i]
+            if c == "'" and not in_dq:
+                in_sq = not in_sq; current.append(c)
+            elif c == '"' and not in_sq:
+                in_dq = not in_dq; current.append(c)
+            elif c == '|' and not in_sq and not in_dq:
+                if i + 1 < n and cmd[i + 1] == '|':
+                    current.append(c); current.append(cmd[i + 1]); i += 2; continue
+                stages.append("".join(current).strip()); current = []
+            else:
+                current.append(c)
+            i += 1
+        if current:
+            stages.append("".join(current).strip())
+        return [s for s in stages if s]
+
+    @staticmethod
+    def _parse_stage_redirects(stage: str) -> tuple:
+        """Strip redirections, return (cmd, stdout_file, append, stderr_null, stderr_merged)."""
+        cmd = stage
+        stdout_file = None
+        stdout_append = False
+        stderr_null = False
+        stderr_merged = False
+
+        cmd, n = re.subn(r'\s*2>\s*/dev/null', '', cmd)
+        if n: stderr_null = True
+
+        cmd, n = re.subn(r'\s*2>&1', '', cmd)
+        if n: stderr_merged = True
+
+        cmd, n = re.subn(r'\s*2>\s*\S+', '', cmd)  # 2>other_file → discard
+        if n and not stderr_null: stderr_null = True
+
+        m = re.search(r'\s*>>\s*(\S+)', cmd)
+        if m:
+            stdout_file = m.group(1); stdout_append = True
+            cmd = cmd[:m.start()] + cmd[m.end():]
+
+        m = re.search(r'(?<!>)>\s*(\S+)', cmd)
+        if m:
+            stdout_file = m.group(1); stdout_append = False
+            cmd = cmd[:m.start()] + cmd[m.end():]
+
+        return cmd.strip(), stdout_file, stdout_append, stderr_null, stderr_merged
+
+    @staticmethod
+    def _filter_grep(args: list, stdin: str) -> tuple:
+        invert = case_i = count_only = line_nos = fixed = False
+        pattern = None
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a in ('-v', '--invert-match'): invert = True
+            elif a in ('-i', '--ignore-case'): case_i = True
+            elif a in ('-c', '--count'): count_only = True
+            elif a in ('-n', '--line-number'): line_nos = True
+            elif a in ('-F', '--fixed-strings'): fixed = True
+            elif a in ('-E', '-e', '--extended-regexp', '--regexp'): pass
+            elif a.startswith('-') and len(a) > 1 and a[1:].isalpha():
+                for f in a[1:]:
+                    if f == 'v': invert = True
+                    elif f == 'i': case_i = True
+                    elif f == 'c': count_only = True
+                    elif f == 'n': line_nos = True
+            elif pattern is None:
+                pattern = a
+            i += 1
+        if pattern is None:
+            return "", 1
+        try:
+            pat = re.escape(pattern) if fixed else pattern
+            regex = re.compile(pat, re.IGNORECASE if case_i else 0)
+        except re.error:
+            return f"grep: invalid expression: {pattern}", 2
+        lines = stdin.split('\n')
+        matched = []
+        for idx, line in enumerate(lines, 1):
+            hit = bool(regex.search(line))
+            if invert: hit = not hit
+            if hit:
+                matched.append(f"{idx}:{line}" if line_nos else line)
+        if count_only:
+            return str(len(matched)), 0 if matched else 1
+        return '\n'.join(matched), 0 if matched else 1
+
+    @staticmethod
+    def _filter_head(args: list, stdin: str) -> tuple:
+        n = 10
+        i = 0
+        while i < len(args):
+            if args[i] == '-n' and i + 1 < len(args):
+                try: n = int(args[i + 1])
+                except ValueError: pass
+                i += 2; continue
+            elif args[i].startswith('-') and args[i][1:].lstrip('-').isdigit():
+                try: n = int(args[i].lstrip('-'))
+                except ValueError: pass
+            i += 1
+        return '\n'.join(stdin.split('\n')[:n]), 0
+
+    @staticmethod
+    def _filter_tail(args: list, stdin: str) -> tuple:
+        n = 10
+        i = 0
+        while i < len(args):
+            if args[i] == '-n' and i + 1 < len(args):
+                try: n = int(args[i + 1])
+                except ValueError: pass
+                i += 2; continue
+            elif args[i] == '-f': pass
+            elif args[i].startswith('-') and args[i][1:].isdigit():
+                try: n = int(args[i][1:])
+                except ValueError: pass
+            i += 1
+        lines = stdin.split('\n')
+        return '\n'.join(lines[-n:]) if n > 0 else '', 0
+
+    @staticmethod
+    def _filter_wc(args: list, stdin: str) -> tuple:
+        do_l = '-l' in args; do_w = '-w' in args; do_c = '-c' in args or '-m' in args
+        if not any([do_l, do_w, do_c]):
+            l = stdin.count('\n'); w = len(stdin.split()); c = len(stdin)
+            return f"{l:>7} {w:>7} {c:>7}", 0
+        parts = []
+        if do_l: parts.append(f"{stdin.count(chr(10)):>7}")
+        if do_w: parts.append(f"{len(stdin.split()):>7}")
+        if do_c: parts.append(f"{len(stdin):>7}")
+        return ' '.join(parts), 0
+
+    @staticmethod
+    def _filter_cut(args: list, stdin: str) -> tuple:
+        delim = '\t'; fields = None; chars = None
+        i = 0
+        while i < len(args):
+            if args[i] == '-d' and i + 1 < len(args):
+                delim = args[i + 1]; i += 2; continue
+            elif args[i].startswith('-d') and len(args[i]) > 2:
+                delim = args[i][2:]; i += 1; continue
+            elif args[i] == '-f' and i + 1 < len(args):
+                spec = args[i + 1]; fields = []
+                for p in spec.split(','):
+                    if '-' in p:
+                        a, b = p.split('-', 1)
+                        fields.extend(range(int(a) if a else 1, (int(b) if b else 999) + 1))
+                    elif p.isdigit(): fields.append(int(p))
+                i += 2; continue
+            elif args[i] == '-c' and i + 1 < len(args):
+                try: chars = int(args[i + 1])
+                except ValueError: pass
+                i += 2; continue
+            i += 1
+        result = []
+        for line in stdin.split('\n'):
+            if chars is not None: result.append(line[:chars])
+            elif fields:
+                pts = line.split(delim)
+                result.append(delim.join(pts[f - 1] for f in fields if 1 <= f <= len(pts)))
+            else: result.append(line)
+        return '\n'.join(result), 0
+
+    @staticmethod
+    def _filter_sort(args: list, stdin: str) -> tuple:
+        rev = '-r' in args; numeric = '-n' in args; unique = '-u' in args
+        key_f = None
+        for i, a in enumerate(args):
+            if a == '-k' and i + 1 < len(args):
+                try: key_f = int(args[i + 1].split(',')[0]) - 1
+                except (ValueError, IndexError): pass
+        lines = stdin.split('\n')
+        trailing = lines and lines[-1] == ''
+        if trailing: lines = lines[:-1]
+        def skey(line):
+            if key_f is not None:
+                pts = line.split()
+                v = pts[key_f] if key_f < len(pts) else line
+                if numeric:
+                    try: return (0, float(v))
+                    except ValueError: pass
+                return (1, v)
+            if numeric:
+                try: return (0, float(line.split()[0]))
+                except (ValueError, IndexError): pass
+            return (1, line)
+        sl = sorted(lines, key=skey, reverse=rev)
+        if unique:
+            seen = set(); sl = [l for l in sl if not (l in seen or seen.add(l))]
+        return ('\n'.join(sl) + ('\n' if trailing else '')), 0
+
+    @staticmethod
+    def _filter_uniq(args: list, stdin: str) -> tuple:
+        count = '-c' in args; dups = '-d' in args
+        lines = stdin.split('\n')
+        if lines and not lines[-1]: lines = lines[:-1]
+        result = []; i = 0
+        while i < len(lines):
+            c = 1
+            while i + c < len(lines) and lines[i + c] == lines[i]: c += 1
+            if not dups or c > 1:
+                result.append(f"{c:>7} {lines[i]}" if count else lines[i])
+            i += c
+        return '\n'.join(result), 0
+
+    @staticmethod
+    def _filter_awk(args: list, stdin: str) -> tuple:
+        program = ""
+        for a in args:
+            if not a.startswith('-'): program = a; break
+        if not program: return stdin, 0
+        prog = program.strip()
+        if prog in ('{print}', '{print $0}'): return stdin, 0
+        if 'NR' in prog and 'END' in prog:
+            return str(len([l for l in stdin.split('\n') if l])), 0
+        m = re.match(r'^\{print\s+(.*?)\}$', prog)
+        if not m: return stdin, 0
+        expr = m.group(1).strip(); result = []
+        for nr, line in enumerate(stdin.split('\n'), 1):
+            parts = line.split(); nf = len(parts); out_parts = []
+            for fe in re.split(r',\s*', expr):
+                fe = fe.strip()
+                if fe == 'NR': out_parts.append(str(nr))
+                elif fe == 'NF': out_parts.append(str(nf))
+                elif fe == '$0': out_parts.append(line)
+                elif re.match(r'^\$\d+$', fe):
+                    idx = int(fe[1:])
+                    out_parts.append(line if idx == 0 else (parts[idx-1] if 1 <= idx <= nf else ""))
+                elif fe.startswith('"') and fe.endswith('"'): out_parts.append(fe[1:-1])
+                else: out_parts.append(fe)
+            result.append(' '.join(out_parts))
+        return '\n'.join(result), 0
+
+    @staticmethod
+    def _filter_sed(args: list, stdin: str) -> tuple:
+        script = None
+        for i, a in enumerate(args):
+            if a == '-e' and i + 1 < len(args): script = args[i + 1]; break
+            elif not a.startswith('-'): script = a; break
+        if not script: return stdin, 0
+        m = re.match(r's(.)(.*?)\1(.*?)\1([gip]*)$', script.strip())
+        if not m: return stdin, 0
+        pat, repl, fl = m.group(2), m.group(3), m.group(4)
+        count = 0 if 'g' in fl else 1
+        rf = re.IGNORECASE if 'i' in fl else 0
+        try:
+            repl_py = repl.replace('\\n', '\n')
+            return '\n'.join(re.sub(pat, repl_py, l, count=count, flags=rf) for l in stdin.split('\n')), 0
+        except re.error:
+            return stdin, 1
+
+    @staticmethod
+    def _filter_tr(args: list, stdin: str) -> tuple:
+        delete = '-d' in args; squeeze = '-s' in args
+        ops = [a for a in args if not a.startswith('-')]
+        def expand(s):
+            r = []; i = 0
+            while i < len(s):
+                if i + 2 < len(s) and s[i+1] == '-':
+                    lo, hi = ord(s[i]), ord(s[i+2])
+                    r.extend(chr(c) for c in range(min(lo,hi), max(lo,hi)+1)); i += 3
+                else: r.append(s[i]); i += 1
+            return ''.join(r)
+        if delete and ops:
+            ds = set(expand(ops[0])); return ''.join(c for c in stdin if c not in ds), 0
+        if len(ops) < 2: return stdin, 0
+        s1, s2 = expand(ops[0]), expand(ops[1])
+        tbl = str.maketrans(s1[:len(s2)], s2[:len(s1)])
+        out = stdin.translate(tbl)
+        if squeeze and ops:
+            sq = set(expand(ops[-1])); prev = None; compressed = []
+            for c in out:
+                if c not in sq or c != prev: compressed.append(c)
+                prev = c
+            out = ''.join(compressed)
+        return out, 0
+
+    async def _cat_for_output(self, cmd: str) -> tuple:
+        """cat returning (stdout, stderr)."""
+        parts = cmd.split()
+        if len(parts) < 2:
+            return "", "cat: missing operand"
+        path = parts[1]
+        if not path.startswith("/"):
+            path = f"{self.current_directory.rstrip('/')}/{path}"
+        try:
+            r = await self.http_client.get(
+                f"{SANDBOX_URL}/files/{self.session_id}", params={"path": path})
+            if r.status_code == 200:
+                content = r.json().get("content", "")
+                if path in HONEYTOKEN_FILES:
+                    asyncio.create_task(self._alert_honeytoken(path))
+                return content, ""
+            elif r.status_code == 422:
+                return "", f"cat: {path}: Is a directory"
+            return "", f"cat: {path}: No such file or directory"
+        except Exception as e:
+            return "", f"cat: error: {e}"
+
+    async def _ls_for_output(self, cmd: str) -> tuple:
+        """ls returning (stdout, stderr)."""
+        parts = cmd.split()
+        flags = [p for p in parts[1:] if p.startswith('-')]
+        args  = [p for p in parts[1:] if not p.startswith('-')]
+        path  = args[0] if args else self.current_directory
+        if not path.startswith("/"):
+            path = f"{self.current_directory.rstrip('/')}/{path}"
+        long_fmt = any('l' in f for f in flags)
+        show_all = any('a' in f for f in flags)
+        try:
+            r = await self.http_client.get(
+                f"{SANDBOX_URL}/files/{self.session_id}/list", params={"path": path})
+            if r.status_code == 200:
+                entries = r.json().get("entries", [])
+                if long_fmt:
+                    lines = [f"total {len(entries) * 4}"]
+                    if show_all:
+                        lines += ["drwx------ 2 root root 4096 Apr 29 10:00 .",
+                                  "drwxr-xr-x 3 root root 4096 Apr 29 10:00 .."]
+                    lines += [_format_ls_long(e) for e in entries]
+                    return '\n'.join(lines), ""
+                names = [(e['name'] + '/' if e.get('type') == 'directory' else e['name'])
+                         for e in entries]
+                return "  ".join(names), ""
+            return "", f"ls: cannot access '{path}': No such file or directory"
+        except Exception as e:
+            return "", f"ls: error: {e}"
+
+    async def _run_source_command(self, cmd: str, stdin: str = "") -> tuple:
+        """Run a non-filter command; return (stdout, stderr, exit_code)."""
+        cmd_s = cmd.strip()
+        cmd_l = cmd_s.lower()
+
+        # Static responses
+        for pattern, handler in STATIC_RESPONSES.items():
+            if cmd_l == pattern or cmd_l.startswith(pattern + " "):
+                return handler(self.context), "", 0
+
+        # Container escape probes
+        if cmd_s in CONTAINER_ESCAPE_PROBES:
+            return CONTAINER_ESCAPE_PROBES[cmd_s], "", 0
+
+        # FS commands
+        if cmd_s.startswith("cat "):
+            out, err = await self._cat_for_output(cmd_s)
+            code = 2 if err and ("No such file" in err or "Is a directory" in err) else (1 if err and "Permission" in err else 0)
+            return out, err, code
+        if cmd_s.startswith("ls"):
+            out, err = await self._ls_for_output(cmd_s)
+            code = 2 if err else 0
+            return out, err, code
+
+        # IMDS
+        if "169.254.169.254" in cmd_s:
+            out = await self._handle_imds(cmd_s)
+            return out or "", "", 0
+
+        # echo
+        if cmd_s.startswith("echo "):
+            rest = cmd_s[5:]
+            if rest.startswith("-n "):
+                rest = rest[3:]
+            out = rest.strip().strip('"').strip("'")
+            return out, "", 0
+        if cmd_s == "echo":
+            return "", "", 0
+
+        # printf (basic)
+        if cmd_s.startswith("printf "):
+            return cmd_s[7:].strip().strip('"').strip("'"), "", 0
+
+        # AI engine
+        if AI_ENGINE_URL:
+            out = await self._get_ai_response(cmd_s)
+            if out is not None:
+                return out, "", 0
+
+        out = get_fallback(cmd_s, self.context)
+        code = 127 if "command not found" in out else 1
+        return "", out, code  # fallback is stderr
+
+    async def _run_stage(self, cmd: str, stdin: str = "") -> tuple:
+        """Run one pipeline stage; return (stdout, stderr, exit_code)."""
+        cmd = self._expand_specials(cmd.strip())
+        if not cmd:
+            return stdin, "", 0
+
+        parts = cmd.split(maxsplit=1)
+        verb = parts[0].lower()
+        rest = parts[1] if len(parts) > 1 else ""
+        args = rest.split() if rest else []
+
+        _filters = {
+            'grep': self._filter_grep, 'egrep': self._filter_grep,
+            'head': self._filter_head, 'tail': self._filter_tail,
+            'wc':   self._filter_wc,   'cut':  self._filter_cut,
+            'sort': self._filter_sort, 'uniq': self._filter_uniq,
+            'awk':  self._filter_awk,  'sed':  self._filter_sed,
+            'tr':   self._filter_tr,
+        }
+        if verb in _filters:
+            out, code = _filters[verb](args, stdin)
+            return out, "", code
+        if verb == 'cat' and not rest:
+            return stdin, "", 0
+        if verb in ('less', 'more', 'cat'):
+            if not rest:
+                return stdin, "", 0
+        if verb == 'tee':
+            if args:
+                await self._write_to_vfs(args[0], stdin)
+            return stdin, "", 0
+        if verb in ('xargs',):
+            # xargs: crude — run each non-empty token as a separate command and concatenate
+            results = []
+            for token in stdin.split():
+                sub = rest + ' ' + token if rest else token
+                o, e, _ = await self._run_source_command(sub)
+                if o: results.append(o)
+            return '\n'.join(results), "", 0
+
+        return await self._run_source_command(cmd, stdin)
+
+    async def _write_to_vfs(self, path: str, content: str, append: bool = False):
+        """Write content to the virtual filesystem."""
+        if not path.startswith("/"):
+            path = f"{self.current_directory.rstrip('/')}/{path}"
+        try:
+            if append:
+                r = await self.http_client.get(
+                    f"{SANDBOX_URL}/files/{self.session_id}", params={"path": path})
+                existing = r.json().get("content", "") if r.status_code == 200 else ""
+                content = existing + content
+            await self.http_client.post(
+                f"{SANDBOX_URL}/files/{self.session_id}",
+                json={"path": path, "content": content, "permissions": "644"})
+        except Exception:
+            pass
+
+    async def _execute_pipeline(self, full_cmd: str):
+        """Execute a command line that contains pipes or redirections."""
+        t0 = time.monotonic()
+        stages_raw = self._split_on_pipe(full_cmd)
+        stdin = ""
+        last_exit = 0
+        final_out = ""
+        stdout_file = None
+        stdout_append = False
+
+        for i, stage_raw in enumerate(stages_raw):
+            is_last = (i == len(stages_raw) - 1)
+            cmd, s_file, s_app, stderr_null, stderr_merged = self._parse_stage_redirects(stage_raw)
+            if is_last:
+                stdout_file, stdout_append = s_file, s_app
+
+            stdout_out, stderr_out, exit_code = await self._run_stage(cmd, stdin)
+            last_exit = exit_code
+
+            if stderr_merged:
+                if stderr_out:
+                    stdout_out = stdout_out + ("\n" if stdout_out else "") + stderr_out
+            elif not stderr_null and stderr_out:
+                self._write_err(stderr_out)  # pass stage stderr to terminal now
+
+            if is_last:
+                final_out = stdout_out
+            else:
+                stdin = stdout_out
+
+        self._set_exit(last_exit)
+
+        if stdout_file:
+            await self._write_to_vfs(stdout_file, final_out, stdout_append)
+        elif final_out:
+            self._write_line(final_out)
+
+        self.command_history.append({"command": full_cmd, "output": final_out})
+        asyncio.create_task(self._record(full_cmd, final_out, int((time.monotonic() - t0) * 1000)))
+        self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
 
     # ------------------------------------------------------------------
     # Intercept handler (escape probes + latency)
@@ -983,6 +2121,7 @@ class SessionHandler(asyncssh.SSHServerSession):
         t0 = time.monotonic()
         cmd_lower = cmd.lower().strip()
         output = None
+        from_fallback = False
 
         if cmd_lower.startswith("sqlite3"):
             output = self._handle_sqlite3(cmd)
@@ -998,11 +2137,27 @@ class SessionHandler(asyncssh.SSHServerSession):
                 output = await self._get_ai_response(cmd)
             if output is None:
                 output = get_fallback(cmd, self.context)
+                from_fallback = True
 
         await asyncio.sleep(_realistic_delay(cmd))
 
         if output:
-            self._write_line(output)
+            # D2: command-not-found and similar errors go to stderr
+            if from_fallback:
+                self._write_err(output)
+            else:
+                self._write_line(output)
+
+        # B1: exit code inference
+        if from_fallback and isinstance(output, str) and "command not found" in output:
+            self._set_exit(127)
+        elif isinstance(output, str) and "Permission denied" in output:
+            self._set_exit(1)
+        elif isinstance(output, str) and ("No such file or directory" in output
+                                          or "cannot access" in output):
+            self._set_exit(2)
+        else:
+            self._set_exit(0)
 
         self.command_history.append({"command": cmd, "output": output})
         asyncio.create_task(self._record(cmd, output, int((time.monotonic() - t0) * 1000)))
@@ -1341,7 +2496,27 @@ class SessionHandler(asyncssh.SSHServerSession):
             output = ""
 
         if output:
-            self._write_line(output)
+            # D2: filesystem errors (cat/ls) go to stderr
+            _fs_errs = ("No such file or directory", "cannot access", "Is a directory",
+                        "Permission denied", "missing operand", "cannot touch",
+                        "cat: error", "ls: error", "touch: error")
+            if isinstance(output, str) and any(e in output for e in _fs_errs):
+                self._write_err(output)
+            else:
+                self._write_line(output)
+
+        # B1: exit code inference for FS handler
+        if isinstance(output, str) and "Permission denied" in output:
+            self._set_exit(1)
+        elif isinstance(output, str) and ("No such file or directory" in output
+                                          or "cannot access" in output
+                                          or "Is a directory" in output
+                                          or output.startswith(("cat: error", "ls: error",
+                                                                "touch: error", "cat: missing",
+                                                                "touch: missing", "touch: cannot"))):
+            self._set_exit(2 if "missing operand" not in output else 1)
+        else:
+            self._set_exit(0)
 
         self.command_history.append({"command": cmd, "output": output})
         asyncio.create_task(self._record(cmd, output, int((time.monotonic() - t0) * 1000)))
@@ -1357,22 +2532,36 @@ class SessionHandler(asyncssh.SSHServerSession):
                 r = await self.http_client.get(f"{SANDBOX_URL}/processes/{self.session_id}")
                 if r.status_code == 200:
                     processes = r.json().get("processes", [])
+                    today_label = datetime.utcfromtimestamp(BOOT_TIME).strftime("%b%d")
                     if "aux" in cmd:
                         output = "USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND\n"
                         output += _KERNEL_THREADS
                         for p in processes:
                             output += (f"{p['username']:<10} {p['pid']:>5} {p['cpu_percent']:>4.1f} "
-                                       f"{p['mem_percent']:>4.1f}      0     0 ?        Ss   Apr29   0:00 {p['name']}\n")
+                                       f"{p['mem_percent']:>4.1f}      0     0 ?        Ss   {today_label}   0:00 {p['name']}\n")
+                        # B6: surface this session's background jobs in ps aux
+                        now = time.time()
+                        for job in self._bg_jobs:
+                            run_s = int(now - job["started"])
+                            mins, secs = divmod(run_s, 60)
+                            cpu = round(random.uniform(0.1, 2.4), 1)
+                            mem = round(random.uniform(0.2, 1.6), 1)
+                            output += (f"{self.username:<10} {job['pid']:>5} {cpu:>4.1f} {mem:>4.1f} "
+                                       f"   2048  1024 pts/0    S    "
+                                       f"{datetime.utcnow().strftime('%H:%M')}   {mins}:{secs:02d} {job['cmd']}\n")
                     else:
                         output = "  PID TTY          TIME CMD\n"
                         output += "    1 ?        00:00:05 init\n"
                         output += "  134 ?        00:00:00 sshd\n"
                         for p in processes[:5]:
                             output += f"{p['pid']:>5} pts/0    00:00:00 {p['name']}\n"
+                        for job in self._bg_jobs:
+                            output += f"{job['pid']:>5} pts/0    00:00:00 {job['cmd'].split()[0] if job['cmd'] else 'sh'}\n"
             except Exception as e:
                 output = f"ps: error: {e}"
         if output:
             self._write_line(output)
+        self._set_exit(0)
         self.command_history.append({"command": cmd, "output": output})
         asyncio.create_task(self._record(cmd, output, int((time.monotonic() - t0) * 1000)))
         self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
@@ -1399,10 +2588,32 @@ class SessionHandler(asyncssh.SSHServerSession):
         asyncio.create_task(self._record("env", output, int((time.monotonic() - t0) * 1000)))
         self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
 
-    async def _record(self, cmd: str, out: str, duration_ms: int = 0):
+    # ------------------------------------------------------------------
+    # B2: Persistent state helpers (fire-and-forget, no error propagation)
+    # ------------------------------------------------------------------
+    async def _persist_state(self, kind: str, name: str, value: str):
+        try:
+            await self.http_client.put(
+                f"{SANDBOX_URL}/state/{self.source_ip}/{kind}/{name}",
+                json={"value": value})
+        except Exception:
+            pass
+
+    async def _delete_state(self, kind: str, name: str):
+        try:
+            await self.http_client.delete(
+                f"{SANDBOX_URL}/state/{self.source_ip}/{kind}/{name}")
+        except Exception:
+            pass
+
+    async def _record(self, cmd: str, out: str, duration_ms: int = 0,
+                      exit_code: Optional[int] = None):
+        if exit_code is None:
+            exit_code = self._last_exit
         try:
             await self.http_client.post(f"{SANDBOX_URL}/commands/{self.session_id}",
-                json={"command": cmd, "output": out, "exit_code": 0, "duration_ms": duration_ms})
+                json={"command": cmd, "output": out, "exit_code": exit_code,
+                      "duration_ms": duration_ms})
         except: pass
 
     async def _record_ioc(self, ioc: dict):
@@ -1437,9 +2648,363 @@ class SessionHandler(asyncssh.SSHServerSession):
         await self.http_client.aclose()
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# D4: SFTP subsystem — asyncssh SFTPServer backed by sandbox-store virtual FS
+# ──────────────────────────────────────────────────────────────────────────────
+
+class _SFTPReaderAdapter:
+    """Duck-typed reader that feeds bytes from SessionHandler.data_received → SFTPServerHandler."""
+    def __init__(self):
+        self._buf = bytearray()
+        self._waiter: Optional[asyncio.Future] = None
+
+    def feed(self, data: bytes):
+        self._buf.extend(data)
+        if self._waiter and not self._waiter.done():
+            self._waiter.set_result(None)
+
+    async def readexactly(self, n: int) -> bytes:
+        while len(self._buf) < n:
+            self._waiter = asyncio.get_event_loop().create_future()
+            await self._waiter
+        chunk = bytes(self._buf[:n])
+        del self._buf[:n]
+        return chunk
+
+    async def read(self, n: int = -1) -> bytes:
+        return await self.readexactly(n)
+
+
+class _SFTPWriterAdapter:
+    """Duck-typed writer that sends bytes directly on the SSH channel."""
+    def __init__(self, chan):
+        self._chan = chan
+
+    def write(self, data: bytes):
+        try:
+            self._chan.write(data)
+        except Exception:
+            pass
+
+
+def _sftp_long_name(name: str, is_dir: bool, size: int) -> str:
+    perm = "drwxr-xr-x" if is_dir else "-rw-r--r--"
+    ts = datetime.now(timezone.utc).strftime("%b %d %H:%M")
+    return f"{perm} 1 root root {size:>8d} {ts} {name}"
+
+
+class HoneypotSFTPServer(asyncssh.SFTPServer):
+    """SFTP server backed by sandbox-store; attacker uploads are stored + IOC'd."""
+
+    _VIRTUAL_DIRS = frozenset({
+        '/', '/root', '/home', '/home/ubuntu', '/tmp', '/etc', '/etc/ssh',
+        '/var', '/var/log', '/var/backups', '/opt', '/opt/nexopay',
+        '/opt/nexopay/bin', '/opt/nexopay/config', '/opt/nexopay/data',
+        '/opt/nexopay/logs', '/usr', '/usr/bin', '/usr/local',
+        '/proc', '/sys', '/dev', '/run',
+    })
+
+    _DIR_LISTINGS: dict = {
+        '/': ['root', 'home', 'etc', 'opt', 'tmp', 'var', 'usr', 'proc', 'sys', 'dev', 'run'],
+        '/root': ['.bashrc', '.bash_history', '.ssh'],
+        '/root/.ssh': ['authorized_keys', 'known_hosts'],
+        '/home': ['ubuntu'],
+        '/home/ubuntu': ['.bashrc'],
+        '/tmp': [],
+        '/etc': ['hostname', 'passwd', 'shadow', 'os-release', 'hosts', 'ssh', 'crontab'],
+        '/etc/ssh': ['sshd_config', 'ssh_host_rsa_key.pub'],
+        '/var': ['log', 'backups'],
+        '/var/log': ['auth.log', 'syslog'],
+        '/opt/nexopay': ['bin', 'config', 'data', 'logs'],
+        '/opt/nexopay/config': [
+            'app.env', 'db.env', 'redis.env', 'payment-gw.env',
+        ],
+        '/opt/nexopay/logs': ['api.log', 'worker.log'],
+    }
+
+    _STATIC_FILES: dict = {
+        '/etc/hostname': 'api-prod-01\n',
+        '/etc/hosts': (
+            '127.0.0.1   localhost\n'
+            '127.0.1.1   api-prod-01\n'
+            '::1         localhost ip6-localhost ip6-loopback\n'
+        ),
+        '/etc/passwd': (
+            'root:x:0:0:root:/root:/bin/bash\n'
+            'daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n'
+            'ubuntu:x:1000:1000:ubuntu:/home/ubuntu:/bin/bash\n'
+            'nexopay:x:1001:1001:NexoPay Service:/opt/nexopay:/sbin/nologin\n'
+        ),
+        '/etc/shadow': 'root:*:19900:0:99999:7:::\n',
+        '/root/.bashrc': (
+            '# ~/.bashrc\nexport PS1="\\u@\\h:\\w\\$ "\n'
+            'export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n'
+            'alias ll="ls -la"\n'
+        ),
+        '/root/.bash_history': '',
+        '/root/.ssh/authorized_keys': '',
+        '/root/.ssh/known_hosts': '',
+        '/etc/crontab': (
+            '# /etc/crontab\nSHELL=/bin/sh\nPATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin\n'
+            '*/5 * * * * root /opt/nexopay/bin/health_check.sh\n'
+            '0 2 * * * root /opt/nexopay/bin/db_backup.sh\n'
+        ),
+        '/etc/ssh/sshd_config': (
+            'Port 22\nPermitRootLogin yes\nPasswordAuthentication yes\n'
+            'PubkeyAuthentication yes\nX11Forwarding no\nPrintLastLog yes\n'
+        ),
+        '/var/log/auth.log': '',
+        '/var/log/syslog': '',
+        '/opt/nexopay/config/app.env': (
+            'APP_ENV=production\nAPP_PORT=8080\n'
+            'LOG_LEVEL=info\nSECRET_KEY=REDACTED\n'
+        ),
+        '/opt/nexopay/config/db.env': (
+            'DB_HOST=db-primary.nexopay.internal\nDB_PORT=5432\n'
+            'DB_NAME=nexopay_prod\nDB_USER=nexopay\nDB_PASSWORD=REDACTED\n'
+        ),
+        '/opt/nexopay/config/redis.env': (
+            'REDIS_HOST=redis.nexopay.internal\nREDIS_PORT=6379\n'
+            'REDIS_PASSWORD=REDACTED\n'
+        ),
+        '/opt/nexopay/config/payment-gw.env': (
+            'PAYMENT_GW_URL=https://api.payment-gateway.com/v2\n'
+            'PAYMENT_GW_KEY=REDACTED\nPAYMENT_GW_SECRET=REDACTED\n'
+        ),
+        '/opt/nexopay/logs/api.log': '',
+        '/opt/nexopay/logs/worker.log': '',
+    }
+
+    def __init__(self, chan):
+        super().__init__(chan)
+        conn = chan.get_connection()
+        self._username = conn.get_extra_info('username') or 'root'
+        self._source_ip = conn.get_extra_info('peername')[0]
+        self._session_id: Optional[str] = None
+        self._http = httpx.AsyncClient(timeout=5.0)
+
+    # ── helpers ────────────────────────────────────────────────────────────────
+
+    async def _ensure_session(self):
+        if self._session_id:
+            return
+        self._session_id = f"sftp-{self._source_ip}-{uuid.uuid4().hex[:8]}"
+        try:
+            await self._http.post(f"{SANDBOX_URL}/sessions/", json={
+                "session_id": self._session_id,
+                "source_ip": self._source_ip,
+                "protocol": "ssh",
+                "username": self._username,
+            })
+        except Exception:
+            pass
+        logger.info(f"[SFTP] Session {self._session_id} for {self._source_ip} ({self._username})")
+
+    @staticmethod
+    def _norm(path: str) -> str:
+        parts: list = []
+        for seg in path.split('/'):
+            if seg == '..':
+                if parts:
+                    parts.pop()
+            elif seg and seg != '.':
+                parts.append(seg)
+        return '/' + '/'.join(parts) if parts else '/'
+
+    def _dir_attrs(self) -> asyncssh.SFTPAttrs:
+        return asyncssh.SFTPAttrs(
+            size=4096, uid=0, gid=0, permissions=0o040755,
+            atime=int(time.time()), mtime=int(time.time()), nlink=2)
+
+    def _file_attrs(self, size: int = 0) -> asyncssh.SFTPAttrs:
+        return asyncssh.SFTPAttrs(
+            size=size, uid=0, gid=0, permissions=0o100644,
+            atime=int(time.time()), mtime=int(time.time()), nlink=1)
+
+    async def _store_stat(self, path: str):
+        """Check sandbox-store for a file/dir entry; returns (is_dir, size) or None."""
+        if not self._session_id:
+            return None
+        try:
+            r = await self._http.get(
+                f"{SANDBOX_URL}/files/{self._session_id}",
+                params={"path": path})
+            if r.status_code == 200:
+                content = r.json().get('content', '')
+                return (False, len(content.encode()))
+            if r.status_code == 422:  # "Is a directory"
+                return (True, 4096)
+        except Exception:
+            pass
+        return None
+
+    async def _log_sftp_ioc(self, path: str, size: int):
+        try:
+            await self._http.post(f"{SANDBOX_URL}/iocs/{self._session_id}", json={
+                "ioc_type": "sftp_upload",
+                "value": path,
+                "confidence": 0.95,
+                "context": f"SFTP upload from {self._source_ip} ({size} bytes)",
+            })
+        except Exception:
+            pass
+
+    # ── SFTPServer interface ───────────────────────────────────────────────────
+
+    async def realpath(self, path: str) -> str:
+        return self._norm(path or '/root')
+
+    async def stat(self, path: str) -> asyncssh.SFTPAttrs:
+        return await self.lstat(path)
+
+    async def lstat(self, path: str) -> asyncssh.SFTPAttrs:
+        path = self._norm(path)
+        if path in self._VIRTUAL_DIRS:
+            return self._dir_attrs()
+        if path in self._STATIC_FILES:
+            return self._file_attrs(len(self._STATIC_FILES[path].encode()))
+        await self._ensure_session()
+        result = await self._store_stat(path)
+        if result is not None:
+            is_dir, size = result
+            return self._dir_attrs() if is_dir else self._file_attrs(size)
+        raise asyncssh.SFTPError(asyncssh.FX_NO_SUCH_FILE, f"No such file or directory")
+
+    async def readdir(self, path: str):
+        path = self._norm(path)
+        if path not in self._VIRTUAL_DIRS:
+            await self._ensure_session()
+            result = await self._store_stat(path)
+            if result is None or not result[0]:
+                raise asyncssh.SFTPError(asyncssh.FX_NO_SUCH_FILE, "No such file or directory")
+
+        names: list = []
+        base_listing = list(self._DIR_LISTINGS.get(path, []))
+
+        # Add any files written to this directory via sandbox-store
+        await self._ensure_session()
+        try:
+            r = await self._http.get(
+                f"{SANDBOX_URL}/files/{self._session_id}/list",
+                params={"path": path})
+            if r.status_code == 200:
+                for e in r.json().get('entries', []):
+                    ename = e['name']
+                    if ename not in base_listing:
+                        base_listing.append(ename)
+        except Exception:
+            pass
+
+        for entry in base_listing:
+            full = f"{path.rstrip('/')}/{entry}"
+            is_dir = full in self._VIRTUAL_DIRS or (
+                path in self._DIR_LISTINGS and entry in self._DIR_LISTINGS.get(full, []))
+            # refine: if entry is a key in _DIR_LISTINGS it's definitely a dir
+            is_dir = is_dir or full in self._DIR_LISTINGS
+            size = 4096 if is_dir else len(self._STATIC_FILES.get(full, '').encode())
+            attrs = self._dir_attrs() if is_dir else self._file_attrs(size)
+            names.append(asyncssh.SFTPName(
+                filename=entry,
+                longname=_sftp_long_name(entry, is_dir, size),
+                attrs=attrs))
+
+        return names
+
+    async def open(self, path: str, pflags, attrs):
+        path = self._norm(path)
+        write = bool(pflags & (asyncssh.FXF_WRITE | asyncssh.FXF_CREAT))
+        append = bool(pflags & asyncssh.FXF_APPEND)
+
+        if write:
+            existing = b''
+            if append:
+                if path in self._STATIC_FILES:
+                    existing = self._STATIC_FILES[path].encode()
+                else:
+                    await self._ensure_session()
+                    result = await self._store_stat(path)
+                    if result and not result[0]:
+                        try:
+                            r = await self._http.get(
+                                f"{SANDBOX_URL}/files/{self._session_id}",
+                                params={"path": path})
+                            if r.status_code == 200:
+                                existing = r.json().get('content', '').encode()
+                        except Exception:
+                            pass
+            return {'path': path, 'buf': bytearray(existing), 'write': True}
+
+        # Read mode
+        if path in self._STATIC_FILES:
+            return {'path': path, 'data': self._STATIC_FILES[path].encode(), 'write': False}
+
+        await self._ensure_session()
+        try:
+            r = await self._http.get(
+                f"{SANDBOX_URL}/files/{self._session_id}",
+                params={"path": path})
+            if r.status_code == 200:
+                data = r.json().get('content', '').encode()
+                return {'path': path, 'data': data, 'write': False}
+        except Exception:
+            pass
+        raise asyncssh.SFTPError(asyncssh.FX_NO_SUCH_FILE, "No such file")
+
+    async def close(self, file_obj: dict):
+        if not file_obj.get('write'):
+            return
+        path = file_obj['path']
+        buf: bytearray = file_obj['buf']
+        size = len(buf)
+        logger.info(f"[SFTP] Upload: {path} ({size} bytes) from {self._source_ip}")
+        try:
+            content = buf.decode('utf-8', errors='replace')
+            await self._http.post(f"{SANDBOX_URL}/files/{self._session_id}", json={
+                "path": path, "content": content, "permissions": "644"})
+            await self._log_sftp_ioc(path, size)
+        except Exception as e:
+            logger.warning(f"[SFTP] Store failed: {e}")
+        # Close the shared http client only when connection drops, not on each file
+        # (handled in connection_lost / garbage collection)
+
+    async def read(self, file_obj: dict, offset: int, length: int) -> bytes:
+        data = file_obj.get('data') or file_obj.get('buf', b'')
+        return bytes(data[offset:offset + length])
+
+    async def write(self, file_obj: dict, offset: int, data: bytes):
+        buf: bytearray = file_obj['buf']
+        end = offset + len(data)
+        if end > len(buf):
+            buf.extend(b'\x00' * (end - len(buf)))
+        buf[offset:end] = data
+
+    async def mkdir(self, path: str, attrs):
+        # Honeypot: accept mkdir silently
+        pass
+
+    async def rmdir(self, path: str):
+        pass
+
+    async def remove(self, path: str):
+        pass
+
+    async def rename(self, oldpath: str, newpath: str, flags: int = 0):
+        pass
+
+    async def readlink(self, path: str) -> str:
+        raise asyncssh.SFTPError(asyncssh.FX_NO_SUCH_FILE, "Not a symlink")
+
+    async def symlink(self, oldpath: str, newpath: str):
+        pass
+
+    async def setstat(self, path: str, attrs):
+        pass
+
+
 class SSHServer(asyncssh.SSHServer):
     def __init__(self):
         self._conn = None
+        self._conn_auth_attempts = 0  # D6: per-connection counter for MaxAuthTries
 
     def connection_made(self, conn):
         self._conn = conn
@@ -1456,15 +3021,69 @@ class SSHServer(asyncssh.SSHServer):
     def password_auth_supported(self):
         return True
 
+    def public_key_auth_supported(self):
+        return True
+
+    async def validate_public_key(self, username, key):
+        """D3: Log fingerprint as high-value IOC; 40% sticky-accept, 60% reject."""
+        ip = self._conn.get_extra_info('peername')[0]
+        try:
+            fingerprint = key.get_fingerprint()
+        except Exception:
+            fingerprint = "<unknown>"
+        logger.info(f"Pubkey auth from {ip} as {username}: {fingerprint[:40]}")
+
+        self._conn_auth_attempts += 1
+        if self._conn_auth_attempts > 6:
+            try:
+                self._conn.disconnect(
+                    asyncssh.DISC_TOO_MANY_CONNECTIONS, "Too many authentication failures")
+            except Exception:
+                pass
+            return False
+
+        st = _auth_record(ip)
+        if st.get("accepted_key") is not None:
+            return fingerprint == st["accepted_key"]
+
+        if random.random() < 0.40:
+            st["accepted_key"] = fingerprint
+            logger.info(f"Pubkey accepted for {username} from {ip}")
+            asyncio.create_task(self._async_record_pubkey(ip, username, fingerprint))
+            return True
+
+        logger.info(f"Pubkey rejected for {username} from {ip}")
+        return False
+
+    async def _async_record_pubkey(self, ip: str, username: str, fingerprint: str):
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as c:
+                await c.post(f"{SANDBOX_URL}/iocs/unknown", json={
+                    "ioc_type": "ssh_pubkey", "value": fingerprint,
+                    "confidence": 0.90,
+                    "context": f"Public-key auth attempt from {ip} as {username}",
+                })
+        except Exception:
+            pass
+
     async def validate_password(self, username, password):
         ip = self._conn.get_extra_info('peername')[0]
-        now = time.time()
         st = _auth_record(ip)
 
         await asyncio.sleep(random.uniform(0.2, 0.8))
 
-        if now < st["lockout_until"]:
-            logger.warning(f"Auth from {ip} rejected (locked out)")
+        # D6: OpenSSH-style MaxAuthTries — disconnect after 6 attempts on the
+        # same connection, no timed lockouts.
+        self._conn_auth_attempts += 1
+        if self._conn_auth_attempts > 6:
+            logger.warning(f"MaxAuthTries exceeded for {ip}")
+            try:
+                self._conn.disconnect(
+                    asyncssh.DISC_TOO_MANY_CONNECTIONS,
+                    "Too many authentication failures",
+                )
+            except Exception:
+                pass
             return False
 
         st["attempts"] += 1
@@ -1476,19 +3095,32 @@ class SSHServer(asyncssh.SSHServer):
             logger.warning(f"Rejected: {username}/{password} from {ip}")
             return False
 
-        # Acceptance roll before rate-limit so threshold is always reachable
+        # Sticky probabilistic acceptance (Phase 1.4) — once a password is
+        # accepted for an IP, it's accepted on future attempts too.
         if st["attempts"] >= st["threshold"] and random.random() < 0.40:
             st["accepted"] = password
             logger.info(f"Accepted: {username} from {ip} (password locked in)")
             return True
 
-        st["fails"] = [t for t in st["fails"] if now - t < 60]
-        st["fails"].append(now)
-        if len(st["fails"]) >= 10:
-            st["lockout_until"] = now + 90
-            logger.warning(f"Auth rate-limit: 90s lockout for {ip}")
-
         logger.warning(f"Rejected: {username}/{password} from {ip}")
+        return False
+
+    # D7: port-forwarding & agent-forwarding — log as high-value IOC then
+    # respond with "administratively prohibited" like a real hardened sshd.
+    def server_requested(self, listen_host, listen_port):
+        try:
+            ip = self._conn.get_extra_info('peername')[0]
+        except Exception:
+            ip = "unknown"
+        logger.warning(f"Remote port-forward attempt from {ip}: {listen_host}:{listen_port}")
+        return False
+
+    def connection_requested(self, dest_host, dest_port, orig_host, orig_port):
+        try:
+            ip = self._conn.get_extra_info('peername')[0]
+        except Exception:
+            ip = "unknown"
+        logger.warning(f"Local port-forward attempt from {ip}: -> {dest_host}:{dest_port}")
         return False
 
     def session_requested(self):
@@ -1497,10 +3129,34 @@ class SSHServer(asyncssh.SSHServer):
         return SessionHandler(username, source_ip)
 
 
+def _ensure_host_key() -> str:
+    """Generate the SSH host key once per persistent volume, then reuse forever.
+
+    Stable across container restarts so the host-key fingerprint never rotates —
+    real production sshd hosts persist /etc/ssh/ssh_host_rsa_key.
+    """
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+    except OSError:
+        pass
+    if not os.path.exists(HOST_KEY_PATH):
+        logger.info(f"Generating SSH host key at {HOST_KEY_PATH}")
+        key = asyncssh.generate_private_key('ssh-rsa', key_size=2048)
+        key.write_private_key(HOST_KEY_PATH)
+        try:
+            os.chmod(HOST_KEY_PATH, 0o600)
+        except OSError:
+            pass
+    else:
+        logger.info(f"Reusing existing SSH host key at {HOST_KEY_PATH}")
+    return HOST_KEY_PATH
+
+
 async def start_server():
     ai_status = "AI-Enhanced" if AI_ENGINE_URL else "Static"
     logger.info(f"Session service starting ({ai_status})")
     logger.info(f"Port {LISTEN_PORT}")
+    host_key_path = _ensure_host_key()
     try:
         async with httpx.AsyncClient() as client:
             r = await client.get(f"{SANDBOX_URL}/health")
@@ -1510,8 +3166,12 @@ async def start_server():
 
     await asyncssh.create_server(
         SSHServer, LISTEN_HOST, LISTEN_PORT,
-        server_host_keys=['ssh_host_key'],
+        server_host_keys=[host_key_path],
         server_version=SERVER_VERSION,
+        kex_algs=_KEX_ALGS,
+        encryption_algs=_ENCRYPTION_ALGS,
+        mac_algs=_MAC_ALGS,
+        compression_algs=['none'],
         process_factory=None)
     await asyncio.Future()
 

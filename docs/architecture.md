@@ -11,8 +11,8 @@ AdaptiveWardens is designed as a lightweight, microservices-based AI honeypot. B
    - **Safeguards**: Employs async networking to handle multiple connections efficiently without thread exhaustion.
 
 2. **AI Engine (`ai-engine`)**
-   - **Role**: Interprets commands using Google's Gemini API and formats realistic bash responses.
-   - **Tech Stack**: Python, `FastAPI`, `google-generativeai`.
+   - **Role**: Interprets commands via an LLM (DeepSeek by default, Gemini optional) and formats realistic bash responses.
+   - **Tech Stack**: Python, `FastAPI`, `openai` SDK (pointed at DeepSeek's OpenAI-compatible endpoint), with `google-generativeai` as a swap-in alternative.
    - **Statelessness**: Almost entirely stateless cache (in-memory or SQLite integration). Reusable and horizontally scalable if load increases.
    - **Safeguards**: Has structured caching (preventing API exhaustion when attackers spam identical commands). Includes internal error fallback responses ("bash: command not found").
 
