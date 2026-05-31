@@ -175,8 +175,8 @@ AdaptiveWardens/
 When dealing with failures or crashes, consult these debug steps:
 
 1. **AI Outputting Fallbacks ("command not found")**:
-   - Usually indicates a problem with the Gemini API (Rate limits or timeout). Check `docker-compose logs ai-engine`.
-   - Ensure your `.env` contains a valid `GEMINI_API_KEY`.
+   - Usually indicates a problem with the LLM API (rate limits, timeout, or missing key). Check `docker-compose logs ai-engine`.
+   - Ensure your `.env` contains a valid `DEEPSEEK_API_KEY` (default), or set `LLM_PROVIDER=gemini` with a valid `GEMINI_API_KEY`.
 2. **Missing Sandbox Persistence (Empty Filesystem)**:
    - The SQLite WAL database might have locked due to extreme concurrency. Check `docker-compose logs sandbox-store`.
    - Running `./scripts/simulate_failure.sh` explicitly validates service resurrections.

@@ -59,6 +59,9 @@ class AttackTechnique(BaseModel):
     confidence: float
     evidence: str
 
+class StateValue(BaseModel):
+    value: str
+
 def geolocate_and_notify(ip: str, protocol: str, session_id: str):
     """Geolocate the IP, save country to DB, then fire the Slack alert."""
     country = "Unknown"
@@ -275,6 +278,39 @@ async def create_snapshot(session_id: str):
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "service": "sandbox-store"}
+
+
+# ==================== B2: PERSISTENT ATTACKER STATE ====================
+
+@app.get("/state/{source_ip}")
+async def get_persistent_state(source_ip: str):
+    """Return all saved env vars, aliases and cwd for this attacker IP."""
+    return db.get_persistent_state(source_ip)
+
+@app.put("/state/{source_ip}/env/{name}")
+async def set_env_var(source_ip: str, name: str, body: StateValue):
+    db.set_persistent_state(source_ip, 'env', name, body.value)
+    return {"status": "ok"}
+
+@app.delete("/state/{source_ip}/env/{name}")
+async def delete_env_var(source_ip: str, name: str):
+    db.delete_persistent_state(source_ip, 'env', name)
+    return {"status": "ok"}
+
+@app.put("/state/{source_ip}/alias/{name}")
+async def set_alias(source_ip: str, name: str, body: StateValue):
+    db.set_persistent_state(source_ip, 'alias', name, body.value)
+    return {"status": "ok"}
+
+@app.delete("/state/{source_ip}/alias/{name}")
+async def delete_alias(source_ip: str, name: str):
+    db.delete_persistent_state(source_ip, 'alias', name)
+    return {"status": "ok"}
+
+@app.put("/state/{source_ip}/cwd")
+async def set_cwd(source_ip: str, body: StateValue):
+    db.set_persistent_state(source_ip, 'cwd', 'cwd', body.value)
+    return {"status": "ok"}
 
 if __name__ == "__main__":
     import uvicorn

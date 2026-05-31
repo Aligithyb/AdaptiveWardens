@@ -58,7 +58,59 @@ class SandboxDatabase:
                 logger.info("Migrated sessions table: added 'country' column")
             except Exception:
                 pass  # Column already exists, that's fine
-        
+
+            # B2: ensure persistent_state table exists (for older DBs that pre-date the schema add)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS persistent_state (
+                    source_ip  TEXT NOT NULL,
+                    kind       TEXT NOT NULL,
+                    name       TEXT NOT NULL,
+                    value      TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (source_ip, kind, name)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_persistent_ip ON persistent_state(source_ip)")
+            conn.commit()
+
+            # Fix iocs.ioc_type CHECK constraint: try inserting a custom type.
+            # If it fails, recreate the table without the constraint so that
+            # 'honeytoken_access', 'ssh_pubkey', etc. are accepted.
+            try:
+                conn.execute(
+                    "INSERT INTO iocs (session_id, ioc_type, value, confidence) "
+                    "VALUES ('__chk__', 'ssh_pubkey', '__chk__', 0.0)"
+                )
+                conn.execute("DELETE FROM iocs WHERE session_id = '__chk__'")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                try:
+                    conn.executescript("""
+                        CREATE TABLE IF NOT EXISTS iocs_v2 (
+                            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                            session_id  TEXT NOT NULL,
+                            ioc_type    TEXT,
+                            value       TEXT NOT NULL,
+                            confidence  REAL DEFAULT 0.5,
+                            context     TEXT,
+                            extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        );
+                        INSERT OR IGNORE INTO iocs_v2
+                            SELECT id, session_id, ioc_type, value, confidence, context, extracted_at
+                            FROM iocs;
+                        DROP TABLE iocs;
+                        ALTER TABLE iocs_v2 RENAME TO iocs;
+                        CREATE INDEX IF NOT EXISTS idx_iocs_session ON iocs(session_id);
+                        CREATE INDEX IF NOT EXISTS idx_iocs_type    ON iocs(ioc_type);
+                        CREATE INDEX IF NOT EXISTS idx_iocs_value   ON iocs(value);
+                    """)
+                    conn.commit()
+                    logger.info("Migrated iocs table: removed ioc_type CHECK constraint")
+                except Exception as e:
+                    logger.warning(f"iocs migration skipped: {e}")
+
         logger.info(f"Database initialized from {schema_path}")
     
     # ==================== SESSION MANAGEMENT ====================
@@ -994,6 +1046,45 @@ class SandboxDatabase:
             
             return checksum
     
+    # ==================== PERSISTENT ATTACKER STATE (B2) ====================
+
+    def get_persistent_state(self, source_ip: str) -> dict:
+        """Return all saved env vars, aliases and cwd for a source IP."""
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT kind, name, value FROM persistent_state WHERE source_ip = ?",
+                (source_ip,)
+            ).fetchall()
+        result: dict = {'env': {}, 'alias': {}, 'cwd': '/root'}
+        for row in rows:
+            kind = row['kind']
+            if kind == 'cwd':
+                result['cwd'] = row['value']
+            elif kind in ('env', 'alias'):
+                result[kind][row['name']] = row['value']
+        return result
+
+    def set_persistent_state(self, source_ip: str, kind: str, name: str, value: str):
+        """Upsert one persistent state entry for this source IP."""
+        with self.get_connection() as conn:
+            conn.execute("""
+                INSERT INTO persistent_state (source_ip, kind, name, value, updated_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(source_ip, kind, name) DO UPDATE SET
+                    value      = excluded.value,
+                    updated_at = excluded.updated_at
+            """, (source_ip, kind, name, value))
+            conn.commit()
+
+    def delete_persistent_state(self, source_ip: str, kind: str, name: str):
+        """Delete one persistent state entry for this source IP."""
+        with self.get_connection() as conn:
+            conn.execute(
+                "DELETE FROM persistent_state WHERE source_ip = ? AND kind = ? AND name = ?",
+                (source_ip, kind, name)
+            )
+            conn.commit()
+
     def get_session_state(self, session_id: str) -> Dict:
         """Get complete current state for a session (for AI context)."""
         with self.get_connection() as conn:
