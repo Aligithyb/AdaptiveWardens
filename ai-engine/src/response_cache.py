@@ -81,6 +81,49 @@ _PER_USER_PATTERNS = [
 ]
 
 
+_FLAG_SORT_COMMANDS = {"ls", "ps", "du", "df", "find", "grep", "cat", "ll", "rm", "cp", "mv", "tar", "zcat"}
+_SHORT_FLAG_RE = re.compile(r'^-[a-zA-Z]+$')
+_WHITESPACE_RE = re.compile(r'\s+')
+
+
+def _normalize_for_cache(command: str) -> str:
+    """Canonicalize a command so attacker variants collide on the same cache row.
+
+    Conservative — only does things that provably preserve semantics:
+      - lowercase the command verb (Linux is case-sensitive but attackers rarely
+        run `LS`; when they do it's identical fallback output anyway)
+      - collapse runs of whitespace and strip trailing space
+      - sort the letters inside short-flag clusters for a known-safe set of
+        commands so `ls -la`, `ls -al`, `ls -a -l` all key to one row.
+
+    Does NOT touch URLs / IPs / file paths — those still semantically matter
+    for the response. Structural URL→<URL> templating is a future-phase item.
+    """
+    if not command:
+        return command
+    c = _WHITESPACE_RE.sub(' ', command.strip())
+    tokens = c.split(' ')
+    if not tokens:
+        return c
+    verb = tokens[0].lower()
+    if verb not in _FLAG_SORT_COMMANDS:
+        return c
+
+    short_letters = []
+    rest = []
+    for t in tokens[1:]:
+        if _SHORT_FLAG_RE.match(t):
+            short_letters.extend(sorted(t[1:]))
+        else:
+            rest.append(t)
+    flag_token = ('-' + ''.join(sorted(set(short_letters)))) if short_letters else ''
+    parts = [verb]
+    if flag_token:
+        parts.append(flag_token)
+    parts.extend(rest)
+    return ' '.join(parts)
+
+
 def _classify_scope(command: str) -> str:
     lc = command.lower().strip()
     for p in _GLOBAL_PATTERNS:
@@ -137,12 +180,13 @@ class ResponseCache:
 
     def _build_key(self, command: str, context: dict) -> Tuple[str, str]:
         scope = _classify_scope(command)
+        norm = _normalize_for_cache(command)
         if scope == "global":
-            payload = command.strip()
+            payload = norm
         elif scope == "per_user":
-            payload = f"{command.strip()}|user={context.get('username', 'root')}"
+            payload = f"{norm}|user={context.get('username', 'root')}"
         else:
-            payload = (f"{command.strip()}|user={context.get('username', 'root')}"
+            payload = (f"{norm}|user={context.get('username', 'root')}"
                        f"|cwd={context.get('current_directory', '/root')}")
         return hashlib.md5(payload.encode("utf-8")).hexdigest(), scope
 
