@@ -47,7 +47,8 @@ async def generate_response(req: CommandRequest):
             "mitre_techniques": cached["mitre"] or mitre_techniques,
         }
 
-    response = llm.generate_shell_response(req.command, req.context, req.history)
+    source_ip = req.context.get("source_ip") if isinstance(req.context, dict) else None
+    response = llm.generate_shell_response(req.command, req.context, req.history, source_ip=source_ip)
 
     cmd_iocs = extract_iocs(req.command)
     resp_iocs = extract_iocs(response)
@@ -73,6 +74,15 @@ async def health():
 @app.get("/cache/stats")
 async def cache_stats():
     return cache.get_stats()
+
+
+@app.get("/budget/stats")
+async def budget_stats():
+    """Daily LLM token spend + per-IP rate limiter counters."""
+    return {
+        "budget": llm.budget.stats(),
+        "rate_limit": llm.rate_limiter.stats(),
+    }
 
 
 if __name__ == "__main__":
