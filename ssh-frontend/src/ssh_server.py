@@ -785,6 +785,17 @@ _COMPLETABLE_CMDS = sorted({
 })
 
 
+def _longest_common_prefix(strs):
+    if not strs:
+        return ""
+    s_min = min(strs)
+    s_max = max(strs)
+    for i, c in enumerate(s_min):
+        if c != s_max[i]:
+            return s_min[:i]
+    return s_min
+
+
 # ---------------------------------------------------------------------------
 # AWS Instance Metadata Service (169.254.169.254) — Advanced Deception
 # ---------------------------------------------------------------------------
@@ -1230,56 +1241,73 @@ class SessionHandler(asyncssh.SSHServerSession):
         self.chan.write(self._line_buf)
 
     async def _handle_tab(self):
-        """Tab completion: paths from virtual FS or command names."""
+        """Tab completion. Mirrors bash closely enough to defeat the easy tells:
+
+        - Bare-name completion against the current directory when the prefix
+          has no '/' (real bash does this; the previous version required a
+          slash or leading dot and gave nothing on `cat fo<Tab>`).
+        - Longest-common-prefix extension on ambiguous Tab: extends the
+          buffer to the LCP first and only lists candidates when the buffer
+          can't be extended further. Hitting Tab on `who` with matches
+          [whoami, whois] now extends to `whoa` instead of just listing.
+        - Trailing space after a single fully-completed leaf (file or
+          command), matching bash's default readline behaviour.
+        """
         buf = self._line_buf
         parts = buf.split()
 
-        # Determine the word being completed
         if not buf or buf.endswith(' '):
             prefix = ""
             is_cmd = len(parts) == 0
         else:
             prefix = parts[-1] if parts else ""
-            is_cmd = len(parts) == 1 and not buf.endswith(' ')
+            is_cmd = len(parts) == 1
 
+        matches: list = []
         if is_cmd:
-            # Complete command names
             matches = sorted(c for c in _COMPLETABLE_CMDS if c.startswith(prefix))
-        elif prefix.startswith('/') or '/' in prefix or prefix.startswith('.'):
-            # Path completion from virtual FS
+        else:
             if '/' in prefix:
                 dir_part, file_prefix = prefix.rsplit('/', 1)
                 dir_part = dir_part or '/'
             else:
                 dir_part = self.current_directory
                 file_prefix = prefix
-
             try:
                 r = await self.http_client.get(
                     f"{SANDBOX_URL}/files/{self.session_id}/list",
                     params={"path": dir_part})
                 if r.status_code == 200:
-                    entries = r.json().get("entries", [])
-                    matches = []
-                    for e in entries:
+                    for e in r.json().get("entries", []):
                         if e['name'].startswith(file_prefix):
                             suffix = '/' if e.get('type') == 'directory' else ''
                             matches.append(e['name'] + suffix)
-                else:
-                    matches = []
+                    matches.sort()
             except Exception:
                 matches = []
-        else:
-            matches = []
+
+        if not matches:
+            return
 
         if len(matches) == 1:
             completion = matches[0][len(prefix):]
             self._line_buf += completion
             self.chan.write(completion)
-        elif len(matches) > 1:
-            self.chan.write('\r\n' + '  '.join(matches) + '\r\n')
-            self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
-            self.chan.write(self._line_buf)
+            if not matches[0].endswith('/'):
+                self._line_buf += ' '
+                self.chan.write(' ')
+            return
+
+        lcp = _longest_common_prefix(matches)
+        if len(lcp) > len(prefix):
+            extension = lcp[len(prefix):]
+            self._line_buf += extension
+            self.chan.write(extension)
+            return
+
+        self.chan.write('\r\n' + '  '.join(matches) + '\r\n')
+        self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
+        self.chan.write(self._line_buf)
 
     async def _process_pty_line(self):
         """Called on Enter in PTY mode — process the buffered line.
