@@ -66,6 +66,18 @@ async def generate_response(req: CommandRequest):
     }
 
 
+class MitreMatchRequest(BaseModel):
+    command: str
+
+
+@app.post("/mitre-match")
+async def mitre_match(req: MitreMatchRequest):
+    """Pure MITRE ATT&CK pattern matching — no LLM, no caching, no IOCs."""
+    return {
+        "mitre_techniques": map_command_to_mitre(req.command),
+    }
+
+
 @app.get("/health")
 async def health():
     return {"status": "healthy"}

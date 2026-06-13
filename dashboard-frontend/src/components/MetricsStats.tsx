@@ -25,7 +25,7 @@ export function MetricsStats() {
   const metrics = [
     {
       label: 'Avg Session Length',
-      value: `${analytics.avg_session_duration || 0}s`,
+      value: `${Math.round(analytics.avg_session_duration || 0)}m`,
       change: '-',
       trend: 'none',
       icon: Clock,

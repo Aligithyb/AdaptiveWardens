@@ -62,18 +62,9 @@ class AttackTechnique(BaseModel):
 class StateValue(BaseModel):
     value: str
 
-def geolocate_and_notify(ip: str, protocol: str, session_id: str):
-    """Geolocate the IP, save country to DB, then fire the Slack alert."""
-    country = "Unknown"
+def _update_session_country(country: str, session_id: str):
+    """Persist country to the sessions table."""
     try:
-        geo_resp = requests.get(f"http://ip-api.com/json/{ip}", timeout=5)
-        if geo_resp.status_code == 200:
-            data = geo_resp.json()
-            if data.get("status") == "success":
-                country = data.get("country", "Unknown")
-        logger.info(f"[Geo] {ip} -> {country}")
-
-        # Persist country to DB
         with db.get_connection() as conn:
             conn.execute(
                 "UPDATE sessions SET country = ? WHERE session_id = ?",
@@ -81,7 +72,68 @@ def geolocate_and_notify(ip: str, protocol: str, session_id: str):
             )
             conn.commit()
     except Exception as e:
-        logger.error(f"[Geo] Failed to geolocate {ip}: {e}")
+        logger.error(f"[Geo] DB update failed for {session_id}: {e}")
+
+
+def _geolocate_ip_api(ip: str) -> str | None:
+    """Try ip-api.com (free, 45 req/min). Uses HTTPS. Returns country name or None."""
+    import time
+    for attempt in range(2):
+        try:
+            geo_resp = requests.get(
+                f"https://ip-api.com/json/{ip}",
+                timeout=5,
+                headers={"User-Agent": "AdaptiveWardens/1.0"}
+            )
+            if geo_resp.status_code == 200:
+                data = geo_resp.json()
+                if data.get("status") == "success":
+                    return data.get("country", "Unknown")
+            elif geo_resp.status_code == 429:
+                logger.warning(f"[Geo] ip-api rate limited on {ip}, retrying...")
+                time.sleep(1)
+                continue
+        except Exception as e:
+            logger.warning(f"[Geo] ip-api attempt {attempt + 1} failed for {ip}: {e}")
+            time.sleep(0.5)
+    return None
+
+
+def _geolocate_ipapi_co(ip: str) -> str | None:
+    """Fallback: ipapi.co (free tier, 1000 req/day). Returns country name or None."""
+    try:
+        resp = requests.get(
+            f"https://ipapi.co/{ip}/country_name/",
+            timeout=5,
+            headers={"User-Agent": "AdaptiveWardens/1.0"}
+        )
+        if resp.status_code == 200 and resp.text:
+            country = resp.text.strip()
+            if country and country != "None":
+                return country
+    except Exception as e:
+        logger.warning(f"[Geo] ipapi.co fallback failed for {ip}: {e}")
+    return None
+
+
+def geolocate_and_notify(ip: str, protocol: str, session_id: str):
+    """Geolocate the IP, save country to DB, then fire the Slack alert."""
+    country = "Unknown"
+
+    # Primary: ip-api.com with retry
+    country = _geolocate_ip_api(ip)
+
+    # Fallback: ipapi.co
+    if not country:
+        logger.info(f"[Geo] Falling back to ipapi.co for {ip}")
+        country = _geolocate_ipapi_co(ip)
+
+    if not country:
+        country = "Unknown"
+        logger.warning(f"[Geo] All geolocation services failed for {ip}")
+
+    logger.info(f"[Geo] {ip} -> {country}")
+    _update_session_country(country, session_id)
 
     # Send Slack alert
     try:

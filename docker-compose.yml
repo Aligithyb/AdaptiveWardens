@@ -153,6 +153,7 @@ services:
       - /app/node_modules # Don't overwrite node_modules with host ones
     environment:
       - NODE_ENV=development
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:-gradproject2025}
     restart: unless-stopped
     depends_on:
       - dashboard-backend

@@ -235,7 +235,7 @@ def get_analytics():
                 "total_iocs": total_iocs,
                 "unique_ips": unique_ips,
                 "high_risk_sessions": high_risk,
-                "avg_session_duration": round(avg_duration, 1),
+                "avg_session_duration": round(avg_duration / 60.0, 1),
                 "top_tactics": [dict(t) for t in top_tactics],
                 "mitre_techniques": mitre_techniques,
                 "protocols": [dict(p) for p in protocols],

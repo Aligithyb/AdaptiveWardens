@@ -1,26 +1,41 @@
 "use client"
 
-import { Map, Info } from 'lucide-react';
+import { Map, Info, ExternalLink } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
+
+const MITRE_BASE = "https://attack.mitre.org/techniques";
+
+const TACTIC_SEVERITY: Record<string, string> = {
+  "Reconnaissance": "medium",
+  "Resource Development": "medium",
+  "Initial Access": "critical",
+  "Execution": "high",
+  "Persistence": "high",
+  "Privilege Escalation": "high",
+  "Defense Evasion": "high",
+  "Credential Access": "high",
+  "Discovery": "medium",
+  "Lateral Movement": "high",
+  "Collection": "medium",
+  "Command and Control": "high",
+  "Exfiltration": "high",
+  "Impact": "critical",
+};
 
 export function MitreAttackMap() {
   const [selectedTechnique, setSelectedTechnique] = useState<string | null>(null);
   const [techniques, setTechniques] = useState<any[]>([]);
+  const [topTactics, setTopTactics] = useState<any[]>([]);
 
   useEffect(() => {
     const fetchTechniques = async () => {
       try {
         const res = await api.get('/api/analytics');
         if (res.data.mitre_techniques) {
-          // map the obj format to array format expected by the frontend
           const mappedTechniques = Object.entries(res.data.mitre_techniques).map(([id, data]: [string, any]) => {
             const tactic = data.tactic || 'Unknown Tactic';
-            // Simple severity mapping based on tactic
-            let severity = 'medium';
-            if (['Impact', 'Credential Access', 'Command and Control'].includes(tactic)) severity = 'high';
-            if (tactic === 'Initial Access') severity = 'critical';
-
+            let severity = TACTIC_SEVERITY[tactic] || 'medium';
             return {
               id,
               name: data.name || 'Unknown Technique',
@@ -31,27 +46,17 @@ export function MitreAttackMap() {
           });
           setTechniques(mappedTechniques);
         }
+        if (res.data.top_tactics) {
+          setTopTactics(res.data.top_tactics);
+        }
       } catch (err) {
         console.error("Failed to fetch MITRE techniques", err);
       }
     };
     fetchTechniques();
-    const interval = setInterval(fetchTechniques, 10000); // refresh every 10s
+    const interval = setInterval(fetchTechniques, 10000);
     return () => clearInterval(interval);
   }, []);
-
-
-  const tactics = [
-    'Initial Access',
-    'Execution',
-    'Persistence',
-    'Credential Access',
-    'Discovery',
-    'Defense Evasion',
-    'Command and Control',
-    'Exfiltration',
-    'Impact'
-  ];
 
   const getSeverityColor = (severity: string) => {
     switch (severity) {
@@ -103,7 +108,16 @@ export function MitreAttackMap() {
               }}
             >
               <div className="flex items-start justify-between mb-2">
-                <span className="text-xs text-slate-400">{technique.id}</span>
+                <a
+                  href={`${MITRE_BASE}/${technique.id.replace('.', '/')}/`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="text-xs text-slate-400 hover:text-cyan-400 transition-colors inline-flex items-center gap-1"
+                >
+                  {technique.id}
+                  <ExternalLink className="w-3 h-3" />
+                </a>
                 <span className={`w-6 h-6 rounded flex items-center justify-center text-xs ${technique.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
                   technique.severity === 'high' ? 'bg-orange-500/20 text-orange-400' :
                     technique.severity === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
@@ -128,13 +142,33 @@ export function MitreAttackMap() {
           ))}
         </div>
 
+        {/* Top Tactics */}
+        {topTactics.length > 0 && (
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <span className="text-xs text-slate-400">Top tactics:</span>
+            {topTactics.map((t: any) => (
+              <span key={t.tactic} className="px-2 py-1 text-xs rounded bg-slate-800 text-slate-300 border border-slate-700">
+                {t.tactic} <span className="text-slate-500">({t.count})</span>
+              </span>
+            ))}
+          </div>
+        )}
+
         {selectedTechniqueData && (
           <div className="mt-4 p-4 bg-slate-800/50 border border-slate-700 rounded-lg">
             <div className="flex items-start gap-3">
               <Info className="w-5 h-5 text-cyan-400 shrink-0 mt-0.5" />
-              <div>
+              <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-3 mb-2">
-                  <span className="text-slate-100">{selectedTechniqueData.id}</span>
+                  <a
+                    href={`${MITRE_BASE}/${selectedTechniqueData.id.replace('.', '/')}/`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-slate-100 hover:text-cyan-400 transition-colors inline-flex items-center gap-1.5"
+                  >
+                    {selectedTechniqueData.id}
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
                   <span className={`px-2 py-1 text-xs rounded ${selectedTechniqueData.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
                     selectedTechniqueData.severity === 'high' ? 'bg-orange-500/20 text-orange-400' :
                       selectedTechniqueData.severity === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
