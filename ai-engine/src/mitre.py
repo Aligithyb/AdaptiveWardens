@@ -174,10 +174,9 @@ def map_command_to_mitre(command: str) -> list:
     Returns a list of matched techniques.
     """
     matched = []
-    cmd_lower = command.lower()
     
     for mapping in MITRE_MAPPING:
-        if re.search(str(mapping["pattern"]), cmd_lower):
+        if re.search(str(mapping["pattern"]), command, re.IGNORECASE):
             matched.append({
                 "technique_id": mapping["technique_id"],
                 "technique_name": mapping["technique_name"],

@@ -1438,6 +1438,9 @@ class SessionHandler(asyncssh.SSHServerSession):
     # Core command dispatcher (used by both PTY and batch paths)
     # ------------------------------------------------------------------
     async def _process_single_command(self, cmd: str):
+        # MITRE ATT&CK mapping for EVERY command — fire-and-forget
+        asyncio.create_task(self._record_mitre_for_command(cmd))
+
         # Telemetry only — DO NOT short-circuit the command. Real bash would just
         # try to run "ignore" as a command and fail with "command not found".
         # Blocking with a special-case response is itself a honeypot fingerprint.
@@ -2407,8 +2410,6 @@ class SessionHandler(asyncssh.SSHServerSession):
                 logger.info(f"[{self.session_id}] {'cache' if data.get('cached') else 'ai'} response for: {cmd}")
                 for ioc in data.get("iocs", []):
                     asyncio.create_task(self._record_ioc(ioc))
-                for tech in data.get("mitre_techniques", []):
-                    asyncio.create_task(self._record_mitre_technique(tech))
                 return data.get("response", None)
         except Exception as e:
             logger.error(f"AI error: {e}")
@@ -2652,6 +2653,22 @@ class SessionHandler(asyncssh.SSHServerSession):
                       "context": "AI extracted from command/response"})
         except Exception as e:
             logger.error(f"Failed to report IOC: {e}")
+
+    async def _record_mitre_for_command(self, cmd: str):
+        """Fire-and-forget: call AI Engine's MITRE matcher for ANY command."""
+        if not AI_ENGINE_URL:
+            return
+        try:
+            r = await self.http_client.post(
+                f"{AI_ENGINE_URL}/mitre-match",
+                json={"command": cmd},
+                timeout=3.0,
+            )
+            if r.status_code == 200:
+                for tech in r.json().get("mitre_techniques", []):
+                    asyncio.create_task(self._record_mitre_technique(tech))
+        except Exception as e:
+            logger.debug(f"mitre-match failed for {cmd[:50]}: {e}")
 
     async def _record_mitre_technique(self, technique: dict):
         try:
