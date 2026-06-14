@@ -95,6 +95,7 @@ jobs:
           az rest \
             --method PUT \
             --url "https://management.azure.com/subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/containerApps/aw-sandbox-store?api-version=2024-03-01" \
+            --headers "Content-Type=application/json" \
             --body '{
               "location": "swedencentral",
               "properties": {
@@ -155,6 +156,7 @@ jobs:
           az rest \
             --method PUT \
             --url "https://management.azure.com/subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/containerApps/aw-ai-engine?api-version=2024-03-01" \
+            --headers "Content-Type=application/json" \
             --body '{
               "location": "swedencentral",
               "properties": {
@@ -215,6 +217,7 @@ jobs:
           az rest \
             --method PUT \
             --url "https://management.azure.com/subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/containerApps/aw-dashboard-backend?api-version=2024-03-01" \
+            --headers "Content-Type=application/json" \
             --body '{
               "location": "swedencentral",
               "properties": {
@@ -263,6 +266,7 @@ jobs:
           az rest \
             --method PUT \
             --url "https://management.azure.com/subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/containerApps/aw-ssh-frontend?api-version=2024-03-01" \
+            --headers "Content-Type=application/json" \
             --body '{
               "location": "swedencentral",
               "properties": {
@@ -311,6 +315,7 @@ jobs:
           az rest \
             --method PUT \
             --url "https://management.azure.com/subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/containerApps/aw-http-frontend?api-version=2024-03-01" \
+            --headers "Content-Type=application/json" \
             --body '{
               "location": "swedencentral",
               "properties": {
@@ -356,6 +361,7 @@ jobs:
           az rest \
             --method PUT \
             --url "https://management.azure.com/subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/containerApps/aw-dashboard-frontend?api-version=2024-03-01" \
+            --headers "Content-Type=application/json" \
             --body '{
               "location": "swedencentral",
               "properties": {
