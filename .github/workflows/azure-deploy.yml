@@ -1,0 +1,755 @@
+name: Azure Container Apps Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      verify_only:
+        description: 'Only run health checks — skip build & deploy'
+        type: boolean
+        default: false
+
+# ── Workflow-level environment variables ─────────────────────────────────────
+# All sensitive values come from GitHub Secrets — nothing is hardcoded here.
+env:
+  AZURE_RG: ${{ secrets.AZURE_RG }}
+  AZURE_ACA_ENV: ${{ secrets.AZURE_ACA_ENV }}
+  ACR_NAME: ${{ secrets.ACR_NAME }}
+  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+  STORAGE_ACCOUNT: ${{ secrets.STORAGE_ACCOUNT }}
+  STORAGE_KEY: ${{ secrets.STORAGE_KEY }}
+  FILE_SHARE: ${{ secrets.FILE_SHARE }}
+  IMAGE_TAG: ${{ github.sha }}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 1: BUILD — builds all 6 Docker images in parallel and pushes to ACR
+# ═══════════════════════════════════════════════════════════════════════════════
+jobs:
+  build:
+    name: "Build: ${{ matrix.service }}"
+    if: ${{ !inputs.verify_only }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        service:
+          - sandbox-store
+          - ai-engine
+          - ssh-frontend
+          - http-frontend
+          - dashboard-backend
+          - dashboard-frontend
+      fail-fast: false   # if one image fails to build, continue others
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── Docker Buildx ───────────────────────────────────────────────────────
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── Layer caching — speeds up repeated builds dramatically ────────────
+      - name: Restore Docker layer cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache/${{ matrix.service }}
+          key: buildx-${{ matrix.service }}-${{ hashFiles(
+                 format('{0}/Dockerfile', matrix.service),
+                 format('{0}/requirements.txt', matrix.service),
+                 format('{0}/package-lock.json', matrix.service)
+               ) }}
+          restore-keys: |
+            buildx-${{ matrix.service }}-
+
+      # ── Login to ACR ────────────────────────────────────────────────────────
+      - name: Log in to Azure Container Registry
+        uses: azure/docker-login@v2
+        with:
+          login-server: ${{ env.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      # ── Build + Push ─────────────────────────────────────────────────────────
+      # Tags image with the git SHA (used in deploy) AND :latest (for reference)
+      - name: Build and push ${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.service }}
+          file: ./${{ matrix.service }}/Dockerfile
+          push: true
+          tags: |
+            ${{ env.ACR_LOGIN_SERVER }}/${{ matrix.service }}:${{ env.IMAGE_TAG }}
+            ${{ env.ACR_LOGIN_SERVER }}/${{ matrix.service }}:latest
+          cache-from: type=local,src=/tmp/.buildx-cache/${{ matrix.service }}
+          cache-to: type=local,dest=/tmp/.buildx-cache/${{ matrix.service }},mode=max
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 2: DEPLOY — deploys all 6 services in dependency order
+# ═══════════════════════════════════════════════════════════════════════════════
+  deploy:
+    name: Deploy to Azure Container Apps
+    needs: [build]
+    if: ${{ always() && !cancelled() && !inputs.verify_only }}
+    runs-on: ubuntu-latest
+    concurrency: aca-deploy   # prevents parallel deploys from conflicting
+
+    steps:
+      # ── Checkout & Login ────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # ── Register Azure File Share with the ACA Environment ─────────────────
+      # This must happen before ANY container app mounts the volume.
+      # Safe to run on every deploy (idempotent).
+      - name: Register Azure File Share with ACA Environment
+        run: |
+          echo "Registering file share 'awdata' with ACA environment..."
+          az containerapp env storage set \
+            --name "${{ env.AZURE_ACA_ENV }}" \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --storage-name awdata \
+            --azure-file-account-name "${{ env.STORAGE_ACCOUNT }}" \
+            --azure-file-account-key "${{ env.STORAGE_KEY }}" \
+            --azure-file-share-name "${{ env.FILE_SHARE }}" \
+            --access-mode ReadWrite \
+            --output none
+          echo "File share registered."
+
+      # ════════════════════════════════════════════════════════════════════════
+      # DEPLOY ORDER: sandbox-store → ai-engine → dashboard-backend
+      #               → ssh-frontend → http-frontend → dashboard-frontend
+      #
+      # Upstream services must be healthy before downstream ones start,
+      # because ai-engine calls sandbox-store on startup to verify connectivity.
+      # ════════════════════════════════════════════════════════════════════════
+
+      # ── [1/6] sandbox-store ─────────────────────────────────────────────────
+      # Role: SQLite persistence layer — sessions, virtual filesystem, IOCs
+      # Ingress: INTERNAL (never reachable from internet)
+      # Volume: /data (app_state.db lives here)
+      - name: "Deploy [1/6]: sandbox-store"
+        run: |
+          NAME="aw-sandbox-store"
+          IMG="${{ env.ACR_LOGIN_SERVER }}/sandbox-store:${{ env.IMAGE_TAG }}"
+          echo "Deploying $NAME with image $IMG..."
+
+          if az containerapp show \
+            --name "$NAME" \
+            --resource-group "${{ env.AZURE_RG }}" &>/dev/null; then
+            echo "  Existing app found — updating image..."
+            az containerapp update \
+              --name "$NAME" \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --image "$IMG" \
+              --set-env-vars \
+                PYTHONUNBUFFERED=1 \
+                DB_PATH=/data/app_state.db \
+                SLACK_WEBHOOK_URL=secretref:slack-webhook-url \
+                SLACK_BOT_TOKEN=secretref:slack-bot-token \
+                SLACK_CHANNEL=secretref:slack-channel \
+                CANARY_AWS_ACCESS_KEY=secretref:canary-aws-access-key \
+                CANARY_AWS_SECRET_KEY=secretref:canary-aws-secret-key \
+                CANARY_STRIPE_KEY=secretref:canary-stripe-key \
+                CANARY_DNS_HOSTNAME=secretref:canary-dns-hostname \
+              --output none
+          else
+            echo "  First deploy — creating app..."
+            az containerapp create \
+              --name "$NAME" \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --environment "${{ env.AZURE_ACA_ENV }}" \
+              --image "$IMG" \
+              --registry-server "${{ env.ACR_LOGIN_SERVER }}" \
+              --registry-username "${{ secrets.ACR_USERNAME }}" \
+              --registry-password "${{ secrets.ACR_PASSWORD }}" \
+              --target-port 8001 \
+              --ingress internal \
+              --min-replicas 1 \
+              --max-replicas 1 \
+              --cpu 0.5 \
+              --memory 1.0Gi \
+              --env-vars \
+                PYTHONUNBUFFERED=1 \
+                DB_PATH=/data/app_state.db \
+                SLACK_WEBHOOK_URL=secretref:slack-webhook-url \
+                SLACK_BOT_TOKEN=secretref:slack-bot-token \
+                SLACK_CHANNEL=secretref:slack-channel \
+                CANARY_AWS_ACCESS_KEY=secretref:canary-aws-access-key \
+                CANARY_AWS_SECRET_KEY=secretref:canary-aws-secret-key \
+                CANARY_STRIPE_KEY=secretref:canary-stripe-key \
+                CANARY_DNS_HOSTNAME=secretref:canary-dns-hostname \
+              --secrets \
+                slack-webhook-url="${{ secrets.SLACK_WEBHOOK_URL }}" \
+                slack-bot-token="${{ secrets.SLACK_BOT_TOKEN }}" \
+                slack-channel="${{ secrets.SLACK_CHANNEL }}" \
+                canary-aws-access-key="${{ secrets.CANARY_AWS_ACCESS_KEY }}" \
+                canary-aws-secret-key="${{ secrets.CANARY_AWS_SECRET_KEY }}" \
+                canary-stripe-key="${{ secrets.CANARY_STRIPE_KEY }}" \
+                canary-dns-hostname="${{ secrets.CANARY_DNS_HOSTNAME }}" \
+              --volume awdata:/data \
+              --output none
+          fi
+
+      - name: "Wait for sandbox-store to be healthy"
+        run: |
+          echo "Polling sandbox-store provisioning state..."
+          for i in $(seq 1 30); do
+            STATUS=$(az containerapp show \
+              --name aw-sandbox-store \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --query properties.provisioningState -o tsv 2>/dev/null || echo "Pending")
+            echo "  Attempt $i/30 — State: $STATUS"
+            if [ "$STATUS" = "Succeeded" ]; then
+              echo "sandbox-store is ready."
+              break
+            fi
+            if [ "$STATUS" = "Failed" ]; then
+              echo "ERROR: sandbox-store deployment failed."
+              az containerapp logs show \
+                --name aw-sandbox-store \
+                --resource-group "${{ env.AZURE_RG }}" \
+                --tail 50 || true
+              exit 1
+            fi
+            if [ "$i" = "30" ]; then
+              echo "ERROR: Timed out waiting for sandbox-store."
+              exit 1
+            fi
+            sleep 10
+          done
+
+      # ── [2/6] ai-engine ─────────────────────────────────────────────────────
+      # Role: LLM tier (DeepSeek), deterministic cache, IOC extractor, MITRE mapper
+      # Ingress: INTERNAL
+      # Volume: /data (llm_budget.db and ai_cache.db)
+      # Upstream: calls http://aw-sandbox-store
+      - name: "Deploy [2/6]: ai-engine"
+        run: |
+          NAME="aw-ai-engine"
+          IMG="${{ env.ACR_LOGIN_SERVER }}/ai-engine:${{ env.IMAGE_TAG }}"
+          echo "Deploying $NAME with image $IMG..."
+
+          if az containerapp show \
+            --name "$NAME" \
+            --resource-group "${{ env.AZURE_RG }}" &>/dev/null; then
+            echo "  Existing app found — updating image..."
+            az containerapp update \
+              --name "$NAME" \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --image "$IMG" \
+              --set-env-vars \
+                PYTHONUNBUFFERED=1 \
+                SANDBOX_URL=http://aw-sandbox-store \
+                DEEPSEEK_API_KEY=secretref:deepseek-api-key \
+                DEEPSEEK_MODEL=secretref:deepseek-model \
+                DEEPSEEK_BASE_URL=secretref:deepseek-base-url \
+                LLM_DAILY_INPUT_TOKEN_BUDGET=secretref:llm-input-budget \
+                LLM_DAILY_OUTPUT_TOKEN_BUDGET=secretref:llm-output-budget \
+                LLM_PER_IP_RATE_LIMIT_CALLS=secretref:llm-rate-calls \
+                LLM_PER_IP_RATE_LIMIT_WINDOW=secretref:llm-rate-window \
+              --output none
+          else
+            echo "  First deploy — creating app..."
+            az containerapp create \
+              --name "$NAME" \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --environment "${{ env.AZURE_ACA_ENV }}" \
+              --image "$IMG" \
+              --registry-server "${{ env.ACR_LOGIN_SERVER }}" \
+              --registry-username "${{ secrets.ACR_USERNAME }}" \
+              --registry-password "${{ secrets.ACR_PASSWORD }}" \
+              --target-port 8002 \
+              --ingress internal \
+              --min-replicas 1 \
+              --max-replicas 1 \
+              --cpu 1.0 \
+              --memory 2.0Gi \
+              --env-vars \
+                PYTHONUNBUFFERED=1 \
+                SANDBOX_URL=http://aw-sandbox-store \
+                DEEPSEEK_API_KEY=secretref:deepseek-api-key \
+                DEEPSEEK_MODEL=secretref:deepseek-model \
+                DEEPSEEK_BASE_URL=secretref:deepseek-base-url \
+                LLM_DAILY_INPUT_TOKEN_BUDGET=secretref:llm-input-budget \
+                LLM_DAILY_OUTPUT_TOKEN_BUDGET=secretref:llm-output-budget \
+                LLM_PER_IP_RATE_LIMIT_CALLS=secretref:llm-rate-calls \
+                LLM_PER_IP_RATE_LIMIT_WINDOW=secretref:llm-rate-window \
+              --secrets \
+                deepseek-api-key="${{ secrets.DEEPSEEK_API_KEY }}" \
+                deepseek-model="${{ secrets.DEEPSEEK_MODEL }}" \
+                deepseek-base-url="${{ secrets.DEEPSEEK_BASE_URL }}" \
+                llm-input-budget="${{ secrets.LLM_DAILY_INPUT_TOKEN_BUDGET }}" \
+                llm-output-budget="${{ secrets.LLM_DAILY_OUTPUT_TOKEN_BUDGET }}" \
+                llm-rate-calls="${{ secrets.LLM_PER_IP_RATE_LIMIT_CALLS }}" \
+                llm-rate-window="${{ secrets.LLM_PER_IP_RATE_LIMIT_WINDOW }}" \
+              --volume awdata:/data \
+              --output none
+          fi
+
+      - name: "Wait for ai-engine to be healthy"
+        run: |
+          echo "Polling ai-engine provisioning state..."
+          for i in $(seq 1 30); do
+            STATUS=$(az containerapp show \
+              --name aw-ai-engine \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --query properties.provisioningState -o tsv 2>/dev/null || echo "Pending")
+            echo "  Attempt $i/30 — State: $STATUS"
+            if [ "$STATUS" = "Succeeded" ]; then
+              echo "ai-engine is ready."
+              break
+            fi
+            if [ "$STATUS" = "Failed" ]; then
+              echo "ERROR: ai-engine deployment failed."
+              az containerapp logs show \
+                --name aw-ai-engine \
+                --resource-group "${{ env.AZURE_RG }}" \
+                --tail 50 || true
+              exit 1
+            fi
+            if [ "$i" = "30" ]; then
+              echo "ERROR: Timed out waiting for ai-engine."
+              exit 1
+            fi
+            sleep 10
+          done
+
+      # ── [3/6] dashboard-backend ──────────────────────────────────────────────
+      # Role: SOC API — reads SQLite directly from the shared /data volume
+      # Ingress: INTERNAL
+      # Volume: /data (reads app_state.db written by sandbox-store)
+      - name: "Deploy [3/6]: dashboard-backend"
+        run: |
+          NAME="aw-dashboard-backend"
+          IMG="${{ env.ACR_LOGIN_SERVER }}/dashboard-backend:${{ env.IMAGE_TAG }}"
+          echo "Deploying $NAME with image $IMG..."
+
+          if az containerapp show \
+            --name "$NAME" \
+            --resource-group "${{ env.AZURE_RG }}" &>/dev/null; then
+            echo "  Existing app found — updating image..."
+            az containerapp update \
+              --name "$NAME" \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --image "$IMG" \
+              --set-env-vars \
+                PYTHONUNBUFFERED=1 \
+                DB_PATH=/data/app_state.db \
+                DASHBOARD_API_KEY=secretref:dashboard-api-key \
+              --output none
+          else
+            echo "  First deploy — creating app..."
+            az containerapp create \
+              --name "$NAME" \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --environment "${{ env.AZURE_ACA_ENV }}" \
+              --image "$IMG" \
+              --registry-server "${{ env.ACR_LOGIN_SERVER }}" \
+              --registry-username "${{ secrets.ACR_USERNAME }}" \
+              --registry-password "${{ secrets.ACR_PASSWORD }}" \
+              --target-port 8003 \
+              --ingress internal \
+              --min-replicas 1 \
+              --max-replicas 1 \
+              --cpu 0.5 \
+              --memory 1.0Gi \
+              --env-vars \
+                PYTHONUNBUFFERED=1 \
+                DB_PATH=/data/app_state.db \
+                DASHBOARD_API_KEY=secretref:dashboard-api-key \
+              --secrets \
+                dashboard-api-key="${{ secrets.DASHBOARD_API_KEY }}" \
+              --volume awdata:/data \
+              --output none
+          fi
+
+      - name: "Wait for dashboard-backend to be healthy"
+        run: |
+          echo "Polling dashboard-backend provisioning state..."
+          for i in $(seq 1 30); do
+            STATUS=$(az containerapp show \
+              --name aw-dashboard-backend \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --query properties.provisioningState -o tsv 2>/dev/null || echo "Pending")
+            echo "  Attempt $i/30 — State: $STATUS"
+            if [ "$STATUS" = "Succeeded" ]; then
+              echo "dashboard-backend is ready."
+              break
+            fi
+            if [ "$STATUS" = "Failed" ]; then
+              echo "ERROR: dashboard-backend deployment failed."
+              az containerapp logs show \
+                --name aw-dashboard-backend \
+                --resource-group "${{ env.AZURE_RG }}" \
+                --tail 50 || true
+              exit 1
+            fi
+            if [ "$i" = "30" ]; then
+              echo "ERROR: Timed out waiting for dashboard-backend."
+              exit 1
+            fi
+            sleep 10
+          done
+
+      # ── [4/6] ssh-frontend ───────────────────────────────────────────────────
+      # Role: AsyncSSH honeypot — accepts attacker SSH connections
+      # Ingress: EXTERNAL, TCP transport on port 2222
+      # Volume: /data (stores SSH host key for stable fingerprint across restarts)
+      # NOTE: TCP ingress means no HTTPS — this is correct for SSH.
+      - name: "Deploy [4/6]: ssh-frontend"
+        run: |
+          NAME="aw-ssh-frontend"
+          IMG="${{ env.ACR_LOGIN_SERVER }}/ssh-frontend:${{ env.IMAGE_TAG }}"
+          echo "Deploying $NAME with image $IMG..."
+
+          if az containerapp show \
+            --name "$NAME" \
+            --resource-group "${{ env.AZURE_RG }}" &>/dev/null; then
+            echo "  Existing app found — updating image..."
+            az containerapp update \
+              --name "$NAME" \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --image "$IMG" \
+              --set-env-vars \
+                PYTHONUNBUFFERED=1 \
+                SANDBOX_URL=http://aw-sandbox-store \
+                AI_ENGINE_URL=http://aw-ai-engine \
+                DATA_DIR=/data \
+              --output none
+          else
+            echo "  First deploy — creating app..."
+            az containerapp create \
+              --name "$NAME" \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --environment "${{ env.AZURE_ACA_ENV }}" \
+              --image "$IMG" \
+              --registry-server "${{ env.ACR_LOGIN_SERVER }}" \
+              --registry-username "${{ secrets.ACR_USERNAME }}" \
+              --registry-password "${{ secrets.ACR_PASSWORD }}" \
+              --target-port 2222 \
+              --ingress external \
+              --transport tcp \
+              --min-replicas 1 \
+              --max-replicas 1 \
+              --cpu 1.0 \
+              --memory 2.0Gi \
+              --env-vars \
+                PYTHONUNBUFFERED=1 \
+                SANDBOX_URL=http://aw-sandbox-store \
+                AI_ENGINE_URL=http://aw-ai-engine \
+                DATA_DIR=/data \
+              --volume awdata:/data \
+              --output none
+          fi
+
+      - name: "Wait for ssh-frontend to be healthy"
+        run: |
+          echo "Polling ssh-frontend provisioning state..."
+          for i in $(seq 1 30); do
+            STATUS=$(az containerapp show \
+              --name aw-ssh-frontend \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --query properties.provisioningState -o tsv 2>/dev/null || echo "Pending")
+            echo "  Attempt $i/30 — State: $STATUS"
+            if [ "$STATUS" = "Succeeded" ]; then
+              echo "ssh-frontend is ready."
+              break
+            fi
+            if [ "$STATUS" = "Failed" ]; then
+              echo "ERROR: ssh-frontend deployment failed."
+              az containerapp logs show \
+                --name aw-ssh-frontend \
+                --resource-group "${{ env.AZURE_RG }}" \
+                --tail 50 || true
+              exit 1
+            fi
+            if [ "$i" = "30" ]; then
+              echo "ERROR: Timed out waiting for ssh-frontend."
+              exit 1
+            fi
+            sleep 10
+          done
+
+      # ── [5/6] http-frontend ──────────────────────────────────────────────────
+      # Role: HTTP honeypot — captures opportunistic web scanners
+      # Ingress: EXTERNAL, HTTP on port 8080 (Azure terminates TLS)
+      - name: "Deploy [5/6]: http-frontend"
+        run: |
+          NAME="aw-http-frontend"
+          IMG="${{ env.ACR_LOGIN_SERVER }}/http-frontend:${{ env.IMAGE_TAG }}"
+          echo "Deploying $NAME with image $IMG..."
+
+          if az containerapp show \
+            --name "$NAME" \
+            --resource-group "${{ env.AZURE_RG }}" &>/dev/null; then
+            echo "  Existing app found — updating image..."
+            az containerapp update \
+              --name "$NAME" \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --image "$IMG" \
+              --set-env-vars \
+                PYTHONUNBUFFERED=1 \
+                SANDBOX_URL=http://aw-sandbox-store \
+                AI_ENGINE_URL=http://aw-ai-engine \
+              --output none
+          else
+            echo "  First deploy — creating app..."
+            az containerapp create \
+              --name "$NAME" \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --environment "${{ env.AZURE_ACA_ENV }}" \
+              --image "$IMG" \
+              --registry-server "${{ env.ACR_LOGIN_SERVER }}" \
+              --registry-username "${{ secrets.ACR_USERNAME }}" \
+              --registry-password "${{ secrets.ACR_PASSWORD }}" \
+              --target-port 8080 \
+              --ingress external \
+              --transport auto \
+              --min-replicas 1 \
+              --max-replicas 2 \
+              --cpu 0.5 \
+              --memory 1.0Gi \
+              --env-vars \
+                PYTHONUNBUFFERED=1 \
+                SANDBOX_URL=http://aw-sandbox-store \
+                AI_ENGINE_URL=http://aw-ai-engine \
+              --output none
+          fi
+
+      - name: "Wait for http-frontend to be healthy"
+        run: |
+          echo "Polling http-frontend provisioning state..."
+          for i in $(seq 1 30); do
+            STATUS=$(az containerapp show \
+              --name aw-http-frontend \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --query properties.provisioningState -o tsv 2>/dev/null || echo "Pending")
+            echo "  Attempt $i/30 — State: $STATUS"
+            if [ "$STATUS" = "Succeeded" ]; then
+              echo "http-frontend is ready."
+              break
+            fi
+            if [ "$STATUS" = "Failed" ]; then
+              echo "ERROR: http-frontend deployment failed."
+              az containerapp logs show \
+                --name aw-http-frontend \
+                --resource-group "${{ env.AZURE_RG }}" \
+                --tail 50 || true
+              exit 1
+            fi
+            if [ "$i" = "30" ]; then
+              echo "ERROR: Timed out waiting for http-frontend."
+              exit 1
+            fi
+            sleep 10
+          done
+
+      # ── [6/6] dashboard-frontend ─────────────────────────────────────────────
+      # Role: Next.js SOC console — attack heatmap, session playback, reports
+      # Ingress: EXTERNAL, HTTPS on port 3000
+      # Note: NEXT_PUBLIC_* vars are baked into the JS bundle at build time.
+      #       If you change them you must rebuild the image — not just update the app.
+      - name: "Deploy [6/6]: dashboard-frontend"
+        run: |
+          NAME="aw-dashboard-frontend"
+          IMG="${{ env.ACR_LOGIN_SERVER }}/dashboard-frontend:${{ env.IMAGE_TAG }}"
+          echo "Deploying $NAME with image $IMG..."
+
+          if az containerapp show \
+            --name "$NAME" \
+            --resource-group "${{ env.AZURE_RG }}" &>/dev/null; then
+            echo "  Existing app found — updating image..."
+            az containerapp update \
+              --name "$NAME" \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --image "$IMG" \
+              --set-env-vars \
+                NODE_ENV=production \
+                NEXT_PUBLIC_API_URL=http://aw-dashboard-backend \
+                NEXT_PUBLIC_DASHBOARD_API_KEY=secretref:dashboard-api-key \
+              --output none
+          else
+            echo "  First deploy — creating app..."
+            az containerapp create \
+              --name "$NAME" \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --environment "${{ env.AZURE_ACA_ENV }}" \
+              --image "$IMG" \
+              --registry-server "${{ env.ACR_LOGIN_SERVER }}" \
+              --registry-username "${{ secrets.ACR_USERNAME }}" \
+              --registry-password "${{ secrets.ACR_PASSWORD }}" \
+              --target-port 3000 \
+              --ingress external \
+              --transport auto \
+              --min-replicas 1 \
+              --max-replicas 2 \
+              --cpu 0.5 \
+              --memory 1.0Gi \
+              --env-vars \
+                NODE_ENV=production \
+                NEXT_PUBLIC_API_URL=http://aw-dashboard-backend \
+                NEXT_PUBLIC_DASHBOARD_API_KEY=secretref:dashboard-api-key \
+              --secrets \
+                dashboard-api-key="${{ secrets.DASHBOARD_API_KEY }}" \
+              --output none
+          fi
+
+      - name: "Wait for dashboard-frontend to be healthy"
+        run: |
+          echo "Polling dashboard-frontend provisioning state..."
+          for i in $(seq 1 30); do
+            STATUS=$(az containerapp show \
+              --name aw-dashboard-frontend \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --query properties.provisioningState -o tsv 2>/dev/null || echo "Pending")
+            echo "  Attempt $i/30 — State: $STATUS"
+            if [ "$STATUS" = "Succeeded" ]; then
+              echo "dashboard-frontend is ready."
+              break
+            fi
+            if [ "$STATUS" = "Failed" ]; then
+              echo "ERROR: dashboard-frontend deployment failed."
+              az containerapp logs show \
+                --name aw-dashboard-frontend \
+                --resource-group "${{ env.AZURE_RG }}" \
+                --tail 50 || true
+              exit 1
+            fi
+            if [ "$i" = "30" ]; then
+              echo "ERROR: Timed out waiting for dashboard-frontend."
+              exit 1
+            fi
+            sleep 10
+          done
+
+      # ── Health checks on all external services ───────────────────────────────
+      - name: Health check — http-frontend
+        run: |
+          FQDN=$(az containerapp show \
+            --name aw-http-frontend \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          echo "Checking https://$FQDN/health ..."
+          for i in $(seq 1 10); do
+            if curl -sf --connect-timeout 10 "https://${FQDN}/health" >/dev/null; then
+              echo "http-frontend health: OK"
+              break
+            fi
+            echo "  Retry $i/10..."
+            sleep 6
+          done
+
+      - name: Health check — dashboard-frontend
+        run: |
+          FQDN=$(az containerapp show \
+            --name aw-dashboard-frontend \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          echo "Checking https://$FQDN ..."
+          for i in $(seq 1 10); do
+            if curl -sf --connect-timeout 10 "https://$FQDN" >/dev/null; then
+              echo "dashboard-frontend health: OK"
+              break
+            fi
+            echo "  Retry $i/10..."
+            sleep 6
+          done
+
+      # ── Deployment Summary ───────────────────────────────────────────────────
+      - name: Print deployment summary
+        run: |
+          echo ""
+          echo "============================================================"
+          echo "  DEPLOYMENT COMPLETE"
+          echo "  Image tag: ${{ env.IMAGE_TAG }}"
+          echo "  Commit:    ${{ github.event.head_commit.message }}"
+          echo "============================================================"
+          echo ""
+
+          # Write GitHub Actions Job Summary (visible in the Actions UI)
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image tag:** \`${{ env.IMAGE_TAG }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | Type | URL |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|---|" >> $GITHUB_STEP_SUMMARY
+
+          for APP in aw-sandbox-store aw-ai-engine aw-dashboard-backend; do
+            echo "| $APP | Internal | (not public) |" >> $GITHUB_STEP_SUMMARY
+          done
+
+          for APP in aw-http-frontend aw-dashboard-frontend; do
+            FQDN=$(az containerapp show --name "$APP" \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "unavailable")
+            echo "| $APP | External HTTPS | https://$FQDN |" >> $GITHUB_STEP_SUMMARY
+          done
+
+          SSH_FQDN=$(az containerapp show --name aw-ssh-frontend \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "unavailable")
+          echo "| aw-ssh-frontend | External TCP | $SSH_FQDN:2222 |" >> $GITHUB_STEP_SUMMARY
+
+          # Also print to console
+          echo "  SERVICE                   URL"
+          echo "  ------------------------- -----------------------------------"
+          for APP in aw-sandbox-store aw-ai-engine aw-dashboard-backend; do
+            printf "  %-25s %s\n" "$APP" "(internal only)"
+          done
+          for APP in aw-http-frontend aw-dashboard-frontend; do
+            FQDN=$(az containerapp show --name "$APP" \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "unavailable")
+            printf "  %-25s https://%s\n" "$APP" "$FQDN"
+          done
+          SSH_FQDN=$(az containerapp show --name aw-ssh-frontend \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "unavailable")
+          printf "  %-25s %s:2222 (TCP/SSH)\n" "aw-ssh-frontend" "$SSH_FQDN"
+          echo "============================================================"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 3: VERIFY-ONLY (triggered manually via workflow_dispatch)
+# Skips build + deploy, just checks the current state of all 6 apps
+# ═══════════════════════════════════════════════════════════════════════════════
+  verify:
+    name: Verify Only (no deploy)
+    if: ${{ inputs.verify_only }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Check all Container Apps
+        run: |
+          echo "Checking provisioning state of all 6 services..."
+          ALL_OK=true
+          for APP in aw-sandbox-store aw-ai-engine aw-dashboard-backend \
+                     aw-ssh-frontend aw-http-frontend aw-dashboard-frontend; do
+            STATUS=$(az containerapp show \
+              --name "$APP" \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --query properties.provisioningState -o tsv 2>/dev/null || echo "NOT FOUND")
+            if [ "$STATUS" = "Succeeded" ]; then
+              echo "  OK    $APP"
+            else
+              echo "  FAIL  $APP ($STATUS)"
+              ALL_OK=false
+            fi
+          done
+          if [ "$ALL_OK" = "false" ]; then exit 1; fi
+          echo ""
+          echo "All services healthy."
