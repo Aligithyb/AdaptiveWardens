@@ -73,21 +73,13 @@ jobs:
     concurrency: aca-deploy   # prevents parallel deploys from conflicting
 
     steps:
-      # ── Checkout & Login ────────────────────────────────────────────────────
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Log in to Azure
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # ── Register Azure File Share with the ACA Environment ─────────────────
-      # This must happen before ANY container app mounts the volume.
-      # Safe to run on every deploy (idempotent).
       - name: Register Azure File Share with ACA Environment
         run: |
-          echo "Registering file share 'awdata' with ACA environment..."
           az containerapp env storage set \
             --name "${{ env.AZURE_ACA_ENV }}" \
             --resource-group "${{ env.AZURE_RG }}" \
@@ -97,492 +89,331 @@ jobs:
             --azure-file-share-name "${{ env.FILE_SHARE }}" \
             --access-mode ReadWrite \
             --output none
-          echo "File share registered."
 
-      # ════════════════════════════════════════════════════════════════════════
-      # DEPLOY ORDER: sandbox-store → ai-engine → dashboard-backend
-      #               → ssh-frontend → http-frontend → dashboard-frontend
-      #
-      # Upstream services must be healthy before downstream ones start,
-      # because ai-engine calls sandbox-store on startup to verify connectivity.
-      # ════════════════════════════════════════════════════════════════════════
-
-      # ── [1/6] sandbox-store ─────────────────────────────────────────────────
-      # Role: SQLite persistence layer — sessions, virtual filesystem, IOCs
-      # Ingress: INTERNAL (never reachable from internet)
-      # Volume: /data (app_state.db lives here)
       - name: "Deploy [1/6]: sandbox-store"
         run: |
-          python3 << 'PYEOF'
-          import yaml, os
-          acr = "${{ env.ACR_LOGIN_SERVER }}"
-          tag = "${{ env.IMAGE_TAG }}"
-          rg = "${{ env.AZURE_RG }}"
-          with open('aca-specs/sandbox-store.yaml') as f:
-              spec = yaml.safe_load(f)
-          for reg in spec['properties']['configuration']['registries']:
-              reg['server'] = acr
-          secrets_map = spec['properties']['configuration']['secrets']
-          secret_values = {
-              'acr-password': '${{ secrets.ACR_PASSWORD }}',
-              'slack-webhook-url': '${{ secrets.SLACK_WEBHOOK_URL }}',
-              'slack-bot-token': '${{ secrets.SLACK_BOT_TOKEN }}',
-              'slack-channel': '${{ secrets.SLACK_CHANNEL }}',
-              'canary-aws-access-key': '${{ secrets.CANARY_AWS_ACCESS_KEY }}',
-              'canary-aws-secret-key': '${{ secrets.CANARY_AWS_SECRET_KEY }}',
-              'canary-stripe-key': '${{ secrets.CANARY_STRIPE_KEY }}',
-              'canary-dns-hostname': '${{ secrets.CANARY_DNS_HOSTNAME }}',
-          }
-          for s in secrets_map:
-              if s['name'] in secret_values:
-                  s['value'] = secret_values[s['name']]
-          spec['properties']['template']['containers'][0]['image'] = f"{acr}/sandbox-store:{tag}"
-          with open('/tmp/sandbox-store-deploy.yaml', 'w') as f:
-              yaml.dump(spec, f)
-          PYEOF
-          az containerapp create \
-            --name aw-sandbox-store \
-            --resource-group "${{ env.AZURE_RG }}" \
-            --yaml /tmp/sandbox-store-deploy.yaml \
-            || az containerapp update \
-               --name aw-sandbox-store \
-               --resource-group "${{ env.AZURE_RG }}" \
-               --yaml /tmp/sandbox-store-deploy.yaml
+          az rest \
+            --method PUT \
+            --url "https://management.azure.com/subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/containerApps/aw-sandbox-store?api-version=2024-03-01" \
+            --body '{
+              "location": "swedencentral",
+              "properties": {
+                "environmentId": "/subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/managedEnvironments/aw-ca-env",
+                "configuration": {
+                  "ingress": { "external": false, "targetPort": 8001 },
+                  "registries": [{ "server": "awreg8802.azurecr.io", "username": "awreg8802", "passwordSecretRef": "acr-password" }],
+                  "secrets": [
+                    { "name": "acr-password", "value": "${{ secrets.ACR_PASSWORD }}" },
+                    { "name": "slack-webhook-url", "value": "${{ secrets.SLACK_WEBHOOK_URL }}" },
+                    { "name": "slack-bot-token", "value": "${{ secrets.SLACK_BOT_TOKEN }}" },
+                    { "name": "slack-channel", "value": "${{ secrets.SLACK_CHANNEL }}" },
+                    { "name": "canary-aws-access-key", "value": "${{ secrets.CANARY_AWS_ACCESS_KEY }}" },
+                    { "name": "canary-aws-secret-key", "value": "${{ secrets.CANARY_AWS_SECRET_KEY }}" },
+                    { "name": "canary-stripe-key", "value": "${{ secrets.CANARY_STRIPE_KEY }}" },
+                    { "name": "canary-dns-hostname", "value": "${{ secrets.CANARY_DNS_HOSTNAME }}" }
+                  ]
+                },
+                "template": {
+                  "volumes": [{ "name": "azurefiles", "storageType": "AzureFile", "storageName": "awdata" }],
+                  "containers": [{
+                    "name": "sandbox-store",
+                    "image": "awreg8802.azurecr.io/sandbox-store:${{ env.IMAGE_TAG }}",
+                    "resources": { "cpu": 0.5, "memory": "1Gi" },
+                    "volumeMounts": [{ "volumeName": "azurefiles", "mountPath": "/data" }],
+                    "env": [
+                      { "name": "PYTHONUNBUFFERED", "value": "1" },
+                      { "name": "DB_PATH", "value": "/data/app_state.db" },
+                      { "name": "SLACK_WEBHOOK_URL", "secretRef": "slack-webhook-url" },
+                      { "name": "SLACK_BOT_TOKEN", "secretRef": "slack-bot-token" },
+                      { "name": "SLACK_CHANNEL", "secretRef": "slack-channel" },
+                      { "name": "CANARY_AWS_ACCESS_KEY", "secretRef": "canary-aws-access-key" },
+                      { "name": "CANARY_AWS_SECRET_KEY", "secretRef": "canary-aws-secret-key" },
+                      { "name": "CANARY_STRIPE_KEY", "secretRef": "canary-stripe-key" },
+                      { "name": "CANARY_DNS_HOSTNAME", "secretRef": "canary-dns-hostname" }
+                    ]
+                  }],
+                  "scale": { "minReplicas": 1, "maxReplicas": 1 }
+                }
+              }
+            }'
 
-      - name: "Wait for sandbox-store to be healthy"
+      - name: "Wait for sandbox-store"
         run: |
-          echo "Polling sandbox-store provisioning state..."
           for i in $(seq 1 30); do
-            STATUS=$(az containerapp show \
-              --name aw-sandbox-store \
-              --resource-group "${{ env.AZURE_RG }}" \
+            STATUS=$(az containerapp show --name aw-sandbox-store \
+              --resource-group AdaptiveWardens \
               --query properties.provisioningState -o tsv 2>/dev/null || echo "Pending")
-            echo "  Attempt $i/30 — State: $STATUS"
-            if [ "$STATUS" = "Succeeded" ]; then
-              echo "sandbox-store is ready."
-              break
-            fi
-            if [ "$STATUS" = "Failed" ]; then
-              echo "ERROR: sandbox-store deployment failed."
-              az containerapp logs show \
-                --name aw-sandbox-store \
-                --resource-group "${{ env.AZURE_RG }}" \
-                --tail 50 || true
-              exit 1
-            fi
-            if [ "$i" = "30" ]; then
-              echo "ERROR: Timed out waiting for sandbox-store."
-              exit 1
-            fi
+            echo "Attempt $i/30 — $STATUS"
+            [ "$STATUS" = "Succeeded" ] && echo "Ready." && break
+            [ "$STATUS" = "Failed" ] && az containerapp logs show --name aw-sandbox-store --resource-group AdaptiveWardens --tail 50 && exit 1
+            [ "$i" = "30" ] && exit 1
             sleep 10
           done
 
-      # ── [2/6] ai-engine ─────────────────────────────────────────────────────
-      # Role: LLM tier (DeepSeek), deterministic cache, IOC extractor, MITRE mapper
-      # Ingress: INTERNAL
-      # Volume: /data (llm_budget.db and ai_cache.db)
-      # Upstream: calls http://aw-sandbox-store
       - name: "Deploy [2/6]: ai-engine"
         run: |
-          python3 << 'PYEOF'
-          import yaml, os
-          acr = "${{ env.ACR_LOGIN_SERVER }}"
-          tag = "${{ env.IMAGE_TAG }}"
-          with open('aca-specs/ai-engine.yaml') as f:
-              spec = yaml.safe_load(f)
-          for reg in spec['properties']['configuration']['registries']:
-              reg['server'] = acr
-          secrets_map = spec['properties']['configuration']['secrets']
-          secret_values = {
-              'acr-password': '${{ secrets.ACR_PASSWORD }}',
-              'deepseek-api-key': '${{ secrets.DEEPSEEK_API_KEY }}',
-              'deepseek-model': '${{ secrets.DEEPSEEK_MODEL }}',
-              'deepseek-base-url': '${{ secrets.DEEPSEEK_BASE_URL }}',
-              'llm-input-budget': '${{ secrets.LLM_DAILY_INPUT_TOKEN_BUDGET }}',
-              'llm-output-budget': '${{ secrets.LLM_DAILY_OUTPUT_TOKEN_BUDGET }}',
-              'llm-rate-calls': '${{ secrets.LLM_PER_IP_RATE_LIMIT_CALLS }}',
-              'llm-rate-window': '${{ secrets.LLM_PER_IP_RATE_LIMIT_WINDOW }}',
-          }
-          for s in secrets_map:
-              if s['name'] in secret_values:
-                  s['value'] = secret_values[s['name']]
-          spec['properties']['template']['containers'][0]['image'] = f"{acr}/ai-engine:{tag}"
-          with open('/tmp/ai-engine-deploy.yaml', 'w') as f:
-              yaml.dump(spec, f)
-          PYEOF
-          az containerapp create \
-            --name aw-ai-engine \
-            --resource-group "${{ env.AZURE_RG }}" \
-            --yaml /tmp/ai-engine-deploy.yaml \
-            || az containerapp update \
-               --name aw-ai-engine \
-               --resource-group "${{ env.AZURE_RG }}" \
-               --yaml /tmp/ai-engine-deploy.yaml
+          az rest \
+            --method PUT \
+            --url "https://management.azure.com/subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/containerApps/aw-ai-engine?api-version=2024-03-01" \
+            --body '{
+              "location": "swedencentral",
+              "properties": {
+                "environmentId": "/subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/managedEnvironments/aw-ca-env",
+                "configuration": {
+                  "ingress": { "external": false, "targetPort": 8002 },
+                  "registries": [{ "server": "awreg8802.azurecr.io", "username": "awreg8802", "passwordSecretRef": "acr-password" }],
+                  "secrets": [
+                    { "name": "acr-password", "value": "${{ secrets.ACR_PASSWORD }}" },
+                    { "name": "deepseek-api-key", "value": "${{ secrets.DEEPSEEK_API_KEY }}" },
+                    { "name": "deepseek-model", "value": "${{ secrets.DEEPSEEK_MODEL }}" },
+                    { "name": "deepseek-base-url", "value": "${{ secrets.DEEPSEEK_BASE_URL }}" },
+                    { "name": "llm-input-budget", "value": "${{ secrets.LLM_DAILY_INPUT_TOKEN_BUDGET }}" },
+                    { "name": "llm-output-budget", "value": "${{ secrets.LLM_DAILY_OUTPUT_TOKEN_BUDGET }}" },
+                    { "name": "llm-rate-calls", "value": "${{ secrets.LLM_PER_IP_RATE_LIMIT_CALLS }}" },
+                    { "name": "llm-rate-window", "value": "${{ secrets.LLM_PER_IP_RATE_LIMIT_WINDOW }}" }
+                  ]
+                },
+                "template": {
+                  "volumes": [{ "name": "azurefiles", "storageType": "AzureFile", "storageName": "awdata" }],
+                  "containers": [{
+                    "name": "ai-engine",
+                    "image": "awreg8802.azurecr.io/ai-engine:${{ env.IMAGE_TAG }}",
+                    "resources": { "cpu": 1.0, "memory": "2Gi" },
+                    "volumeMounts": [{ "volumeName": "azurefiles", "mountPath": "/data" }],
+                    "env": [
+                      { "name": "PYTHONUNBUFFERED", "value": "1" },
+                      { "name": "SANDBOX_URL", "value": "http://aw-sandbox-store" },
+                      { "name": "DEEPSEEK_API_KEY", "secretRef": "deepseek-api-key" },
+                      { "name": "DEEPSEEK_MODEL", "secretRef": "deepseek-model" },
+                      { "name": "DEEPSEEK_BASE_URL", "secretRef": "deepseek-base-url" },
+                      { "name": "LLM_DAILY_INPUT_TOKEN_BUDGET", "secretRef": "llm-input-budget" },
+                      { "name": "LLM_DAILY_OUTPUT_TOKEN_BUDGET", "secretRef": "llm-output-budget" },
+                      { "name": "LLM_PER_IP_RATE_LIMIT_CALLS", "secretRef": "llm-rate-calls" },
+                      { "name": "LLM_PER_IP_RATE_LIMIT_WINDOW", "secretRef": "llm-rate-window" }
+                    ]
+                  }],
+                  "scale": { "minReplicas": 1, "maxReplicas": 1 }
+                }
+              }
+            }'
 
-      - name: "Wait for ai-engine to be healthy"
+      - name: "Wait for ai-engine"
         run: |
-          echo "Polling ai-engine provisioning state..."
           for i in $(seq 1 30); do
-            STATUS=$(az containerapp show \
-              --name aw-ai-engine \
-              --resource-group "${{ env.AZURE_RG }}" \
+            STATUS=$(az containerapp show --name aw-ai-engine \
+              --resource-group AdaptiveWardens \
               --query properties.provisioningState -o tsv 2>/dev/null || echo "Pending")
-            echo "  Attempt $i/30 — State: $STATUS"
-            if [ "$STATUS" = "Succeeded" ]; then
-              echo "ai-engine is ready."
-              break
-            fi
-            if [ "$STATUS" = "Failed" ]; then
-              echo "ERROR: ai-engine deployment failed."
-              az containerapp logs show \
-                --name aw-ai-engine \
-                --resource-group "${{ env.AZURE_RG }}" \
-                --tail 50 || true
-              exit 1
-            fi
-            if [ "$i" = "30" ]; then
-              echo "ERROR: Timed out waiting for ai-engine."
-              exit 1
-            fi
+            echo "Attempt $i/30 — $STATUS"
+            [ "$STATUS" = "Succeeded" ] && echo "Ready." && break
+            [ "$STATUS" = "Failed" ] && az containerapp logs show --name aw-ai-engine --resource-group AdaptiveWardens --tail 50 && exit 1
+            [ "$i" = "30" ] && exit 1
             sleep 10
           done
 
-      # ── [3/6] dashboard-backend ──────────────────────────────────────────────
-      # Role: SOC API — reads SQLite directly from the shared /data volume
-      # Ingress: INTERNAL
-      # Volume: /data (reads app_state.db written by sandbox-store)
       - name: "Deploy [3/6]: dashboard-backend"
         run: |
-          python3 << 'PYEOF'
-          import yaml, os
-          acr = "${{ env.ACR_LOGIN_SERVER }}"
-          tag = "${{ env.IMAGE_TAG }}"
-          with open('aca-specs/dashboard-backend.yaml') as f:
-              spec = yaml.safe_load(f)
-          for reg in spec['properties']['configuration']['registries']:
-              reg['server'] = acr
-          secrets_map = spec['properties']['configuration']['secrets']
-          secret_values = {
-              'acr-password': '${{ secrets.ACR_PASSWORD }}',
-              'dashboard-api-key': '${{ secrets.DASHBOARD_API_KEY }}',
-          }
-          for s in secrets_map:
-              if s['name'] in secret_values:
-                  s['value'] = secret_values[s['name']]
-          spec['properties']['template']['containers'][0]['image'] = f"{acr}/dashboard-backend:{tag}"
-          with open('/tmp/dashboard-backend-deploy.yaml', 'w') as f:
-              yaml.dump(spec, f)
-          PYEOF
-          az containerapp create \
-            --name aw-dashboard-backend \
-            --resource-group "${{ env.AZURE_RG }}" \
-            --yaml /tmp/dashboard-backend-deploy.yaml \
-            || az containerapp update \
-               --name aw-dashboard-backend \
-               --resource-group "${{ env.AZURE_RG }}" \
-               --yaml /tmp/dashboard-backend-deploy.yaml
+          az rest \
+            --method PUT \
+            --url "https://management.azure.com/subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/containerApps/aw-dashboard-backend?api-version=2024-03-01" \
+            --body '{
+              "location": "swedencentral",
+              "properties": {
+                "environmentId": "/subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/managedEnvironments/aw-ca-env",
+                "configuration": {
+                  "ingress": { "external": false, "targetPort": 8003 },
+                  "registries": [{ "server": "awreg8802.azurecr.io", "username": "awreg8802", "passwordSecretRef": "acr-password" }],
+                  "secrets": [
+                    { "name": "acr-password", "value": "${{ secrets.ACR_PASSWORD }}" },
+                    { "name": "dashboard-api-key", "value": "${{ secrets.DASHBOARD_API_KEY }}" }
+                  ]
+                },
+                "template": {
+                  "volumes": [{ "name": "azurefiles", "storageType": "AzureFile", "storageName": "awdata" }],
+                  "containers": [{
+                    "name": "dashboard-backend",
+                    "image": "awreg8802.azurecr.io/dashboard-backend:${{ env.IMAGE_TAG }}",
+                    "resources": { "cpu": 0.5, "memory": "1Gi" },
+                    "volumeMounts": [{ "volumeName": "azurefiles", "mountPath": "/data" }],
+                    "env": [
+                      { "name": "PYTHONUNBUFFERED", "value": "1" },
+                      { "name": "DB_PATH", "value": "/data/app_state.db" },
+                      { "name": "DASHBOARD_API_KEY", "secretRef": "dashboard-api-key" }
+                    ]
+                  }],
+                  "scale": { "minReplicas": 1, "maxReplicas": 1 }
+                }
+              }
+            }'
 
-      - name: "Wait for dashboard-backend to be healthy"
+      - name: "Wait for dashboard-backend"
         run: |
-          echo "Polling dashboard-backend provisioning state..."
           for i in $(seq 1 30); do
-            STATUS=$(az containerapp show \
-              --name aw-dashboard-backend \
-              --resource-group "${{ env.AZURE_RG }}" \
+            STATUS=$(az containerapp show --name aw-dashboard-backend \
+              --resource-group AdaptiveWardens \
               --query properties.provisioningState -o tsv 2>/dev/null || echo "Pending")
-            echo "  Attempt $i/30 — State: $STATUS"
-            if [ "$STATUS" = "Succeeded" ]; then
-              echo "dashboard-backend is ready."
-              break
-            fi
-            if [ "$STATUS" = "Failed" ]; then
-              echo "ERROR: dashboard-backend deployment failed."
-              az containerapp logs show \
-                --name aw-dashboard-backend \
-                --resource-group "${{ env.AZURE_RG }}" \
-                --tail 50 || true
-              exit 1
-            fi
-            if [ "$i" = "30" ]; then
-              echo "ERROR: Timed out waiting for dashboard-backend."
-              exit 1
-            fi
+            echo "Attempt $i/30 — $STATUS"
+            [ "$STATUS" = "Succeeded" ] && echo "Ready." && break
+            [ "$STATUS" = "Failed" ] && az containerapp logs show --name aw-dashboard-backend --resource-group AdaptiveWardens --tail 50 && exit 1
+            [ "$i" = "30" ] && exit 1
             sleep 10
           done
 
-      # ── [4/6] ssh-frontend ───────────────────────────────────────────────────
-      # Role: AsyncSSH honeypot — accepts attacker SSH connections
-      # Ingress: EXTERNAL, TCP transport on port 2222
-      # Volume: /data (stores SSH host key for stable fingerprint across restarts)
-      # NOTE: TCP ingress means no HTTPS — this is correct for SSH.
       - name: "Deploy [4/6]: ssh-frontend"
         run: |
-          python3 << 'PYEOF'
-          import yaml, os
-          acr = "${{ env.ACR_LOGIN_SERVER }}"
-          tag = "${{ env.IMAGE_TAG }}"
-          with open('aca-specs/ssh-frontend.yaml') as f:
-              spec = yaml.safe_load(f)
-          for reg in spec['properties']['configuration']['registries']:
-              reg['server'] = acr
-          secrets_map = spec['properties']['configuration']['secrets']
-          secret_values = {
-              'acr-password': '${{ secrets.ACR_PASSWORD }}',
-          }
-          for s in secrets_map:
-              if s['name'] in secret_values:
-                  s['value'] = secret_values[s['name']]
-          spec['properties']['template']['containers'][0]['image'] = f"{acr}/ssh-frontend:{tag}"
-          with open('/tmp/ssh-frontend-deploy.yaml', 'w') as f:
-              yaml.dump(spec, f)
-          PYEOF
-          az containerapp create \
-            --name aw-ssh-frontend \
-            --resource-group "${{ env.AZURE_RG }}" \
-            --yaml /tmp/ssh-frontend-deploy.yaml \
-            || az containerapp update \
-               --name aw-ssh-frontend \
-               --resource-group "${{ env.AZURE_RG }}" \
-               --yaml /tmp/ssh-frontend-deploy.yaml
+          az rest \
+            --method PUT \
+            --url "https://management.azure.com/subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/containerApps/aw-ssh-frontend?api-version=2024-03-01" \
+            --body '{
+              "location": "swedencentral",
+              "properties": {
+                "environmentId": "/subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/managedEnvironments/aw-ca-env",
+                "configuration": {
+                  "ingress": { "external": true, "targetPort": 2222, "transport": "tcp" },
+                  "registries": [{ "server": "awreg8802.azurecr.io", "username": "awreg8802", "passwordSecretRef": "acr-password" }],
+                  "secrets": [
+                    { "name": "acr-password", "value": "${{ secrets.ACR_PASSWORD }}" }
+                  ]
+                },
+                "template": {
+                  "volumes": [{ "name": "azurefiles", "storageType": "AzureFile", "storageName": "awdata" }],
+                  "containers": [{
+                    "name": "ssh-frontend",
+                    "image": "awreg8802.azurecr.io/ssh-frontend:${{ env.IMAGE_TAG }}",
+                    "resources": { "cpu": 1.0, "memory": "2Gi" },
+                    "volumeMounts": [{ "volumeName": "azurefiles", "mountPath": "/data" }],
+                    "env": [
+                      { "name": "PYTHONUNBUFFERED", "value": "1" },
+                      { "name": "SANDBOX_URL", "value": "http://aw-sandbox-store" },
+                      { "name": "AI_ENGINE_URL", "value": "http://aw-ai-engine" },
+                      { "name": "DATA_DIR", "value": "/data" }
+                    ]
+                  }],
+                  "scale": { "minReplicas": 1, "maxReplicas": 1 }
+                }
+              }
+            }'
 
-      - name: "Wait for ssh-frontend to be healthy"
+      - name: "Wait for ssh-frontend"
         run: |
-          echo "Polling ssh-frontend provisioning state..."
           for i in $(seq 1 30); do
-            STATUS=$(az containerapp show \
-              --name aw-ssh-frontend \
-              --resource-group "${{ env.AZURE_RG }}" \
+            STATUS=$(az containerapp show --name aw-ssh-frontend \
+              --resource-group AdaptiveWardens \
               --query properties.provisioningState -o tsv 2>/dev/null || echo "Pending")
-            echo "  Attempt $i/30 — State: $STATUS"
-            if [ "$STATUS" = "Succeeded" ]; then
-              echo "ssh-frontend is ready."
-              break
-            fi
-            if [ "$STATUS" = "Failed" ]; then
-              echo "ERROR: ssh-frontend deployment failed."
-              az containerapp logs show \
-                --name aw-ssh-frontend \
-                --resource-group "${{ env.AZURE_RG }}" \
-                --tail 50 || true
-              exit 1
-            fi
-            if [ "$i" = "30" ]; then
-              echo "ERROR: Timed out waiting for ssh-frontend."
-              exit 1
-            fi
+            echo "Attempt $i/30 — $STATUS"
+            [ "$STATUS" = "Succeeded" ] && echo "Ready." && break
+            [ "$STATUS" = "Failed" ] && az containerapp logs show --name aw-ssh-frontend --resource-group AdaptiveWardens --tail 50 && exit 1
+            [ "$i" = "30" ] && exit 1
             sleep 10
           done
 
-      # ── [5/6] http-frontend ──────────────────────────────────────────────────
-      # Role: HTTP honeypot — captures opportunistic web scanners
-      # Ingress: EXTERNAL, HTTP on port 8080 (Azure terminates TLS)
       - name: "Deploy [5/6]: http-frontend"
         run: |
-          python3 << 'PYEOF'
-          import yaml, os
-          acr = "${{ env.ACR_LOGIN_SERVER }}"
-          tag = "${{ env.IMAGE_TAG }}"
-          with open('aca-specs/http-frontend.yaml') as f:
-              spec = yaml.safe_load(f)
-          for reg in spec['properties']['configuration']['registries']:
-              reg['server'] = acr
-          secrets_map = spec['properties']['configuration']['secrets']
-          secret_values = {
-              'acr-password': '${{ secrets.ACR_PASSWORD }}',
-          }
-          for s in secrets_map:
-              if s['name'] in secret_values:
-                  s['value'] = secret_values[s['name']]
-          spec['properties']['template']['containers'][0]['image'] = f"{acr}/http-frontend:{tag}"
-          with open('/tmp/http-frontend-deploy.yaml', 'w') as f:
-              yaml.dump(spec, f)
-          PYEOF
-          az containerapp create \
-            --name aw-http-frontend \
-            --resource-group "${{ env.AZURE_RG }}" \
-            --yaml /tmp/http-frontend-deploy.yaml \
-            || az containerapp update \
-               --name aw-http-frontend \
-               --resource-group "${{ env.AZURE_RG }}" \
-               --yaml /tmp/http-frontend-deploy.yaml
+          az rest \
+            --method PUT \
+            --url "https://management.azure.com/subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/containerApps/aw-http-frontend?api-version=2024-03-01" \
+            --body '{
+              "location": "swedencentral",
+              "properties": {
+                "environmentId": "/subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/managedEnvironments/aw-ca-env",
+                "configuration": {
+                  "ingress": { "external": true, "targetPort": 8080, "transport": "auto" },
+                  "registries": [{ "server": "awreg8802.azurecr.io", "username": "awreg8802", "passwordSecretRef": "acr-password" }],
+                  "secrets": [
+                    { "name": "acr-password", "value": "${{ secrets.ACR_PASSWORD }}" }
+                  ]
+                },
+                "template": {
+                  "containers": [{
+                    "name": "http-frontend",
+                    "image": "awreg8802.azurecr.io/http-frontend:${{ env.IMAGE_TAG }}",
+                    "resources": { "cpu": 0.5, "memory": "1Gi" },
+                    "env": [
+                      { "name": "PYTHONUNBUFFERED", "value": "1" },
+                      { "name": "SANDBOX_URL", "value": "http://aw-sandbox-store" },
+                      { "name": "AI_ENGINE_URL", "value": "http://aw-ai-engine" }
+                    ]
+                  }],
+                  "scale": { "minReplicas": 1, "maxReplicas": 2 }
+                }
+              }
+            }'
 
-      - name: "Wait for http-frontend to be healthy"
+      - name: "Wait for http-frontend"
         run: |
-          echo "Polling http-frontend provisioning state..."
           for i in $(seq 1 30); do
-            STATUS=$(az containerapp show \
-              --name aw-http-frontend \
-              --resource-group "${{ env.AZURE_RG }}" \
+            STATUS=$(az containerapp show --name aw-http-frontend \
+              --resource-group AdaptiveWardens \
               --query properties.provisioningState -o tsv 2>/dev/null || echo "Pending")
-            echo "  Attempt $i/30 — State: $STATUS"
-            if [ "$STATUS" = "Succeeded" ]; then
-              echo "http-frontend is ready."
-              break
-            fi
-            if [ "$STATUS" = "Failed" ]; then
-              echo "ERROR: http-frontend deployment failed."
-              az containerapp logs show \
-                --name aw-http-frontend \
-                --resource-group "${{ env.AZURE_RG }}" \
-                --tail 50 || true
-              exit 1
-            fi
-            if [ "$i" = "30" ]; then
-              echo "ERROR: Timed out waiting for http-frontend."
-              exit 1
-            fi
+            echo "Attempt $i/30 — $STATUS"
+            [ "$STATUS" = "Succeeded" ] && echo "Ready." && break
+            [ "$STATUS" = "Failed" ] && az containerapp logs show --name aw-http-frontend --resource-group AdaptiveWardens --tail 50 && exit 1
+            [ "$i" = "30" ] && exit 1
             sleep 10
           done
 
-      # ── [6/6] dashboard-frontend ─────────────────────────────────────────────
-      # Role: Next.js SOC console — attack heatmap, session playback, reports
-      # Ingress: EXTERNAL, HTTPS on port 3000
-      # Note: NEXT_PUBLIC_* vars are baked into the JS bundle at build time.
-      #       If you change them you must rebuild the image — not just update the app.
       - name: "Deploy [6/6]: dashboard-frontend"
         run: |
-          python3 << 'PYEOF'
-          import yaml, os
-          acr = "${{ env.ACR_LOGIN_SERVER }}"
-          tag = "${{ env.IMAGE_TAG }}"
-          with open('aca-specs/dashboard-frontend.yaml') as f:
-              spec = yaml.safe_load(f)
-          for reg in spec['properties']['configuration']['registries']:
-              reg['server'] = acr
-          secrets_map = spec['properties']['configuration']['secrets']
-          secret_values = {
-              'acr-password': '${{ secrets.ACR_PASSWORD }}',
-              'dashboard-api-key': '${{ secrets.DASHBOARD_API_KEY }}',
-          }
-          for s in secrets_map:
-              if s['name'] in secret_values:
-                  s['value'] = secret_values[s['name']]
-          spec['properties']['template']['containers'][0]['image'] = f"{acr}/dashboard-frontend:{tag}"
-          with open('/tmp/dashboard-frontend-deploy.yaml', 'w') as f:
-              yaml.dump(spec, f)
-          PYEOF
-          az containerapp create \
-            --name aw-dashboard-frontend \
-            --resource-group "${{ env.AZURE_RG }}" \
-            --yaml /tmp/dashboard-frontend-deploy.yaml \
-            || az containerapp update \
-               --name aw-dashboard-frontend \
-               --resource-group "${{ env.AZURE_RG }}" \
-               --yaml /tmp/dashboard-frontend-deploy.yaml
+          az rest \
+            --method PUT \
+            --url "https://management.azure.com/subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/containerApps/aw-dashboard-frontend?api-version=2024-03-01" \
+            --body '{
+              "location": "swedencentral",
+              "properties": {
+                "environmentId": "/subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/managedEnvironments/aw-ca-env",
+                "configuration": {
+                  "ingress": { "external": true, "targetPort": 3000, "transport": "auto" },
+                  "registries": [{ "server": "awreg8802.azurecr.io", "username": "awreg8802", "passwordSecretRef": "acr-password" }],
+                  "secrets": [
+                    { "name": "acr-password", "value": "${{ secrets.ACR_PASSWORD }}" },
+                    { "name": "dashboard-api-key", "value": "${{ secrets.DASHBOARD_API_KEY }}" }
+                  ]
+                },
+                "template": {
+                  "containers": [{
+                    "name": "dashboard-frontend",
+                    "image": "awreg8802.azurecr.io/dashboard-frontend:${{ env.IMAGE_TAG }}",
+                    "resources": { "cpu": 0.5, "memory": "1Gi" },
+                    "env": [
+                      { "name": "NODE_ENV", "value": "production" },
+                      { "name": "NEXT_PUBLIC_API_URL", "value": "http://aw-dashboard-backend" },
+                      { "name": "NEXT_PUBLIC_DASHBOARD_API_KEY", "secretRef": "dashboard-api-key" }
+                    ]
+                  }],
+                  "scale": { "minReplicas": 1, "maxReplicas": 2 }
+                }
+              }
+            }'
 
-      - name: "Wait for dashboard-frontend to be healthy"
+      - name: "Wait for dashboard-frontend"
         run: |
-          echo "Polling dashboard-frontend provisioning state..."
           for i in $(seq 1 30); do
-            STATUS=$(az containerapp show \
-              --name aw-dashboard-frontend \
-              --resource-group "${{ env.AZURE_RG }}" \
+            STATUS=$(az containerapp show --name aw-dashboard-frontend \
+              --resource-group AdaptiveWardens \
               --query properties.provisioningState -o tsv 2>/dev/null || echo "Pending")
-            echo "  Attempt $i/30 — State: $STATUS"
-            if [ "$STATUS" = "Succeeded" ]; then
-              echo "dashboard-frontend is ready."
-              break
-            fi
-            if [ "$STATUS" = "Failed" ]; then
-              echo "ERROR: dashboard-frontend deployment failed."
-              az containerapp logs show \
-                --name aw-dashboard-frontend \
-                --resource-group "${{ env.AZURE_RG }}" \
-                --tail 50 || true
-              exit 1
-            fi
-            if [ "$i" = "30" ]; then
-              echo "ERROR: Timed out waiting for dashboard-frontend."
-              exit 1
-            fi
+            echo "Attempt $i/30 — $STATUS"
+            [ "$STATUS" = "Succeeded" ] && echo "Ready." && break
+            [ "$STATUS" = "Failed" ] && az containerapp logs show --name aw-dashboard-frontend --resource-group AdaptiveWardens --tail 50 && exit 1
+            [ "$i" = "30" ] && exit 1
             sleep 10
           done
 
-      # ── Health checks on all external services ───────────────────────────────
-      - name: Health check — http-frontend
-        run: |
-          FQDN=$(az containerapp show \
-            --name aw-http-frontend \
-            --resource-group "${{ env.AZURE_RG }}" \
-            --query properties.configuration.ingress.fqdn -o tsv)
-          echo "Checking https://$FQDN/health ..."
-          for i in $(seq 1 10); do
-            if curl -sf --connect-timeout 10 "https://${FQDN}/health" >/dev/null; then
-              echo "http-frontend health: OK"
-              break
-            fi
-            echo "  Retry $i/10..."
-            sleep 6
-          done
-
-      - name: Health check — dashboard-frontend
-        run: |
-          FQDN=$(az containerapp show \
-            --name aw-dashboard-frontend \
-            --resource-group "${{ env.AZURE_RG }}" \
-            --query properties.configuration.ingress.fqdn -o tsv)
-          echo "Checking https://$FQDN ..."
-          for i in $(seq 1 10); do
-            if curl -sf --connect-timeout 10 "https://$FQDN" >/dev/null; then
-              echo "dashboard-frontend health: OK"
-              break
-            fi
-            echo "  Retry $i/10..."
-            sleep 6
-          done
-
-      # ── Deployment Summary ───────────────────────────────────────────────────
       - name: Print deployment summary
         run: |
-          echo ""
-          echo "============================================================"
-          echo "  DEPLOYMENT COMPLETE"
-          echo "  Image tag: ${{ env.IMAGE_TAG }}"
-          echo "  Commit:    ${{ github.event.head_commit.message }}"
-          echo "============================================================"
-          echo ""
-
-          # Write GitHub Actions Job Summary (visible in the Actions UI)
-          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Image tag:** \`${{ env.IMAGE_TAG }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Service | Type | URL |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|---|" >> $GITHUB_STEP_SUMMARY
-
+          echo "## Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | URL |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
           for APP in aw-sandbox-store aw-ai-engine aw-dashboard-backend; do
-            echo "| $APP | Internal | (not public) |" >> $GITHUB_STEP_SUMMARY
-          done
-
-          for APP in aw-http-frontend aw-dashboard-frontend; do
-            FQDN=$(az containerapp show --name "$APP" \
-              --resource-group "${{ env.AZURE_RG }}" \
-              --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "unavailable")
-            echo "| $APP | External HTTPS | https://$FQDN |" >> $GITHUB_STEP_SUMMARY
-          done
-
-          SSH_FQDN=$(az containerapp show --name aw-ssh-frontend \
-            --resource-group "${{ env.AZURE_RG }}" \
-            --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "unavailable")
-          echo "| aw-ssh-frontend | External TCP | $SSH_FQDN:2222 |" >> $GITHUB_STEP_SUMMARY
-
-          # Also print to console
-          echo "  SERVICE                   URL"
-          echo "  ------------------------- -----------------------------------"
-          for APP in aw-sandbox-store aw-ai-engine aw-dashboard-backend; do
-            printf "  %-25s %s\n" "$APP" "(internal only)"
+            echo "| $APP | internal only |" >> $GITHUB_STEP_SUMMARY
           done
           for APP in aw-http-frontend aw-dashboard-frontend; do
-            FQDN=$(az containerapp show --name "$APP" \
-              --resource-group "${{ env.AZURE_RG }}" \
+            FQDN=$(az containerapp show --name "$APP" --resource-group AdaptiveWardens \
               --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "unavailable")
-            printf "  %-25s https://%s\n" "$APP" "$FQDN"
+            echo "| $APP | https://$FQDN |" >> $GITHUB_STEP_SUMMARY
           done
-          SSH_FQDN=$(az containerapp show --name aw-ssh-frontend \
-            --resource-group "${{ env.AZURE_RG }}" \
+          SSH_FQDN=$(az containerapp show --name aw-ssh-frontend --resource-group AdaptiveWardens \
             --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "unavailable")
-          printf "  %-25s %s:2222 (TCP/SSH)\n" "aw-ssh-frontend" "$SSH_FQDN"
-          echo "============================================================"
+          echo "| aw-ssh-frontend | $SSH_FQDN:2222 |" >> $GITHUB_STEP_SUMMARY
+          cat $GITHUB_STEP_SUMMARY
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # JOB 3: VERIFY-ONLY (triggered manually via workflow_dispatch)
