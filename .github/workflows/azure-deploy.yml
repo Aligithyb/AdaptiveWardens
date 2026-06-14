@@ -40,33 +40,19 @@ jobs:
           - http-frontend
           - dashboard-backend
           - dashboard-frontend
-      fail-fast: false   # if one image fails to build, continue others
+      fail-fast: false
 
     steps:
-      # ── Checkout ────────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ── Docker Buildx ───────────────────────────────────────────────────────
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      # ── Layer caching — speeds up repeated builds dramatically ────────────
-      - name: Restore Docker layer cache
-        uses: actions/cache@v4
         with:
-          path: /tmp/.buildx-cache/${{ matrix.service }}
-          key: buildx-${{ matrix.service }}-${{ hashFiles(
-                 format('{0}/Dockerfile', matrix.service),
-                 format('{0}/requirements.txt', matrix.service),
-                 format('{0}/package-lock.json', matrix.service)
-               ) }}
-          restore-keys: |
-            buildx-${{ matrix.service }}-
+          driver: docker-container
 
-      # ── Login to ACR ────────────────────────────────────────────────────────
       - name: Log in to Azure Container Registry
         uses: azure/docker-login@v2
         with:
@@ -74,8 +60,6 @@ jobs:
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
-      # ── Build + Push ─────────────────────────────────────────────────────────
-      # Tags image with the git SHA (used in deploy) AND :latest (for reference)
       - name: Build and push ${{ matrix.service }}
         uses: docker/build-push-action@v6
         with:
@@ -85,8 +69,8 @@ jobs:
           tags: |
             ${{ env.ACR_LOGIN_SERVER }}/${{ matrix.service }}:${{ env.IMAGE_TAG }}
             ${{ env.ACR_LOGIN_SERVER }}/${{ matrix.service }}:latest
-          cache-from: type=local,src=/tmp/.buildx-cache/${{ matrix.service }}
-          cache-to: type=local,dest=/tmp/.buildx-cache/${{ matrix.service }},mode=max
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # JOB 2: DEPLOY — deploys all 6 services in dependency order
