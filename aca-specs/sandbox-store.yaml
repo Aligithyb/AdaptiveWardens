@@ -1,0 +1,67 @@
+location: swedencentral
+resourceGroup: AdaptiveWardens
+type: Microsoft.App/containerApps
+name: aw-sandbox-store
+properties:
+  environmentId: /subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/managedEnvironments/aw-ca-env
+  configuration:
+    ingress:
+      external: false
+      targetPort: 8001
+    registries:
+      - server: awreg8802.azurecr.io
+        username: awreg8802
+        passwordSecretRef: acr-password
+    secrets:
+      - name: acr-password
+        value: REPLACE_AT_DEPLOY
+      - name: slack-webhook-url
+        value: REPLACE_AT_DEPLOY
+      - name: slack-bot-token
+        value: REPLACE_AT_DEPLOY
+      - name: slack-channel
+        value: REPLACE_AT_DEPLOY
+      - name: canary-aws-access-key
+        value: REPLACE_AT_DEPLOY
+      - name: canary-aws-secret-key
+        value: REPLACE_AT_DEPLOY
+      - name: canary-stripe-key
+        value: REPLACE_AT_DEPLOY
+      - name: canary-dns-hostname
+        value: REPLACE_AT_DEPLOY
+  template:
+    volumes:
+      - name: azurefiles
+        storageType: AzureFile
+        storageName: awdata
+    containers:
+      - name: sandbox-store
+        image: awreg8802.azurecr.io/sandbox-store:REPLACE_AT_DEPLOY
+        resources:
+          cpu: 0.5
+          memory: 1Gi
+        volumeMounts:
+          - volumeName: azurefiles
+            mountPath: /data
+        env:
+          - name: PYTHONUNBUFFERED
+            value: "1"
+          - name: DB_PATH
+            value: /data/app_state.db
+          - name: SLACK_WEBHOOK_URL
+            secretRef: slack-webhook-url
+          - name: SLACK_BOT_TOKEN
+            secretRef: slack-bot-token
+          - name: SLACK_CHANNEL
+            secretRef: slack-channel
+          - name: CANARY_AWS_ACCESS_KEY
+            secretRef: canary-aws-access-key
+          - name: CANARY_AWS_SECRET_KEY
+            secretRef: canary-aws-secret-key
+          - name: CANARY_STRIPE_KEY
+            secretRef: canary-stripe-key
+          - name: CANARY_DNS_HOSTNAME
+            secretRef: canary-dns-hostname
+    scale:
+      minReplicas: 1
+      maxReplicas: 1

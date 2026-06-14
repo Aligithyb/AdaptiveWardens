@@ -1,0 +1,67 @@
+location: swedencentral
+resourceGroup: AdaptiveWardens
+type: Microsoft.App/containerApps
+name: aw-ai-engine
+properties:
+  environmentId: /subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/managedEnvironments/aw-ca-env
+  configuration:
+    ingress:
+      external: false
+      targetPort: 8002
+    registries:
+      - server: awreg8802.azurecr.io
+        username: awreg8802
+        passwordSecretRef: acr-password
+    secrets:
+      - name: acr-password
+        value: REPLACE_AT_DEPLOY
+      - name: deepseek-api-key
+        value: REPLACE_AT_DEPLOY
+      - name: deepseek-model
+        value: REPLACE_AT_DEPLOY
+      - name: deepseek-base-url
+        value: REPLACE_AT_DEPLOY
+      - name: llm-input-budget
+        value: REPLACE_AT_DEPLOY
+      - name: llm-output-budget
+        value: REPLACE_AT_DEPLOY
+      - name: llm-rate-calls
+        value: REPLACE_AT_DEPLOY
+      - name: llm-rate-window
+        value: REPLACE_AT_DEPLOY
+  template:
+    volumes:
+      - name: azurefiles
+        storageType: AzureFile
+        storageName: awdata
+    containers:
+      - name: ai-engine
+        image: awreg8802.azurecr.io/ai-engine:REPLACE_AT_DEPLOY
+        resources:
+          cpu: 1.0
+          memory: 2Gi
+        volumeMounts:
+          - volumeName: azurefiles
+            mountPath: /data
+        env:
+          - name: PYTHONUNBUFFERED
+            value: "1"
+          - name: SANDBOX_URL
+            value: http://aw-sandbox-store
+          - name: DEEPSEEK_API_KEY
+            secretRef: deepseek-api-key
+          - name: DEEPSEEK_MODEL
+            secretRef: deepseek-model
+          - name: DEEPSEEK_BASE_URL
+            secretRef: deepseek-base-url
+          - name: LLM_DAILY_INPUT_TOKEN_BUDGET
+            secretRef: llm-input-budget
+          - name: LLM_DAILY_OUTPUT_TOKEN_BUDGET
+            secretRef: llm-output-budget
+          - name: LLM_PER_IP_RATE_LIMIT_CALLS
+            secretRef: llm-rate-calls
+          - name: LLM_PER_IP_RATE_LIMIT_WINDOW
+            secretRef: llm-rate-window
+    scale:
+      minReplicas: 1
+      maxReplicas: 1

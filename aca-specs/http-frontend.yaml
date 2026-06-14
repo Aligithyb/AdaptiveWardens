@@ -1,0 +1,34 @@
+location: swedencentral
+resourceGroup: AdaptiveWardens
+type: Microsoft.App/containerApps
+name: aw-http-frontend
+properties:
+  environmentId: /subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/managedEnvironments/aw-ca-env
+  configuration:
+    ingress:
+      external: true
+      targetPort: 8080
+    registries:
+      - server: awreg8802.azurecr.io
+        username: awreg8802
+        passwordSecretRef: acr-password
+    secrets:
+      - name: acr-password
+        value: REPLACE_AT_DEPLOY
+  template:
+    containers:
+      - name: http-frontend
+        image: awreg8802.azurecr.io/http-frontend:REPLACE_AT_DEPLOY
+        resources:
+          cpu: 0.5
+          memory: 1Gi
+        env:
+          - name: PYTHONUNBUFFERED
+            value: "1"
+          - name: SANDBOX_URL
+            value: http://aw-sandbox-store
+          - name: AI_ENGINE_URL
+            value: http://aw-ai-engine
+    scale:
+      minReplicas: 1
+      maxReplicas: 2
