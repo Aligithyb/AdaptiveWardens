@@ -124,18 +124,7 @@ jobs:
             az containerapp update \
               --name "$NAME" \
               --resource-group "${{ env.AZURE_RG }}" \
-              --image "$IMG" \
-              --set-env-vars \
-                PYTHONUNBUFFERED=1 \
-                DB_PATH=/data/app_state.db \
-                SLACK_WEBHOOK_URL=secretref:slack-webhook-url \
-                SLACK_BOT_TOKEN=secretref:slack-bot-token \
-                SLACK_CHANNEL=secretref:slack-channel \
-                CANARY_AWS_ACCESS_KEY=secretref:canary-aws-access-key \
-                CANARY_AWS_SECRET_KEY=secretref:canary-aws-secret-key \
-                CANARY_STRIPE_KEY=secretref:canary-stripe-key \
-                CANARY_DNS_HOSTNAME=secretref:canary-dns-hostname \
-              --output none
+              --image "$IMG"
           else
             echo "  First deploy — creating app..."
             az containerapp create \
@@ -152,6 +141,14 @@ jobs:
               --max-replicas 1 \
               --cpu 0.5 \
               --memory 1.0Gi \
+              --secrets \
+                slack-webhook-url="${{ secrets.SLACK_WEBHOOK_URL }}" \
+                slack-bot-token="${{ secrets.SLACK_BOT_TOKEN }}" \
+                slack-channel="${{ secrets.SLACK_CHANNEL }}" \
+                canary-aws-access-key="${{ secrets.CANARY_AWS_ACCESS_KEY }}" \
+                canary-aws-secret-key="${{ secrets.CANARY_AWS_SECRET_KEY }}" \
+                canary-stripe-key="${{ secrets.CANARY_STRIPE_KEY }}" \
+                canary-dns-hostname="${{ secrets.CANARY_DNS_HOSTNAME }}" \
               --env-vars \
                 PYTHONUNBUFFERED=1 \
                 DB_PATH=/data/app_state.db \
@@ -162,16 +159,8 @@ jobs:
                 CANARY_AWS_SECRET_KEY=secretref:canary-aws-secret-key \
                 CANARY_STRIPE_KEY=secretref:canary-stripe-key \
                 CANARY_DNS_HOSTNAME=secretref:canary-dns-hostname \
-              --secrets \
-                slack-webhook-url="${{ secrets.SLACK_WEBHOOK_URL }}" \
-                slack-bot-token="${{ secrets.SLACK_BOT_TOKEN }}" \
-                slack-channel="${{ secrets.SLACK_CHANNEL }}" \
-                canary-aws-access-key="${{ secrets.CANARY_AWS_ACCESS_KEY }}" \
-                canary-aws-secret-key="${{ secrets.CANARY_AWS_SECRET_KEY }}" \
-                canary-stripe-key="${{ secrets.CANARY_STRIPE_KEY }}" \
-                canary-dns-hostname="${{ secrets.CANARY_DNS_HOSTNAME }}" \
-              --volume awdata:/data \
-              --output none
+              --volumes name=azurefiles,storageType=AzureFile,storageName=awdata \
+              --volume-mounts volumeName=azurefiles,mountPath=/data
           fi
 
       - name: "Wait for sandbox-store to be healthy"
@@ -266,8 +255,8 @@ jobs:
                 llm-output-budget="${{ secrets.LLM_DAILY_OUTPUT_TOKEN_BUDGET }}" \
                 llm-rate-calls="${{ secrets.LLM_PER_IP_RATE_LIMIT_CALLS }}" \
                 llm-rate-window="${{ secrets.LLM_PER_IP_RATE_LIMIT_WINDOW }}" \
-              --volume awdata:/data \
-              --output none
+              --volumes name=azurefiles,storageType=AzureFile,storageName=awdata \
+              --volume-mounts volumeName=azurefiles,mountPath=/data
           fi
 
       - name: "Wait for ai-engine to be healthy"
@@ -343,8 +332,8 @@ jobs:
                 DASHBOARD_API_KEY=secretref:dashboard-api-key \
               --secrets \
                 dashboard-api-key="${{ secrets.DASHBOARD_API_KEY }}" \
-              --volume awdata:/data \
-              --output none
+              --volumes name=azurefiles,storageType=AzureFile,storageName=awdata \
+              --volume-mounts volumeName=azurefiles,mountPath=/data
           fi
 
       - name: "Wait for dashboard-backend to be healthy"
@@ -422,8 +411,8 @@ jobs:
                 SANDBOX_URL=http://aw-sandbox-store \
                 AI_ENGINE_URL=http://aw-ai-engine \
                 DATA_DIR=/data \
-              --volume awdata:/data \
-              --output none
+              --volumes name=azurefiles,storageType=AzureFile,storageName=awdata \
+              --volume-mounts volumeName=azurefiles,mountPath=/data
           fi
 
       - name: "Wait for ssh-frontend to be healthy"
