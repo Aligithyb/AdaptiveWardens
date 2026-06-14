@@ -113,55 +113,41 @@ jobs:
       # Volume: /data (app_state.db lives here)
       - name: "Deploy [1/6]: sandbox-store"
         run: |
-          NAME="aw-sandbox-store"
-          IMG="${{ env.ACR_LOGIN_SERVER }}/sandbox-store:${{ env.IMAGE_TAG }}"
-          echo "Deploying $NAME with image $IMG..."
-
-          if az containerapp show \
-            --name "$NAME" \
-            --resource-group "${{ env.AZURE_RG }}" &>/dev/null; then
-            echo "  Existing app found — updating image..."
-            az containerapp update \
-              --name "$NAME" \
-              --resource-group "${{ env.AZURE_RG }}" \
-              --image "$IMG"
-          else
-            echo "  First deploy — creating app..."
-            az containerapp create \
-              --name "$NAME" \
-              --resource-group "${{ env.AZURE_RG }}" \
-              --environment "${{ env.AZURE_ACA_ENV }}" \
-              --image "$IMG" \
-              --registry-server "${{ env.ACR_LOGIN_SERVER }}" \
-              --registry-username "${{ secrets.ACR_USERNAME }}" \
-              --registry-password "${{ secrets.ACR_PASSWORD }}" \
-              --target-port 8001 \
-              --ingress internal \
-              --min-replicas 1 \
-              --max-replicas 1 \
-              --cpu 0.5 \
-              --memory 1.0Gi \
-              --secrets \
-                slack-webhook-url="${{ secrets.SLACK_WEBHOOK_URL }}" \
-                slack-bot-token="${{ secrets.SLACK_BOT_TOKEN }}" \
-                slack-channel="${{ secrets.SLACK_CHANNEL }}" \
-                canary-aws-access-key="${{ secrets.CANARY_AWS_ACCESS_KEY }}" \
-                canary-aws-secret-key="${{ secrets.CANARY_AWS_SECRET_KEY }}" \
-                canary-stripe-key="${{ secrets.CANARY_STRIPE_KEY }}" \
-                canary-dns-hostname="${{ secrets.CANARY_DNS_HOSTNAME }}" \
-              --env-vars \
-                PYTHONUNBUFFERED=1 \
-                DB_PATH=/data/app_state.db \
-                SLACK_WEBHOOK_URL=secretref:slack-webhook-url \
-                SLACK_BOT_TOKEN=secretref:slack-bot-token \
-                SLACK_CHANNEL=secretref:slack-channel \
-                CANARY_AWS_ACCESS_KEY=secretref:canary-aws-access-key \
-                CANARY_AWS_SECRET_KEY=secretref:canary-aws-secret-key \
-                CANARY_STRIPE_KEY=secretref:canary-stripe-key \
-                CANARY_DNS_HOSTNAME=secretref:canary-dns-hostname \
-              --volumes name=azurefiles,storageType=AzureFile,storageName=awdata \
-              --volume-mounts volumeName=azurefiles,mountPath=/data
-          fi
+          python3 << 'PYEOF'
+          import yaml, os
+          acr = "${{ env.ACR_LOGIN_SERVER }}"
+          tag = "${{ env.IMAGE_TAG }}"
+          rg = "${{ env.AZURE_RG }}"
+          with open('aca-specs/sandbox-store.yaml') as f:
+              spec = yaml.safe_load(f)
+          for reg in spec['properties']['configuration']['registries']:
+              reg['server'] = acr
+          secrets_map = spec['properties']['configuration']['secrets']
+          secret_values = {
+              'acr-password': '${{ secrets.ACR_PASSWORD }}',
+              'slack-webhook-url': '${{ secrets.SLACK_WEBHOOK_URL }}',
+              'slack-bot-token': '${{ secrets.SLACK_BOT_TOKEN }}',
+              'slack-channel': '${{ secrets.SLACK_CHANNEL }}',
+              'canary-aws-access-key': '${{ secrets.CANARY_AWS_ACCESS_KEY }}',
+              'canary-aws-secret-key': '${{ secrets.CANARY_AWS_SECRET_KEY }}',
+              'canary-stripe-key': '${{ secrets.CANARY_STRIPE_KEY }}',
+              'canary-dns-hostname': '${{ secrets.CANARY_DNS_HOSTNAME }}',
+          }
+          for s in secrets_map:
+              if s['name'] in secret_values:
+                  s['value'] = secret_values[s['name']]
+          spec['properties']['template']['containers'][0]['image'] = f"{acr}/sandbox-store:{tag}"
+          with open('/tmp/sandbox-store-deploy.yaml', 'w') as f:
+              yaml.dump(spec, f)
+          PYEOF
+          az containerapp create \
+            --name aw-sandbox-store \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --yaml /tmp/sandbox-store-deploy.yaml \
+            || az containerapp update \
+               --name aw-sandbox-store \
+               --resource-group "${{ env.AZURE_RG }}" \
+               --yaml /tmp/sandbox-store-deploy.yaml
 
       - name: "Wait for sandbox-store to be healthy"
         run: |
@@ -198,66 +184,40 @@ jobs:
       # Upstream: calls http://aw-sandbox-store
       - name: "Deploy [2/6]: ai-engine"
         run: |
-          NAME="aw-ai-engine"
-          IMG="${{ env.ACR_LOGIN_SERVER }}/ai-engine:${{ env.IMAGE_TAG }}"
-          echo "Deploying $NAME with image $IMG..."
-
-          if az containerapp show \
-            --name "$NAME" \
-            --resource-group "${{ env.AZURE_RG }}" &>/dev/null; then
-            echo "  Existing app found — updating image..."
-            az containerapp update \
-              --name "$NAME" \
-              --resource-group "${{ env.AZURE_RG }}" \
-              --image "$IMG" \
-              --set-env-vars \
-                PYTHONUNBUFFERED=1 \
-                SANDBOX_URL=http://aw-sandbox-store \
-                DEEPSEEK_API_KEY=secretref:deepseek-api-key \
-                DEEPSEEK_MODEL=secretref:deepseek-model \
-                DEEPSEEK_BASE_URL=secretref:deepseek-base-url \
-                LLM_DAILY_INPUT_TOKEN_BUDGET=secretref:llm-input-budget \
-                LLM_DAILY_OUTPUT_TOKEN_BUDGET=secretref:llm-output-budget \
-                LLM_PER_IP_RATE_LIMIT_CALLS=secretref:llm-rate-calls \
-                LLM_PER_IP_RATE_LIMIT_WINDOW=secretref:llm-rate-window \
-              --output none
-          else
-            echo "  First deploy — creating app..."
-            az containerapp create \
-              --name "$NAME" \
-              --resource-group "${{ env.AZURE_RG }}" \
-              --environment "${{ env.AZURE_ACA_ENV }}" \
-              --image "$IMG" \
-              --registry-server "${{ env.ACR_LOGIN_SERVER }}" \
-              --registry-username "${{ secrets.ACR_USERNAME }}" \
-              --registry-password "${{ secrets.ACR_PASSWORD }}" \
-              --target-port 8002 \
-              --ingress internal \
-              --min-replicas 1 \
-              --max-replicas 1 \
-              --cpu 1.0 \
-              --memory 2.0Gi \
-              --env-vars \
-                PYTHONUNBUFFERED=1 \
-                SANDBOX_URL=http://aw-sandbox-store \
-                DEEPSEEK_API_KEY=secretref:deepseek-api-key \
-                DEEPSEEK_MODEL=secretref:deepseek-model \
-                DEEPSEEK_BASE_URL=secretref:deepseek-base-url \
-                LLM_DAILY_INPUT_TOKEN_BUDGET=secretref:llm-input-budget \
-                LLM_DAILY_OUTPUT_TOKEN_BUDGET=secretref:llm-output-budget \
-                LLM_PER_IP_RATE_LIMIT_CALLS=secretref:llm-rate-calls \
-                LLM_PER_IP_RATE_LIMIT_WINDOW=secretref:llm-rate-window \
-              --secrets \
-                deepseek-api-key="${{ secrets.DEEPSEEK_API_KEY }}" \
-                deepseek-model="${{ secrets.DEEPSEEK_MODEL }}" \
-                deepseek-base-url="${{ secrets.DEEPSEEK_BASE_URL }}" \
-                llm-input-budget="${{ secrets.LLM_DAILY_INPUT_TOKEN_BUDGET }}" \
-                llm-output-budget="${{ secrets.LLM_DAILY_OUTPUT_TOKEN_BUDGET }}" \
-                llm-rate-calls="${{ secrets.LLM_PER_IP_RATE_LIMIT_CALLS }}" \
-                llm-rate-window="${{ secrets.LLM_PER_IP_RATE_LIMIT_WINDOW }}" \
-              --volumes name=azurefiles,storageType=AzureFile,storageName=awdata \
-              --volume-mounts volumeName=azurefiles,mountPath=/data
-          fi
+          python3 << 'PYEOF'
+          import yaml, os
+          acr = "${{ env.ACR_LOGIN_SERVER }}"
+          tag = "${{ env.IMAGE_TAG }}"
+          with open('aca-specs/ai-engine.yaml') as f:
+              spec = yaml.safe_load(f)
+          for reg in spec['properties']['configuration']['registries']:
+              reg['server'] = acr
+          secrets_map = spec['properties']['configuration']['secrets']
+          secret_values = {
+              'acr-password': '${{ secrets.ACR_PASSWORD }}',
+              'deepseek-api-key': '${{ secrets.DEEPSEEK_API_KEY }}',
+              'deepseek-model': '${{ secrets.DEEPSEEK_MODEL }}',
+              'deepseek-base-url': '${{ secrets.DEEPSEEK_BASE_URL }}',
+              'llm-input-budget': '${{ secrets.LLM_DAILY_INPUT_TOKEN_BUDGET }}',
+              'llm-output-budget': '${{ secrets.LLM_DAILY_OUTPUT_TOKEN_BUDGET }}',
+              'llm-rate-calls': '${{ secrets.LLM_PER_IP_RATE_LIMIT_CALLS }}',
+              'llm-rate-window': '${{ secrets.LLM_PER_IP_RATE_LIMIT_WINDOW }}',
+          }
+          for s in secrets_map:
+              if s['name'] in secret_values:
+                  s['value'] = secret_values[s['name']]
+          spec['properties']['template']['containers'][0]['image'] = f"{acr}/ai-engine:{tag}"
+          with open('/tmp/ai-engine-deploy.yaml', 'w') as f:
+              yaml.dump(spec, f)
+          PYEOF
+          az containerapp create \
+            --name aw-ai-engine \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --yaml /tmp/ai-engine-deploy.yaml \
+            || az containerapp update \
+               --name aw-ai-engine \
+               --resource-group "${{ env.AZURE_RG }}" \
+               --yaml /tmp/ai-engine-deploy.yaml
 
       - name: "Wait for ai-engine to be healthy"
         run: |
@@ -293,48 +253,34 @@ jobs:
       # Volume: /data (reads app_state.db written by sandbox-store)
       - name: "Deploy [3/6]: dashboard-backend"
         run: |
-          NAME="aw-dashboard-backend"
-          IMG="${{ env.ACR_LOGIN_SERVER }}/dashboard-backend:${{ env.IMAGE_TAG }}"
-          echo "Deploying $NAME with image $IMG..."
-
-          if az containerapp show \
-            --name "$NAME" \
-            --resource-group "${{ env.AZURE_RG }}" &>/dev/null; then
-            echo "  Existing app found — updating image..."
-            az containerapp update \
-              --name "$NAME" \
-              --resource-group "${{ env.AZURE_RG }}" \
-              --image "$IMG" \
-              --set-env-vars \
-                PYTHONUNBUFFERED=1 \
-                DB_PATH=/data/app_state.db \
-                DASHBOARD_API_KEY=secretref:dashboard-api-key \
-              --output none
-          else
-            echo "  First deploy — creating app..."
-            az containerapp create \
-              --name "$NAME" \
-              --resource-group "${{ env.AZURE_RG }}" \
-              --environment "${{ env.AZURE_ACA_ENV }}" \
-              --image "$IMG" \
-              --registry-server "${{ env.ACR_LOGIN_SERVER }}" \
-              --registry-username "${{ secrets.ACR_USERNAME }}" \
-              --registry-password "${{ secrets.ACR_PASSWORD }}" \
-              --target-port 8003 \
-              --ingress internal \
-              --min-replicas 1 \
-              --max-replicas 1 \
-              --cpu 0.5 \
-              --memory 1.0Gi \
-              --env-vars \
-                PYTHONUNBUFFERED=1 \
-                DB_PATH=/data/app_state.db \
-                DASHBOARD_API_KEY=secretref:dashboard-api-key \
-              --secrets \
-                dashboard-api-key="${{ secrets.DASHBOARD_API_KEY }}" \
-              --volumes name=azurefiles,storageType=AzureFile,storageName=awdata \
-              --volume-mounts volumeName=azurefiles,mountPath=/data
-          fi
+          python3 << 'PYEOF'
+          import yaml, os
+          acr = "${{ env.ACR_LOGIN_SERVER }}"
+          tag = "${{ env.IMAGE_TAG }}"
+          with open('aca-specs/dashboard-backend.yaml') as f:
+              spec = yaml.safe_load(f)
+          for reg in spec['properties']['configuration']['registries']:
+              reg['server'] = acr
+          secrets_map = spec['properties']['configuration']['secrets']
+          secret_values = {
+              'acr-password': '${{ secrets.ACR_PASSWORD }}',
+              'dashboard-api-key': '${{ secrets.DASHBOARD_API_KEY }}',
+          }
+          for s in secrets_map:
+              if s['name'] in secret_values:
+                  s['value'] = secret_values[s['name']]
+          spec['properties']['template']['containers'][0]['image'] = f"{acr}/dashboard-backend:{tag}"
+          with open('/tmp/dashboard-backend-deploy.yaml', 'w') as f:
+              yaml.dump(spec, f)
+          PYEOF
+          az containerapp create \
+            --name aw-dashboard-backend \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --yaml /tmp/dashboard-backend-deploy.yaml \
+            || az containerapp update \
+               --name aw-dashboard-backend \
+               --resource-group "${{ env.AZURE_RG }}" \
+               --yaml /tmp/dashboard-backend-deploy.yaml
 
       - name: "Wait for dashboard-backend to be healthy"
         run: |
@@ -371,49 +317,33 @@ jobs:
       # NOTE: TCP ingress means no HTTPS — this is correct for SSH.
       - name: "Deploy [4/6]: ssh-frontend"
         run: |
-          NAME="aw-ssh-frontend"
-          IMG="${{ env.ACR_LOGIN_SERVER }}/ssh-frontend:${{ env.IMAGE_TAG }}"
-          echo "Deploying $NAME with image $IMG..."
-
-          if az containerapp show \
-            --name "$NAME" \
-            --resource-group "${{ env.AZURE_RG }}" &>/dev/null; then
-            echo "  Existing app found — updating image..."
-            az containerapp update \
-              --name "$NAME" \
-              --resource-group "${{ env.AZURE_RG }}" \
-              --image "$IMG" \
-              --set-env-vars \
-                PYTHONUNBUFFERED=1 \
-                SANDBOX_URL=http://aw-sandbox-store \
-                AI_ENGINE_URL=http://aw-ai-engine \
-                DATA_DIR=/data \
-              --output none
-          else
-            echo "  First deploy — creating app..."
-            az containerapp create \
-              --name "$NAME" \
-              --resource-group "${{ env.AZURE_RG }}" \
-              --environment "${{ env.AZURE_ACA_ENV }}" \
-              --image "$IMG" \
-              --registry-server "${{ env.ACR_LOGIN_SERVER }}" \
-              --registry-username "${{ secrets.ACR_USERNAME }}" \
-              --registry-password "${{ secrets.ACR_PASSWORD }}" \
-              --target-port 2222 \
-              --ingress external \
-              --transport tcp \
-              --min-replicas 1 \
-              --max-replicas 1 \
-              --cpu 1.0 \
-              --memory 2.0Gi \
-              --env-vars \
-                PYTHONUNBUFFERED=1 \
-                SANDBOX_URL=http://aw-sandbox-store \
-                AI_ENGINE_URL=http://aw-ai-engine \
-                DATA_DIR=/data \
-              --volumes name=azurefiles,storageType=AzureFile,storageName=awdata \
-              --volume-mounts volumeName=azurefiles,mountPath=/data
-          fi
+          python3 << 'PYEOF'
+          import yaml, os
+          acr = "${{ env.ACR_LOGIN_SERVER }}"
+          tag = "${{ env.IMAGE_TAG }}"
+          with open('aca-specs/ssh-frontend.yaml') as f:
+              spec = yaml.safe_load(f)
+          for reg in spec['properties']['configuration']['registries']:
+              reg['server'] = acr
+          secrets_map = spec['properties']['configuration']['secrets']
+          secret_values = {
+              'acr-password': '${{ secrets.ACR_PASSWORD }}',
+          }
+          for s in secrets_map:
+              if s['name'] in secret_values:
+                  s['value'] = secret_values[s['name']]
+          spec['properties']['template']['containers'][0]['image'] = f"{acr}/ssh-frontend:{tag}"
+          with open('/tmp/ssh-frontend-deploy.yaml', 'w') as f:
+              yaml.dump(spec, f)
+          PYEOF
+          az containerapp create \
+            --name aw-ssh-frontend \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --yaml /tmp/ssh-frontend-deploy.yaml \
+            || az containerapp update \
+               --name aw-ssh-frontend \
+               --resource-group "${{ env.AZURE_RG }}" \
+               --yaml /tmp/ssh-frontend-deploy.yaml
 
       - name: "Wait for ssh-frontend to be healthy"
         run: |
@@ -448,46 +378,33 @@ jobs:
       # Ingress: EXTERNAL, HTTP on port 8080 (Azure terminates TLS)
       - name: "Deploy [5/6]: http-frontend"
         run: |
-          NAME="aw-http-frontend"
-          IMG="${{ env.ACR_LOGIN_SERVER }}/http-frontend:${{ env.IMAGE_TAG }}"
-          echo "Deploying $NAME with image $IMG..."
-
-          if az containerapp show \
-            --name "$NAME" \
-            --resource-group "${{ env.AZURE_RG }}" &>/dev/null; then
-            echo "  Existing app found — updating image..."
-            az containerapp update \
-              --name "$NAME" \
-              --resource-group "${{ env.AZURE_RG }}" \
-              --image "$IMG" \
-              --set-env-vars \
-                PYTHONUNBUFFERED=1 \
-                SANDBOX_URL=http://aw-sandbox-store \
-                AI_ENGINE_URL=http://aw-ai-engine \
-              --output none
-          else
-            echo "  First deploy — creating app..."
-            az containerapp create \
-              --name "$NAME" \
-              --resource-group "${{ env.AZURE_RG }}" \
-              --environment "${{ env.AZURE_ACA_ENV }}" \
-              --image "$IMG" \
-              --registry-server "${{ env.ACR_LOGIN_SERVER }}" \
-              --registry-username "${{ secrets.ACR_USERNAME }}" \
-              --registry-password "${{ secrets.ACR_PASSWORD }}" \
-              --target-port 8080 \
-              --ingress external \
-              --transport auto \
-              --min-replicas 1 \
-              --max-replicas 2 \
-              --cpu 0.5 \
-              --memory 1.0Gi \
-              --env-vars \
-                PYTHONUNBUFFERED=1 \
-                SANDBOX_URL=http://aw-sandbox-store \
-                AI_ENGINE_URL=http://aw-ai-engine \
-              --output none
-          fi
+          python3 << 'PYEOF'
+          import yaml, os
+          acr = "${{ env.ACR_LOGIN_SERVER }}"
+          tag = "${{ env.IMAGE_TAG }}"
+          with open('aca-specs/http-frontend.yaml') as f:
+              spec = yaml.safe_load(f)
+          for reg in spec['properties']['configuration']['registries']:
+              reg['server'] = acr
+          secrets_map = spec['properties']['configuration']['secrets']
+          secret_values = {
+              'acr-password': '${{ secrets.ACR_PASSWORD }}',
+          }
+          for s in secrets_map:
+              if s['name'] in secret_values:
+                  s['value'] = secret_values[s['name']]
+          spec['properties']['template']['containers'][0]['image'] = f"{acr}/http-frontend:{tag}"
+          with open('/tmp/http-frontend-deploy.yaml', 'w') as f:
+              yaml.dump(spec, f)
+          PYEOF
+          az containerapp create \
+            --name aw-http-frontend \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --yaml /tmp/http-frontend-deploy.yaml \
+            || az containerapp update \
+               --name aw-http-frontend \
+               --resource-group "${{ env.AZURE_RG }}" \
+               --yaml /tmp/http-frontend-deploy.yaml
 
       - name: "Wait for http-frontend to be healthy"
         run: |
@@ -524,48 +441,34 @@ jobs:
       #       If you change them you must rebuild the image — not just update the app.
       - name: "Deploy [6/6]: dashboard-frontend"
         run: |
-          NAME="aw-dashboard-frontend"
-          IMG="${{ env.ACR_LOGIN_SERVER }}/dashboard-frontend:${{ env.IMAGE_TAG }}"
-          echo "Deploying $NAME with image $IMG..."
-
-          if az containerapp show \
-            --name "$NAME" \
-            --resource-group "${{ env.AZURE_RG }}" &>/dev/null; then
-            echo "  Existing app found — updating image..."
-            az containerapp update \
-              --name "$NAME" \
-              --resource-group "${{ env.AZURE_RG }}" \
-              --image "$IMG" \
-              --set-env-vars \
-                NODE_ENV=production \
-                NEXT_PUBLIC_API_URL=http://aw-dashboard-backend \
-                NEXT_PUBLIC_DASHBOARD_API_KEY=secretref:dashboard-api-key \
-              --output none
-          else
-            echo "  First deploy — creating app..."
-            az containerapp create \
-              --name "$NAME" \
-              --resource-group "${{ env.AZURE_RG }}" \
-              --environment "${{ env.AZURE_ACA_ENV }}" \
-              --image "$IMG" \
-              --registry-server "${{ env.ACR_LOGIN_SERVER }}" \
-              --registry-username "${{ secrets.ACR_USERNAME }}" \
-              --registry-password "${{ secrets.ACR_PASSWORD }}" \
-              --target-port 3000 \
-              --ingress external \
-              --transport auto \
-              --min-replicas 1 \
-              --max-replicas 2 \
-              --cpu 0.5 \
-              --memory 1.0Gi \
-              --env-vars \
-                NODE_ENV=production \
-                NEXT_PUBLIC_API_URL=http://aw-dashboard-backend \
-                NEXT_PUBLIC_DASHBOARD_API_KEY=secretref:dashboard-api-key \
-              --secrets \
-                dashboard-api-key="${{ secrets.DASHBOARD_API_KEY }}" \
-              --output none
-          fi
+          python3 << 'PYEOF'
+          import yaml, os
+          acr = "${{ env.ACR_LOGIN_SERVER }}"
+          tag = "${{ env.IMAGE_TAG }}"
+          with open('aca-specs/dashboard-frontend.yaml') as f:
+              spec = yaml.safe_load(f)
+          for reg in spec['properties']['configuration']['registries']:
+              reg['server'] = acr
+          secrets_map = spec['properties']['configuration']['secrets']
+          secret_values = {
+              'acr-password': '${{ secrets.ACR_PASSWORD }}',
+              'dashboard-api-key': '${{ secrets.DASHBOARD_API_KEY }}',
+          }
+          for s in secrets_map:
+              if s['name'] in secret_values:
+                  s['value'] = secret_values[s['name']]
+          spec['properties']['template']['containers'][0]['image'] = f"{acr}/dashboard-frontend:{tag}"
+          with open('/tmp/dashboard-frontend-deploy.yaml', 'w') as f:
+              yaml.dump(spec, f)
+          PYEOF
+          az containerapp create \
+            --name aw-dashboard-frontend \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --yaml /tmp/dashboard-frontend-deploy.yaml \
+            || az containerapp update \
+               --name aw-dashboard-frontend \
+               --resource-group "${{ env.AZURE_RG }}" \
+               --yaml /tmp/dashboard-frontend-deploy.yaml
 
       - name: "Wait for dashboard-frontend to be healthy"
         run: |

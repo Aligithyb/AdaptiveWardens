@@ -1,0 +1,43 @@
+location: swedencentral
+resourceGroup: AdaptiveWardens
+type: Microsoft.App/containerApps
+name: aw-dashboard-backend
+properties:
+  environmentId: /subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/managedEnvironments/aw-ca-env
+  configuration:
+    ingress:
+      external: false
+      targetPort: 8003
+    registries:
+      - server: awreg8802.azurecr.io
+        username: awreg8802
+        passwordSecretRef: acr-password
+    secrets:
+      - name: acr-password
+        value: REPLACE_AT_DEPLOY
+      - name: dashboard-api-key
+        value: REPLACE_AT_DEPLOY
+  template:
+    volumes:
+      - name: azurefiles
+        storageType: AzureFile
+        storageName: awdata
+    containers:
+      - name: dashboard-backend
+        image: awreg8802.azurecr.io/dashboard-backend:REPLACE_AT_DEPLOY
+        resources:
+          cpu: 0.5
+          memory: 1Gi
+        volumeMounts:
+          - volumeName: azurefiles
+            mountPath: /data
+        env:
+          - name: PYTHONUNBUFFERED
+            value: "1"
+          - name: DB_PATH
+            value: /data/app_state.db
+          - name: DASHBOARD_API_KEY
+            secretRef: dashboard-api-key
+    scale:
+      minReplicas: 1
+      maxReplicas: 1
