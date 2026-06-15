@@ -102,6 +102,8 @@ services:
       - SANDBOX_URL=http://sandbox-store:8001
       - AI_ENGINE_URL=http://ai-engine:8002
       - PYTHONUNBUFFERED=1
+      - HTTP_SESSION_WINDOW=${HTTP_SESSION_WINDOW:-300}
+      - HTTP_MAX_CMDS_PER_SESSION=${HTTP_MAX_CMDS_PER_SESSION:-60}
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "echo 'x' > /dev/tcp/localhost/8080 || exit 1"]
@@ -129,6 +131,9 @@ services:
     environment:
       - DB_PATH=/data/app_state.db
       - PYTHONUNBUFFERED=1
+      - AI_ENGINE_URL=http://ai-engine:8002
+      - VIRUSTOTAL_API_KEY=${VIRUSTOTAL_API_KEY:-}
+      - ABUSEIPDB_API_KEY=${ABUSEIPDB_API_KEY:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8003/health')"]
@@ -139,6 +144,8 @@ services:
     depends_on:
       sandbox-store:
         condition: service_healthy
+      ai-engine:
+        condition: service_started
 
   dashboard-frontend:
     build: ./dashboard-frontend
