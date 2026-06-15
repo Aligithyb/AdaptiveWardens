@@ -8,6 +8,14 @@ properties:
     ingress:
       external: true
       targetPort: 3000
+      # ── Azure Front Door WAF ─────────────────────────────────────────
+      # This app sits behind Azure Front Door Standard. SOC analysts
+      # access the dashboard through the Front Door endpoint (with TLS
+      # termination, WAF protection, and DDoS mitigation).
+      # The dashboard-backend API calls are routed through the same
+      # Front Door origin group (backup origin) or directly via internal
+      # ACA networking — NOT exposed to the Internet.
+      # ─────────────────────────────────────────────────────────────────
     registries:
       - server: awreg8802.azurecr.io
         username: awreg8802

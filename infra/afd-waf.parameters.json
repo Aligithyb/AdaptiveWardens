@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "wafPolicyName": {
+      "value": "aw-waf-policy"
+    },
+    "frontDoorName": {
+      "value": "aw-afd"
+    },
+    "honeyEndpointName": {
+      "value": "honeypot"
+    },
+    "dashEndpointName": {
+      "value": "dashboard"
+    },
+    "httpFrontendFqdn": {
+      "value": ""
+    },
+    "dashboardFrontendFqdn": {
+      "value": ""
+    },
+    "dashboardBackendFqdn": {
+      "value": ""
+    },
+    "allowedCountries": {
+      "value": []
+    },
+    "rateLimitPerMinute": {
+      "value": 200
+    },
+    "resourceGroupName": {
+      "value": "AdaptiveWardens"
+    }
+  }
+}

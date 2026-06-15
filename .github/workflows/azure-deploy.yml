@@ -9,6 +9,14 @@ on:
         description: 'Only run health checks — skip build & deploy'
         type: boolean
         default: false
+      afd_only:
+        description: 'Only deploy/update Front Door + WAF (skip ACA build & deploy)'
+        type: boolean
+        default: false
+      allowed_countries:
+        description: 'ISO country codes for geo-filtering (comma-sep, empty=all)'
+        type: string
+        default: ''
 
 # ── Workflow-level environment variables ─────────────────────────────────────
 # All sensitive values come from GitHub Secrets — nothing is hardcoded here.
@@ -21,6 +29,12 @@ env:
   STORAGE_KEY: ${{ secrets.STORAGE_KEY }}
   FILE_SHARE: ${{ secrets.FILE_SHARE }}
   IMAGE_TAG: ${{ github.sha }}
+  # ── Azure Front Door + WAF ──────────────────────────────────────────────
+  FRONTDOOR_FDID: ${{ secrets.FRONTDOOR_FDID || '' }}
+  WAF_POLICY_NAME: aw-waf-policy
+  FRONTDOOR_NAME: aw-afd
+  HONEY_ENDPOINT: honeypot
+  DASH_ENDPOINT: dashboard
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # JOB 1: SAST — Static Application Security Testing via Semgrep
@@ -64,7 +78,7 @@ jobs:
 # ═══════════════════════════════════════════════════════════════════════════════
   build:
     name: "Build: ${{ matrix.service }}"
-    if: ${{ !inputs.verify_only }}
+    if: ${{ !inputs.verify_only && !inputs.afd_only }}
     needs: [sast, dast]
     runs-on: ubuntu-latest
 
@@ -105,7 +119,7 @@ jobs:
   deploy:
     name: Deploy to Azure Container Apps
     needs: [build]
-    if: ${{ always() && !cancelled() && !inputs.verify_only }}
+    if: ${{ always() && !cancelled() && !inputs.verify_only && !inputs.afd_only }}
     runs-on: ubuntu-latest
     concurrency: aca-deploy   # prevents parallel deploys from conflicting
 
@@ -440,9 +454,87 @@ jobs:
             sleep 10
           done
 
+      # ═══════════════════════════════════════════════════════════════════════════
+      # FRONT DOOR + WAF DEPLOYMENT
+      # ═══════════════════════════════════════════════════════════════════════════
+
+      - name: Capture ACA FQDNs for Front Door origins
+        run: |
+          HTTP_FQDN=$(az containerapp show --name aw-http-frontend \
+            --resource-group AdaptiveWardens \
+            --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "")
+          DASH_FQDN=$(az containerapp show --name aw-dashboard-frontend \
+            --resource-group AdaptiveWardens \
+            --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "")
+          DASH_BACKEND_FQDN=$(az containerapp show --name aw-dashboard-backend \
+            --resource-group AdaptiveWardens \
+            --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "")
+          echo "HTTP_FQDN=$HTTP_FQDN" >> $GITHUB_ENV
+          echo "DASH_FQDN=$DASH_FQDN" >> $GITHUB_ENV
+          echo "DASH_BACKEND_FQDN=$DASH_BACKEND_FQDN" >> $GITHUB_ENV
+          echo "Captured FQDNs:"
+          echo "  http-frontend:     $HTTP_FQDN"
+          echo "  dashboard-frontend: $DASH_FQDN"
+          echo "  dashboard-backend:  $DASH_BACKEND_FQDN"
+
+      - name: Deploy Azure Front Door + WAF (Bicep)
+        run: |
+          # Parse allowed countries from workflow input (or empty = all allowed)
+          COUNTRIES="${{ inputs.allowed_countries }}"
+          if [ -z "$COUNTRIES" ]; then
+            COUNTRIES_JSON="[]"
+          else
+            # Convert comma-separated to JSON array, e.g. "US,GB,DE" → '["US","GB","DE"]'
+            COUNTRIES_JSON=$(echo "$COUNTRIES" | \
+              awk -F, '{for(i=1;i<=NF;i++){printf "\"%s\"",$i; if(i<NF)printf ","}}' | \
+              sed 's/^/[/;s/$/]/')
+          fi
+          echo "Allowed countries: $COUNTRIES_JSON"
+
+          az deployment group create \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --template-file infra/afd-waf.bicep \
+            --parameters \
+              wafPolicyName="${{ env.WAF_POLICY_NAME }}" \
+              frontDoorName="${{ env.FRONTDOOR_NAME }}" \
+              honeyEndpointName="${{ env.HONEY_ENDPOINT }}" \
+              dashEndpointName="${{ env.DASH_ENDPOINT }}" \
+              httpFrontendFqdn="$HTTP_FQDN" \
+              dashboardFrontendFqdn="$DASH_FQDN" \
+              dashboardBackendFqdn="$DASH_BACKEND_FQDN" \
+              allowedCountries="${COUNTRIES_JSON}" \
+              rateLimitThreshold=200 \
+              resourceGroupName="${{ env.AZURE_RG }}" \
+            --output none
+          echo "Front Door + WAF deployed."
+
+      - name: Retrieve Front Door endpoints
+        run: |
+          AFD_ID=$(az afd profile show \
+            --profile-name "${{ env.FRONTDOOR_NAME }}" \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --query id -o tsv 2>/dev/null || echo "")
+          HONEY_HOST=$(az afd endpoint show \
+            --profile-name "${{ env.FRONTDOOR_NAME }}" \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --endpoint-name "${{ env.HONEY_ENDPOINT }}" \
+            --query hostName -o tsv 2>/dev/null || echo "unavailable")
+          DASH_HOST=$(az afd endpoint show \
+            --profile-name "${{ env.FRONTDOOR_NAME }}" \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --endpoint-name "${{ env.DASH_ENDPOINT }}" \
+            --query hostName -o tsv 2>/dev/null || echo "unavailable")
+          echo "HONEY_HOST=$HONEY_HOST" >> $GITHUB_ENV
+          echo "DASH_HOST=$DASH_HOST" >> $GITHUB_ENV
+          echo "Front Door endpoints:"
+          echo "  Honeypot:   https://$HONEY_HOST"
+          echo "  Dashboard:  https://$DASH_HOST"
+
       - name: Print deployment summary
         run: |
           echo "## Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Azure Container Apps" >> $GITHUB_STEP_SUMMARY
           echo "| Service | URL |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|" >> $GITHUB_STEP_SUMMARY
           for APP in aw-sandbox-store aw-ai-engine aw-dashboard-backend; do
@@ -451,16 +543,100 @@ jobs:
           for APP in aw-http-frontend aw-dashboard-frontend; do
             FQDN=$(az containerapp show --name "$APP" --resource-group AdaptiveWardens \
               --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "unavailable")
-            echo "| $APP | https://$FQDN |" >> $GITHUB_STEP_SUMMARY
+            echo "| $APP | https://$FQDN (ACA origin) |" >> $GITHUB_STEP_SUMMARY
           done
           SSH_FQDN=$(az containerapp show --name aw-ssh-frontend --resource-group AdaptiveWardens \
             --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "unavailable")
           echo "| aw-ssh-frontend | $SSH_FQDN:2222 |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Azure Front Door (WAF Protected)" >> $GITHUB_STEP_SUMMARY
+          echo "| Endpoint | URL | Protection |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| HTTP Honeypot | https://${{ env.HONEY_HOST }} | OWASP CRS 3.2, Geo-filter, Rate-limit, DDoS |" >> $GITHUB_STEP_SUMMARY
+          echo "| SOC Dashboard | https://${{ env.DASH_HOST }} | OWASP CRS 3.2, Geo-filter, Rate-limit, DDoS |" >> $GITHUB_STEP_SUMMARY
           cat $GITHUB_STEP_SUMMARY
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # JOB 5: VERIFY-ONLY (triggered manually via workflow_dispatch)
-# Skips build + deploy, just checks the current state of all 6 apps
+# Skips build + deploy, just checks the current state of all apps + Front Door
+# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 5: AFD-ONLY — deploy/update only Front Door + WAF (skip ACA build/deploy)
+# ═══════════════════════════════════════════════════════════════════════════════
+  afd-only:
+    name: Deploy Front Door + WAF only
+    if: ${{ inputs.afd_only }}
+    runs-on: ubuntu-latest
+    concurrency: aca-deploy
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Capture ACA FQDNs
+        run: |
+          HTTP_FQDN=$(az containerapp show --name aw-http-frontend \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "")
+          DASH_FQDN=$(az containerapp show --name aw-dashboard-frontend \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "")
+          DASH_BACKEND_FQDN=$(az containerapp show --name aw-dashboard-backend \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "")
+          echo "HTTP_FQDN=$HTTP_FQDN" >> $GITHUB_ENV
+          echo "DASH_FQDN=$DASH_FQDN" >> $GITHUB_ENV
+          echo "DASH_BACKEND_FQDN=$DASH_BACKEND_FQDN" >> $GITHUB_ENV
+
+      - name: Deploy Front Door + WAF
+        run: |
+          COUNTRIES="${{ inputs.allowed_countries }}"
+          if [ -z "$COUNTRIES" ]; then
+            COUNTRIES_JSON="[]"
+          else
+            COUNTRIES_JSON=$(echo "$COUNTRIES" | \
+              awk -F, '{for(i=1;i<=NF;i++){printf "\"%s\"",$i; if(i<NF)printf ","}}' | \
+              sed 's/^/[/;s/$/]/')
+          fi
+
+          az deployment group create \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --template-file infra/afd-waf.bicep \
+            --parameters \
+              wafPolicyName="${{ env.WAF_POLICY_NAME }}" \
+              frontDoorName="${{ env.FRONTDOOR_NAME }}" \
+              honeyEndpointName="${{ env.HONEY_ENDPOINT }}" \
+              dashEndpointName="${{ env.DASH_ENDPOINT }}" \
+              httpFrontendFqdn="$HTTP_FQDN" \
+              dashboardFrontendFqdn="$DASH_FQDN" \
+              dashboardBackendFqdn="$DASH_BACKEND_FQDN" \
+              allowedCountries="${COUNTRIES_JSON}" \
+              rateLimitThreshold=200 \
+              resourceGroupName="${{ env.AZURE_RG }}" \
+            --output none
+          echo "Front Door + WAF deployed."
+
+      - name: Show Front Door endpoints
+        run: |
+          echo "## Front Door + WAF Deployed" >> $GITHUB_STEP_SUMMARY
+          echo "| Endpoint | URL |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          for EP in "${{ env.HONEY_ENDPOINT }}" "${{ env.DASH_ENDPOINT }}"; do
+            HOST=$(az afd endpoint show \
+              --profile-name "${{ env.FRONTDOOR_NAME }}" \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --endpoint-name "$EP" \
+              --query hostName -o tsv 2>/dev/null || echo "unavailable")
+            echo "| $EP | https://$HOST |" >> $GITHUB_STEP_SUMMARY
+          done
+          cat $GITHUB_STEP_SUMMARY
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 6: VERIFY-ONLY (triggered manually via workflow_dispatch)
+# Skips build + deploy, just checks the current state of all apps + Front Door
 # ═══════════════════════════════════════════════════════════════════════════════
   verify:
     name: Verify Only (no deploy)
@@ -475,7 +651,7 @@ jobs:
 
       - name: Check all Container Apps
         run: |
-          echo "Checking provisioning state of all 6 services..."
+          echo "Checking provisioning state of all services..."
           ALL_OK=true
           for APP in aw-sandbox-store aw-ai-engine aw-dashboard-backend \
                      aw-ssh-frontend aw-http-frontend aw-dashboard-frontend; do
@@ -492,4 +668,49 @@ jobs:
           done
           if [ "$ALL_OK" = "false" ]; then exit 1; fi
           echo ""
-          echo "All services healthy."
+          echo "All ACA services healthy."
+
+      - name: Check Front Door + WAF
+        run: |
+          echo "Checking Front Door Standard profile..."
+          FD_OK=true
+          FD_ID=$(az afd profile show \
+            --profile-name "${{ env.FRONTDOOR_NAME }}" \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --query id -o tsv 2>/dev/null || echo "NOT FOUND")
+          if [ "$FD_ID" = "NOT FOUND" ]; then
+            echo "  FAIL  Front Door profile '${{ env.FRONTDOOR_NAME }}' not found"
+            FD_OK=false
+          else
+            echo "  OK    Front Door profile '${{ env.FRONTDOOR_NAME }}'"
+          fi
+
+          echo "Checking WAF policy..."
+          WAF_ID=$(az network front-door waf-policy show \
+            --name "${{ env.WAF_POLICY_NAME }}" \
+            --resource-group "${{ env.AZURE_RG }}" \
+            --query id -o tsv 2>/dev/null || echo "NOT FOUND")
+          if [ "$WAF_ID" = "NOT FOUND" ]; then
+            echo "  FAIL  WAF policy '${{ env.WAF_POLICY_NAME }}' not found"
+            FD_OK=false
+          else
+            echo "  OK    WAF policy '${{ env.WAF_POLICY_NAME }}'"
+          fi
+
+          for EP in "${{ env.HONEY_ENDPOINT }}" "${{ env.DASH_ENDPOINT }}"; do
+            HOST=$(az afd endpoint show \
+              --profile-name "${{ env.FRONTDOOR_NAME }}" \
+              --resource-group "${{ env.AZURE_RG }}" \
+              --endpoint-name "$EP" \
+              --query hostName -o tsv 2>/dev/null || echo "NOT FOUND")
+            if [ "$HOST" = "NOT FOUND" ]; then
+              echo "  FAIL  Endpoint '$EP' not found"
+              FD_OK=false
+            else
+              echo "  OK    Endpoint '$EP' → https://$HOST"
+            fi
+          done
+
+          if [ "$FD_OK" = "false" ]; then exit 1; fi
+          echo ""
+          echo "Front Door + WAF healthy."

@@ -44,10 +44,11 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 # Config
 # ---------------------------------------------------------------------------
 
-SANDBOX_URL    = os.getenv("SANDBOX_URL",    "http://localhost:8001")
-AI_ENGINE_URL  = os.getenv("AI_ENGINE_URL",  "http://localhost:8002")
-SESSION_WINDOW = int(os.getenv("HTTP_SESSION_WINDOW", "300"))   # 5 min
-MAX_CMDS       = int(os.getenv("HTTP_MAX_CMDS_PER_SESSION", "60"))
+SANDBOX_URL     = os.getenv("SANDBOX_URL",    "http://localhost:8001")
+AI_ENGINE_URL   = os.getenv("AI_ENGINE_URL",  "http://localhost:8002")
+SESSION_WINDOW  = int(os.getenv("HTTP_SESSION_WINDOW", "300"))   # 5 min
+MAX_CMDS        = int(os.getenv("HTTP_MAX_CMDS_PER_SESSION", "60"))
+FRONTDOOR_FDID  = os.getenv("FRONTDOOR_FDID", "")               # verify FD origin
 
 app = FastAPI(title="NexoPay Corporate Portal")
 http_client = httpx.AsyncClient(timeout=8.0)
@@ -535,16 +536,61 @@ async def _startup():
 # Catch-all route
 # ---------------------------------------------------------------------------
 
+def _get_client_ip(request: Request) -> str:
+    """Extract the real client IP, respecting Azure Front Door headers.
+
+    When the app is behind Azure Front Door Standard, the connection to ACA
+    comes from Front Door's edge, so request.client.host would be a Microsoft
+    IP. The real attacker IP is in the first value of X-Forwarded-For.
+
+    Front Door also sets X-Azure-ClientIP as a convenience header.
+    """
+    # 1) X-Forwarded-For: Front Door appends its own IP as the rightmost value
+    forwarded = request.headers.get("x-forwarded-for", "").strip()
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+
+    # 2) Fallback: X-Azure-ClientIP (set by Front Door)
+    azure_ip = request.headers.get("x-azure-clientip", "").strip()
+    if azure_ip:
+        return azure_ip
+
+    # 3) Direct connection (local dev or direct ACA access)
+    return request.client.host if request.client else "127.0.0.1"
+
+
+def _get_frontdoor_ref(request: Request) -> dict:
+    """Extract Azure Front Door tracing headers for audit logging."""
+    ref = request.headers.get("x-azure-ref", "")
+    fdid = request.headers.get("x-azure-fdid", "")
+    proto = request.headers.get("x-forwarded-proto", "")
+    host = request.headers.get("x-forwarded-host", "")
+    return {
+        "azure_ref": ref,
+        "azure_fdid": fdid,
+        "forwarded_proto": proto,
+        "forwarded_host": host,
+    }
+
+
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
 async def catch_all(request: Request, path: str):
     body_bytes = await request.body()
     body = body_bytes.decode("utf-8", errors="ignore")[:2000]
-    ip   = request.headers.get("x-forwarded-for", "").split(",")[0].strip() \
-           or (request.client.host if request.client else "127.0.0.1")
+    ip   = _get_client_ip(request)
     ua   = request.headers.get("user-agent", "")
+    fd   = _get_frontdoor_ref(request)
+
+    # Optionally verify the request came through our Front Door instance
+    if FRONTDOOR_FDID and fd["azure_fdid"] and fd["azure_fdid"] != FRONTDOOR_FDID:
+        return Response(status_code=403)
 
     # Always respond — then decide whether to log
     response = _make_response(path, request.method, body)
+
+    # Add Front Door tracing to response headers (visible to attacker)
+    if fd["azure_ref"]:
+        response.headers["X-Azure-Ref"] = fd["azure_ref"]
 
     # Skip logging noise
     if _is_noise(path, ua):
