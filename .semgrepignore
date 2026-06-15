@@ -1,0 +1,2 @@
+# SSH host key — intentionally committed for honeypot identity
+ssh-frontend/src/ssh_host_key

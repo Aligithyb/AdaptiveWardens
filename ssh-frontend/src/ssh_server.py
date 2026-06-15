@@ -824,6 +824,7 @@ def _aws_imds_creds() -> str:
         "Code": "Success",
         "LastUpdated": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "Type": "AWS-HMAC",
+        # nosemgrep: generic.secrets.security
         "AccessKeyId": os.getenv("CANARY_AWS_ACCESS_KEY", "AKIAVLQNEXOPAY1PROD7"),
         "SecretAccessKey": os.getenv("CANARY_AWS_SECRET_KEY", "nxp/FakeK3y+wJalrXUtnFEMI/K7MDENG/bPxRfi"),
         "Token": "IQoJb3JpZ2luX2VjEMj//////////wEaCXVzLWVhc3QtMSJHMEUCIQDNExoPay+FakeSessionToken+For+Prod+Role==",
@@ -981,7 +982,7 @@ class SessionHandler(asyncssh.SSHServerSession):
             if not re.match(r'^[\d\s+\-*/%()&|^~<>]+$', expr):
                 return "0"
             try:
-                return str(int(eval(compile(expr, '<arith>', 'eval'), {"__builtins__": {}})))
+                return str(int(eval(compile(expr, '<arith>', 'eval'), {"__builtins__": {}})))  # nosemgrep
             except Exception:
                 return "0"
         out = re.sub(r'\$\(\((.+?)\)\)', _arith, out)
@@ -2602,7 +2603,7 @@ class SessionHandler(asyncssh.SSHServerSession):
         else:
             # Canary keys read from env so no literal secrets live in source
             _stripe = os.getenv('CANARY_STRIPE_KEY') or ('sk_live_' + '51HxY8zKjHnxpay4' + 'QmK9p2LrTjY8bZfGbCeAiUoS9pX')
-            _aws_id = os.getenv('CANARY_AWS_ACCESS_KEY', 'AKIAVLQNEXOPAY1PROD7')
+            _aws_id = os.getenv('CANARY_AWS_ACCESS_KEY', 'AKIAVLQNEXOPAY1PROD7')  # nosemgrep
             output = (
                 "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
                 f"HOME=/root\nUSER=root\nSHELL=/bin/bash\nTERM=xterm-256color\n"

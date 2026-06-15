@@ -148,6 +148,7 @@ class SandboxDatabase:
         """Create realistic NexoPay fintech server filesystem."""
         # Read canary token env vars; fall back to realistic-looking static values
         # Use `or` so empty-string env vars also trigger the fallback
+        # nosemgrep: generic.secrets.security
         canary_aws_key    = os.getenv('CANARY_AWS_ACCESS_KEY')    or 'AKIAVLQNEXOPAY1PROD7'
         canary_aws_secret = os.getenv('CANARY_AWS_SECRET_KEY')    or 'hP7wNk3vQx2mLrTjY8dZfGbCeAiUoS9pXnWvKm1'
         canary_stripe_key = os.getenv('CANARY_STRIPE_KEY')        or ('sk_live_' + '51HxY8zKjHnxpay4QmK9p2LrTjY8bZfGbCeAiUoS9pX')
@@ -692,6 +693,7 @@ class SandboxDatabase:
 
     def _init_default_environment(self, conn, session_id: str):
         """Create NexoPay server environment variables."""
+        # nosemgrep: generic.secrets.security
         canary_aws_key    = os.getenv('CANARY_AWS_ACCESS_KEY',    'AKIAVLQNEXOPAY1PROD7')
         canary_aws_secret = os.getenv('CANARY_AWS_SECRET_KEY',    'hP7wNk3vQx2mLrTjY8dZfGbCeAiUoS9pXnWvKm1')
         canary_stripe_key = os.getenv('CANARY_STRIPE_KEY')        or ('sk_live_' + '51HxY8zKjHnxpay4QmK9p2LrTjY8bZfGbCeAiUoS9pX')

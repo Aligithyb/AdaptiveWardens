@@ -37,6 +37,8 @@ properties:
     containers:
       - name: ai-engine
         image: awreg8802.azurecr.io/ai-engine:REPLACE_AT_DEPLOY
+        securityContext:
+          allowPrivilegeEscalation: false
         resources:
           cpu: 1.0
           memory: 2Gi

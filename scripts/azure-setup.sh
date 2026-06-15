@@ -94,10 +94,16 @@ if ! az monitor log-analytics workspace show \
 else
   echo "  Already exists — skipping."
 fi
+
 LA_ID=$(az monitor log-analytics workspace show \
   --workspace-name "$LOG_ANALYTICS" \
   --resource-group "$RG" \
-  --query id -o tsv)
+  --query customerId -o tsv)
+
+LA_KEY=$(az monitor log-analytics workspace get-shared-keys \
+  --workspace-name "$LOG_ANALYTICS" \
+  --resource-group "$RG" \
+  --query primarySharedKey -o tsv)
 
 # ── 4. Container Apps Environment ────────────────────────────────────────────
 echo "[4/8] ACA Environment: $ACA_ENV"
@@ -109,6 +115,7 @@ if ! az containerapp env show \
     --name "$ACA_ENV" \
     --location "$LOCATION" \
     --logs-workspace-id "$LA_ID" \
+    --logs-workspace-key "$LA_KEY" \
     --tags Project=AdaptiveWardens \
     --output none
   echo "  Created."
@@ -205,7 +212,6 @@ else
   echo "  Already exists — resetting credentials..."
   SP_JSON=$(az ad sp credential reset \
     --id "$SP_EXISTS" \
-    --credential-description "gh-actions-$(date +%s)" \
     --append \
     --output json)
 fi
