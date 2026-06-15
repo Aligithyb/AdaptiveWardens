@@ -239,7 +239,6 @@ resource appGw 'Microsoft.Network/applicationGateways@2022-09-01' = {
               name: 'dashboard-path'
               properties: {
                 paths: [
-                  '/dashboard*',
                   '/dashboard/*'
                 ]
                 backendAddressPool: {
