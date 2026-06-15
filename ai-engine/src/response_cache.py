@@ -172,11 +172,23 @@ class ResponseCache:
                     created_at REAL NOT NULL
                 )
             """)
+            # Global, no-TTL cache for command→MITRE technique mappings.
+            # A technique mapping is stable (same command always maps to the same
+            # technique), so there is no expiry. Keyed by normalised command hash,
+            # global scope (no user/cwd) to maximise hit rate across attackers.
+            self._db.execute("""
+                CREATE TABLE IF NOT EXISTS mitre_cache (
+                    cmd_key TEXT PRIMARY KEY,
+                    techniques TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+            """)
             self._db.commit()
         except Exception as e:
             print(f"WARNING: cache DB init failed ({e}); falling back to memory-only")
             self._db = None
             self._mem = {}
+            self._mitre_mem = {}
 
     def _build_key(self, command: str, context: dict) -> Tuple[str, str]:
         scope = _classify_scope(command)
@@ -251,6 +263,47 @@ class ResponseCache:
                 }
             self.stats["stores"] += 1
 
+    # ------------------------------------------------------------------
+    # MITRE classification cache (global scope, no TTL)
+    # ------------------------------------------------------------------
+
+    def _mitre_key(self, command: str) -> str:
+        return hashlib.md5(_normalize_for_cache(command).encode("utf-8")).hexdigest()
+
+    def get_mitre(self, command: str) -> Optional[list]:
+        """Return cached MITRE techniques or None."""
+        key = self._mitre_key(command)
+        with self._lock:
+            if self._db is not None:
+                row = self._db.execute(
+                    "SELECT techniques FROM mitre_cache WHERE cmd_key = ?", (key,)
+                ).fetchone()
+                if row:
+                    self.stats["mitre_hits"] = self.stats.get("mitre_hits", 0) + 1
+                    return json.loads(row[0])
+            else:
+                entry = self._mitre_mem.get(key)
+                if entry is not None:
+                    self.stats["mitre_hits"] = self.stats.get("mitre_hits", 0) + 1
+                    return entry
+        self.stats["mitre_misses"] = self.stats.get("mitre_misses", 0) + 1
+        return None
+
+    def set_mitre(self, command: str, techniques: list):
+        """Persist MITRE classification (including empty list so we don't re-ask)."""
+        key = self._mitre_key(command)
+        now = datetime.now().timestamp()
+        techniques_json = json.dumps(techniques)
+        with self._lock:
+            if self._db is not None:
+                self._db.execute(
+                    "INSERT OR REPLACE INTO mitre_cache (cmd_key, techniques, created_at) VALUES (?, ?, ?)",
+                    (key, techniques_json, now)
+                )
+                self._db.commit()
+            else:
+                self._mitre_mem[key] = techniques
+
     def vacuum_expired(self):
         if self._db is None:
             return
@@ -262,4 +315,12 @@ class ResponseCache:
     def get_stats(self) -> dict:
         total = self.stats["hits"] + self.stats["misses"]
         hit_rate = self.stats["hits"] / total if total > 0 else 0.0
-        return {**self.stats, "hit_rate": round(hit_rate, 4)}
+        mitre_hits = self.stats.get("mitre_hits", 0)
+        mitre_misses = self.stats.get("mitre_misses", 0)
+        mitre_total = mitre_hits + mitre_misses
+        mitre_hit_rate = mitre_hits / mitre_total if mitre_total > 0 else 0.0
+        return {
+            **self.stats,
+            "hit_rate": round(hit_rate, 4),
+            "mitre_hit_rate": round(mitre_hit_rate, 4),
+        }
