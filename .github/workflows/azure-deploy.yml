@@ -23,12 +23,48 @@ env:
   IMAGE_TAG: ${{ github.sha }}
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# JOB 1: BUILD — builds all 6 Docker images in parallel and pushes to ACR
+# JOB 1: SAST — Static Application Security Testing via Semgrep
 # ═══════════════════════════════════════════════════════════════════════════════
 jobs:
+  sast:
+    name: Run SAST Scanner (Semgrep)
+    if: "!contains(github.event.head_commit.message, '[skip-sec]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Semgrep
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: "p/default p/owasp-top-ten"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 2: DAST — Dynamic Application Security Testing via OWASP ZAP
+# ═══════════════════════════════════════════════════════════════════════════════
+  dast:
+    name: Run DAST Scanner (OWASP ZAP)
+    if: "!contains(github.event.head_commit.message, '[skip-sec]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare environment
+        run: cp .env.example .env
+      - name: Spin up Docker Compose
+        run: docker compose up -d --build
+      - name: Wait for services
+        run: sleep 30
+      - name: Run ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: 'http://localhost:3000'
+          fail_action: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 3: BUILD — builds all 6 Docker images in parallel and pushes to ACR
+# ═══════════════════════════════════════════════════════════════════════════════
   build:
     name: "Build: ${{ matrix.service }}"
     if: ${{ !inputs.verify_only }}
+    needs: [sast, dast]
     runs-on: ubuntu-latest
 
     strategy:
@@ -63,7 +99,7 @@ jobs:
           docker push ${{ env.ACR_LOGIN_SERVER }}/${{ matrix.service }}:latest
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# JOB 2: DEPLOY — deploys all 6 services in dependency order
+# JOB 4: DEPLOY — deploys all 6 services in dependency order
 # ═══════════════════════════════════════════════════════════════════════════════
   deploy:
     name: Deploy to Azure Container Apps
@@ -422,7 +458,7 @@ jobs:
           cat $GITHUB_STEP_SUMMARY
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# JOB 3: VERIFY-ONLY (triggered manually via workflow_dispatch)
+# JOB 5: VERIFY-ONLY (triggered manually via workflow_dispatch)
 # Skips build + deploy, just checks the current state of all 6 apps
 # ═══════════════════════════════════════════════════════════════════════════════
   verify:
