@@ -1,4 +1,4 @@
-import { Activity, Shield, Map, BarChart3, FileText, Layers, Globe2 } from 'lucide-react';
+import { Activity, Shield, Map, BarChart3, FileText, Layers, Globe2, ShieldAlert } from 'lucide-react';
 
 interface SidebarProps {
   activeView: string;
@@ -14,6 +14,7 @@ export function Sidebar({ activeView, setActiveView }: SidebarProps) {
     { id: 'mitre-attack', label: 'MITRE ATT&CK', icon: Map },
     { id: 'metrics', label: 'Session Metrics', icon: BarChart3 },
     { id: 'reports', label: 'Reports', icon: FileText },
+    { id: 'threat-intelligence', label: 'Threat Intel', icon: ShieldAlert },
   ];
 
   return (
