@@ -508,7 +508,6 @@ jobs:
               dashboardBackendFqdn="$DASH_BACKEND_FQDN" \
               allowedCountries="${COUNTRIES_JSON}" \
               rateLimitThreshold=200 \
-              resourceGroupName="${{ env.AZURE_RG }}" \
             --output none
           echo "Front Door + WAF deployed."
 
@@ -621,7 +620,6 @@ jobs:
               dashboardBackendFqdn="$DASH_BACKEND_FQDN" \
               allowedCountries="${COUNTRIES_JSON}" \
               rateLimitThreshold=200 \
-              resourceGroupName="${{ env.AZURE_RG }}" \
             --output none
           echo "Front Door + WAF deployed."
 
