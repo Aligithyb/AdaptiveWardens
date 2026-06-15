@@ -67,7 +67,11 @@ resource wafPolicy 'Microsoft.Network/frontDoorWebApplicationFirewallPolicies@20
           enabledState: 'Enabled'
           rateLimitDurationInMinutes: 1
           rateLimitThreshold: rateLimitThreshold
-          groupBy: ['ClientIP']
+          groupBy: [
+            {
+              variableName: 'SocketAddr'
+            }
+          ]
           matchConditions: [
             {
               matchVariable: 'RemoteAddr'
