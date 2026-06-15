@@ -638,11 +638,17 @@ jobs:
 
           echo "Policy assignments attempted."
 
-      - name: Run compliance evidence collection
+      - name: Run compliance evidence collection (Azure infra)
         continue-on-error: true
         run: |
           chmod +x scripts/collect-compliance-evidence.sh
           bash scripts/collect-compliance-evidence.sh
+
+      - name: Run codebase compliance scanner
+        continue-on-error: true
+        run: |
+          chmod +x scripts/compliance-scanner.sh
+          bash scripts/compliance-scanner.sh "${{ github.workspace }}"
 
       - name: Upload compliance evidence to Azure Storage
         continue-on-error: true
@@ -664,6 +670,13 @@ jobs:
               --destination "compliance-evidence" \
               --source "./compliance-evidence" \
               --overwrite
+            az storage blob upload \
+              --account-name "$STORAGE" \
+              --account-key "$STORAGE_KEY" \
+              --container-name "compliance-evidence" \
+              --file "./compliance-report.json" \
+              --name "compliance-report-${{ env.IMAGE_TAG }}.json" \
+              --overwrite
             echo "Evidence uploaded to compliance-evidence/ container."
           else
             echo "Could not retrieve storage key — skipping upload."
@@ -672,41 +685,55 @@ jobs:
       # ── Compliance Summary for GitHub Step Summary ──
       - name: Generate Compliance Summary
         run: |
-          SUMMARY="./compliance-evidence/summary-${{ env.IMAGE_TAG }}.json"
-          if [ -f "$SUMMARY" ]; then
-            echo "## AdaptiveWardens Compliance Report" >> $GITHUB_STEP_SUMMARY
+          REPORT="./compliance-report.json"
+          if [ -f "$REPORT" ]; then
+            echo "## AdaptiveWardens Compliance Scorecard" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
-            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
 
-            PCT=$(jq -r '.policy.compliancePercent // "N/A"' "$SUMMARY")
-            echo "| Policy Compliance | $PCT% |" >> $GITHUB_STEP_SUMMARY
+            SCORE=$(jq -r '.summary.overallScore' "$REPORT")
+            PASSED=$(jq -r '.summary.passed' "$REPORT")
+            TOTAL=$(jq -r '.summary.totalControls' "$REPORT")
+            echo "**Overall Codebase Compliance: $PASSED / $TOTAL controls passed ($SCORE%)**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
 
-            SCORE=$(jq -r '.secureScore.currentScore // "0"' "$SUMMARY")
-            MAX=$(jq -r '.secureScore.maxScore // "0"' "$SUMMARY")
-            echo "| Defender Secure Score | $SCORE / $MAX |" >> $GITHUB_STEP_SUMMARY
+            echo "| Standard | Passed | Total | Score |" >> $GITHUB_STEP_SUMMARY
+            echo "|---|---|---|---|" >> $GITHUB_STEP_SUMMARY
 
-            WAF=$(jq -r '.waf.mode // "unknown"' "$SUMMARY")
-            echo "| WAF Mode | $WAF |" >> $GITHUB_STEP_SUMMARY
+            NIST_P=$(jq -r '.standards.nistSP80053.passed' "$REPORT")
+            NIST_T=$(jq -r '.standards.nistSP80053.total' "$REPORT")
+            NIST_S=$(jq -r '.standards.nistSP80053.score' "$REPORT")
+            echo "| NIST SP 800-53 Rev. 5 | $NIST_P | $NIST_T | $NIST_S% |" >> $GITHUB_STEP_SUMMARY
 
-            COMPLIANT=$(jq -r '.policy.compliant // "0"' "$SUMMARY")
-            NONCOMP=$(jq -r '.policy.nonCompliant // "0"' "$SUMMARY")
-            echo "| Compliant Resources | $COMPLIANT |" >> $GITHUB_STEP_SUMMARY
-            echo "| Non-Compliant Resources | $NONCOMP |" >> $GITHUB_STEP_SUMMARY
+            GDPR_P=$(jq -r '.standards.gdpr.passed' "$REPORT")
+            GDPR_T=$(jq -r '.standards.gdpr.total' "$REPORT")
+            GDPR_S=$(jq -r '.standards.gdpr.score' "$REPORT")
+            echo "| GDPR | $GDPR_P | $GDPR_T | $GDPR_S% |" >> $GITHUB_STEP_SUMMARY
+
+            SOC2_P=$(jq -r '.standards.soc2TypeII.passed' "$REPORT")
+            SOC2_T=$(jq -r '.standards.soc2TypeII.total' "$REPORT")
+            SOC2_S=$(jq -r '.standards.soc2TypeII.score' "$REPORT")
+            echo "| SOC 2 Type II | $SOC2_P | $SOC2_T | $SOC2_S% |" >> $GITHUB_STEP_SUMMARY
+
+            ISO_P=$(jq -r '.standards.iso27001.passed' "$REPORT")
+            ISO_T=$(jq -r '.standards.iso27001.total' "$REPORT")
+            ISO_S=$(jq -r '.standards.iso27001.score' "$REPORT")
+            echo "| ISO 27001:2013 | $ISO_P | $ISO_T | $ISO_S% |" >> $GITHUB_STEP_SUMMARY
 
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Standards Enforced" >> $GITHUB_STEP_SUMMARY
+            echo "### Failed Controls" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "- **ISO 27001:2013** — Built-in Azure Policy initiative" >> $GITHUB_STEP_SUMMARY
-            echo "- **SOC 2 Type II** — Built-in Azure Policy initiative" >> $GITHUB_STEP_SUMMARY
-            echo "- **NIST SP 800-53 Rev. 5** — Built-in Azure Policy initiative" >> $GITHUB_STEP_SUMMARY
+            echo "| ID | Name | Category |" >> $GITHUB_STEP_SUMMARY
+            echo "|---|---|---|" >> $GITHUB_STEP_SUMMARY
+            jq -r '.controls[] | select(.status == "FAIL") | "\(.id)|\(.name)|\(.category)"' "$REPORT" >> $GITHUB_STEP_SUMMARY
+
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Evidence stored in Azure Storage (immutable, 365-day retention)." >> $GITHUB_STEP_SUMMARY
+            echo "Full report saved to \`compliance-report.json\` and uploaded to Azure Storage." >> $GITHUB_STEP_SUMMARY
           else
-            echo "No compliance summary found."
+            echo "No compliance report found." >> $GITHUB_STEP_SUMMARY
           fi
 
-      - name: Check for non-compliant resources
+      - name: Check for non-compliant resources (Azure Policy)
+        continue-on-error: true
         run: |
           NON_COMPLIANT=$(az policy state list --resource-group "${{ env.AZURE_RG }}" \
             --filter "complianceState eq 'NonCompliant'" \
@@ -723,7 +750,7 @@ jobs:
               echo "| $resource | $policy | $effect |" >> $GITHUB_STEP_SUMMARY
             done
           else
-            echo "✓ All resources compliant." >> $GITHUB_STEP_SUMMARY
+            echo "✓ All Azure resources compliant (or no policies assigned)." >> $GITHUB_STEP_SUMMARY
           fi
           cat $GITHUB_STEP_SUMMARY
 
