@@ -129,6 +129,82 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      - name: Ensure VNET and ACA Environment (required for external TCP ingress)
+        run: |
+          RG="${{ env.AZURE_RG }}"
+          LOCATION="${{ env.AZURE_LOCATION }}"
+          ACA_ENV="${{ env.AZURE_ACA_ENV }}"
+          VNET_NAME="aw-aca-vnet"
+          SUBNET_NAME="aca-infra-subnet"
+
+          # Create VNet if missing
+          if ! az network vnet show --name "$VNET_NAME" --resource-group "$RG" &>/dev/null; then
+            echo "Creating VNet..."
+            az network vnet create \
+              --resource-group "$RG" \
+              --name "$VNET_NAME" \
+              --location "$LOCATION" \
+              --address-prefix "10.2.0.0/16" \
+              --output none
+            echo "VNet created."
+          fi
+
+          # Create delegated subnet if missing
+          SUBNET_ID=$(az network vnet subnet show \
+            --name "$SUBNET_NAME" \
+            --vnet-name "$VNET_NAME" \
+            --resource-group "$RG" \
+            --query id -o tsv 2>/dev/null || echo "")
+          if [ -z "$SUBNET_ID" ]; then
+            echo "Creating delegated subnet..."
+            az network vnet subnet create \
+              --resource-group "$RG" \
+              --vnet-name "$VNET_NAME" \
+              --name "$SUBNET_NAME" \
+              --address-prefix "10.2.0.0/23" \
+              --delegations "Microsoft.App/environments" \
+              --output none
+            SUBNET_ID=$(az network vnet subnet show \
+              --name "$SUBNET_NAME" \
+              --vnet-name "$VNET_NAME" \
+              --resource-group "$RG" \
+              --query id -o tsv)
+            echo "Subnet created."
+          fi
+
+          # Ensure ACA environment has VNET
+          if az containerapp env show --name "$ACA_ENV" --resource-group "$RG" &>/dev/null; then
+            HAS_VNET=$(az containerapp env show --name "$ACA_ENV" --resource-group "$RG" \
+              --query "properties.vnetConfiguration.infrastructureSubnetId" -o tsv 2>/dev/null || echo "")
+            if [ -z "$HAS_VNET" ]; then
+              echo "ACA env exists without VNET. Recreating..."
+              for APP in aw-sandbox-store aw-ai-engine aw-dashboard-backend aw-ssh-frontend aw-http-frontend aw-dashboard-frontend; do
+                az containerapp delete --name "$APP" --resource-group "$RG" --yes --output none 2>/dev/null || true
+              done
+              az containerapp env delete --name "$ACA_ENV" --resource-group "$RG" --yes --output none
+              az containerapp env create \
+                --resource-group "$RG" \
+                --name "$ACA_ENV" \
+                --location "$LOCATION" \
+                --infrastructure-subnet-resource-id "$SUBNET_ID" \
+                --tags Project=AdaptiveWardens \
+                --output none
+              echo "ACA env recreated with VNET."
+            else
+              echo "ACA env already has VNET."
+            fi
+          else
+            echo "Creating ACA environment with VNET..."
+            az containerapp env create \
+              --resource-group "$RG" \
+              --name "$ACA_ENV" \
+              --location "$LOCATION" \
+              --infrastructure-subnet-resource-id "$SUBNET_ID" \
+              --tags Project=AdaptiveWardens \
+              --output none
+            echo "ACA environment created with VNET."
+          fi
+
       - name: Register Azure File Share with ACA Environment
         run: |
           az containerapp env storage set \
