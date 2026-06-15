@@ -70,3 +70,6 @@ sandbox-store/data/
 
 # Claude Code workspace (local only)
 .claude/
+
+# Azure credentials
+.azure-sp-credentials.json

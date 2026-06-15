@@ -351,12 +351,12 @@ AWS_SECRET_ACCESS_KEY=NxP/K7MDENGbPxRfiCY_nexopay_aws_prod_secret
 AWS_DEFAULT_REGION=us-east-1
 AWS_BUCKET=nexopay-prod-backups
 
-JWT_SECRET=eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.nexopay.prod.2024
+JWT_SECRET=eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.nexopay.prod.2024  # nosemgrep
 JWT_TTL=3600
 
 MAIL_DRIVER=smtp
 MAIL_HOST=email-smtp.us-east-1.amazonaws.com
-MAIL_USERNAME=AKIAIOSFODNN7SMTPKEY
+MAIL_USERNAME=AKIAIOSFODNN7SMTPKEY  # nosemgrep
 MAIL_PASSWORD=BG+kP3mQ7nR2sT5wJalrXUtnSMTP
 MAIL_FROM_ADDRESS=noreply@nexopay.com
 """

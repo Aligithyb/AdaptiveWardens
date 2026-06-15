@@ -37,6 +37,8 @@ properties:
     containers:
       - name: sandbox-store
         image: awreg8802.azurecr.io/sandbox-store:REPLACE_AT_DEPLOY
+        securityContext:
+          allowPrivilegeEscalation: false
         resources:
           cpu: 0.5
           memory: 1Gi

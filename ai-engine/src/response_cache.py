@@ -200,7 +200,7 @@ class ResponseCache:
         else:
             payload = (f"{norm}|user={context.get('username', 'root')}"
                        f"|cwd={context.get('current_directory', '/root')}")
-        return hashlib.md5(payload.encode("utf-8")).hexdigest(), scope
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest(), scope
 
     def get(self, command: str, context: dict) -> Optional[dict]:
         """Return {'response', 'iocs', 'mitre'} or None."""
@@ -268,7 +268,7 @@ class ResponseCache:
     # ------------------------------------------------------------------
 
     def _mitre_key(self, command: str) -> str:
-        return hashlib.md5(_normalize_for_cache(command).encode("utf-8")).hexdigest()
+        return hashlib.sha256(_normalize_for_cache(command).encode("utf-8")).hexdigest()
 
     def get_mitre(self, command: str) -> Optional[list]:
         """Return cached MITRE techniques or None."""

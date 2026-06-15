@@ -24,6 +24,8 @@ properties:
     containers:
       - name: ssh-frontend
         image: awreg8802.azurecr.io/ssh-frontend:REPLACE_AT_DEPLOY
+        securityContext:
+          allowPrivilegeEscalation: false
         resources:
           cpu: 1.0
           memory: 2Gi

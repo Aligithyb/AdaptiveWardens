@@ -33,7 +33,7 @@ jobs:
   rollback:
     name: "Rollback ${{ inputs.service }} → ${{ inputs.image_tag }}"
     runs-on: ubuntu-latest
-    concurrency: aca-deploy   # same lock as the deploy job
+    concurrency: aca-deploy
 
     steps:
       - name: Log in to Azure
@@ -41,21 +41,24 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # Verify the tag exists in ACR before attempting rollback
       - name: Verify image tag exists in ACR
+        env:
+          SERVICE: ${{ inputs.service }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          ACR_NAME: ${{ secrets.ACR_NAME }}
         run: |
-          echo "Checking ACR for ${{ inputs.service }}:${{ inputs.image_tag }}..."
+          echo "Checking ACR for ${SERVICE}:${IMAGE_TAG}..."
           TAG_EXISTS=$(az acr repository show-tags \
-            --name "${{ secrets.ACR_NAME }}" \
-            --repository "${{ inputs.service }}" \
-            --query "contains(@, '${{ inputs.image_tag }}')" \
+            --name "${ACR_NAME}" \
+            --repository "${SERVICE}" \
+            --query "contains(@, '${IMAGE_TAG}')" \
             -o tsv 2>/dev/null || echo "false")
           if [ "$TAG_EXISTS" != "true" ]; then
-            echo "ERROR: Tag '${{ inputs.image_tag }}' not found in ACR repo '${{ inputs.service }}'."
+            echo "ERROR: Tag '${IMAGE_TAG}' not found in ACR repo '${SERVICE}'."
             echo "Available tags (most recent first):"
             az acr repository show-tags \
-              --name "${{ secrets.ACR_NAME }}" \
-              --repository "${{ inputs.service }}" \
+              --name "${ACR_NAME}" \
+              --repository "${SERVICE}" \
               --orderby time_desc \
               -o tsv | head -20
             exit 1
@@ -63,26 +66,35 @@ jobs:
           echo "Tag verified."
 
       - name: Roll back image
+        env:
+          SERVICE: ${{ inputs.service }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          REASON: ${{ inputs.reason }}
+          RG: ${{ env.AZURE_RG }}
+          LOGIN_SERVER: ${{ env.ACR_LOGIN_SERVER }}
         run: |
-          APP_NAME="aw-${{ inputs.service }}"
-          IMG="${{ env.ACR_LOGIN_SERVER }}/${{ inputs.service }}:${{ inputs.image_tag }}"
-          echo "Rolling back $APP_NAME to $IMG..."
-          echo "Reason: ${{ inputs.reason }}"
+          APP_NAME="aw-${SERVICE}"
+          IMG="${LOGIN_SERVER}/${SERVICE}:${IMAGE_TAG}"
+          echo "Rolling back ${APP_NAME} to ${IMG}..."
+          echo "Reason: ${REASON}"
           az containerapp update \
-            --name "$APP_NAME" \
-            --resource-group "${{ env.AZURE_RG }}" \
-            --image "$IMG" \
+            --name "${APP_NAME}" \
+            --resource-group "${RG}" \
+            --image "${IMG}" \
             --output none
           echo "Update command sent."
 
       - name: Wait for rollback to complete
+        env:
+          SERVICE: ${{ inputs.service }}
+          RG: ${{ env.AZURE_RG }}
         run: |
-          APP_NAME="aw-${{ inputs.service }}"
-          echo "Polling $APP_NAME..."
+          APP_NAME="aw-${SERVICE}"
+          echo "Polling ${APP_NAME}..."
           for i in $(seq 1 30); do
             STATUS=$(az containerapp show \
-              --name "$APP_NAME" \
-              --resource-group "${{ env.AZURE_RG }}" \
+              --name "${APP_NAME}" \
+              --resource-group "${RG}" \
               --query properties.provisioningState -o tsv 2>/dev/null || echo "Pending")
             echo "  Attempt $i/30 — State: $STATUS"
             if [ "$STATUS" = "Succeeded" ]; then
@@ -92,8 +104,8 @@ jobs:
             if [ "$STATUS" = "Failed" ]; then
               echo "ERROR: Rollback failed."
               az containerapp logs show \
-                --name "$APP_NAME" \
-                --resource-group "${{ env.AZURE_RG }}" \
+                --name "${APP_NAME}" \
+                --resource-group "${RG}" \
                 --tail 50 || true
               exit 1
             fi
@@ -105,32 +117,39 @@ jobs:
           done
 
       - name: Health check after rollback
+        env:
+          SERVICE: ${{ inputs.service }}
+          RG: ${{ env.AZURE_RG }}
         run: |
-          APP_NAME="aw-${{ inputs.service }}"
+          APP_NAME="aw-${SERVICE}"
           FQDN=$(az containerapp show \
-            --name "$APP_NAME" \
-            --resource-group "${{ env.AZURE_RG }}" \
+            --name "${APP_NAME}" \
+            --resource-group "${RG}" \
             --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "")
           if [ -n "$FQDN" ]; then
-            echo "Checking https://$FQDN/health ..."
+            echo "Checking https://${FQDN}/health ..."
             curl -sf --connect-timeout 10 "https://${FQDN}/health" \
               && echo "Health check: OK" \
               || echo "Health check failed (may be normal for TCP services)"
           else
-            echo "$APP_NAME is internal — no HTTP health check available."
+            echo "${APP_NAME} is internal — no HTTP health check available."
           fi
 
       - name: Rollback summary
+        env:
+          SERVICE: ${{ inputs.service }}
+          RG: ${{ env.AZURE_RG }}
+          REASON: ${{ inputs.reason }}
         run: |
-          APP_NAME="aw-${{ inputs.service }}"
+          APP_NAME="aw-${SERVICE}"
           CURRENT_IMG=$(az containerapp show \
-            --name "$APP_NAME" \
-            --resource-group "${{ env.AZURE_RG }}" \
+            --name "${APP_NAME}" \
+            --resource-group "${RG}" \
             --query "properties.template.containers[0].image" -o tsv)
           echo ""
           echo "========================================"
           echo "  ROLLBACK COMPLETE"
-          echo "  Service : $APP_NAME"
-          echo "  Image   : $CURRENT_IMG"
-          echo "  Reason  : ${{ inputs.reason }}"
+          echo "  Service : ${APP_NAME}"
+          echo "  Image   : ${CURRENT_IMG}"
+          echo "  Reason  : ${REASON}"
           echo "========================================"
