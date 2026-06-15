@@ -26,11 +26,8 @@
     "allowedCountries": {
       "value": []
     },
-    "rateLimitPerMinute": {
+    "rateLimitThreshold": {
       "value": 200
-    },
-    "resourceGroupName": {
-      "value": "AdaptiveWardens"
     }
   }
 }

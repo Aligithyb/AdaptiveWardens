@@ -16,7 +16,7 @@ param httpFrontendFqdn string
 @description('FQDN of the dashboard frontend ACA app')
 param dashboardFrontendFqdn string
 
-@description('FQDN of the dashboard backend ACA app')
+@description('FQDN of the dashboard backend ACA app (for API calls)')
 param dashboardBackendFqdn string
 
 @description('ISO country codes to allow (empty = all allowed)')
@@ -24,12 +24,6 @@ param allowedCountries array = []
 
 @description('Max requests per IP per minute (0 = disabled)')
 param rateLimitThreshold int = 200
-
-@description('Resource group name of the ACA apps')
-param resourceGroupName string
-
-@description('Location (must be Global for Front Door)')
-param location string = 'global'
 
 // ── WAF Policy ──────────────────────────────────────────────────────────
 resource wafPolicy 'Microsoft.Network/frontDoorWebApplicationFirewallPolicies@2024-03-01' = {
@@ -44,7 +38,7 @@ resource wafPolicy 'Microsoft.Network/frontDoorWebApplicationFirewallPolicies@20
       mode: 'Prevention'
       requestBodyCheck: 'Enabled'
       customBlockResponseStatusCode: 403
-      customBlockResponseBody: base64('{"error":"blocked","message":"Request blocked by AdaptiveWardens WAF policy","policy":"' + wafPolicyName + '"}')
+      customBlockResponseBody: base64('{"error":"blocked","message":"Request blocked by AdaptiveWardens WAF policy","policy":"${wafPolicyName}"}')
     }
     customRules: {
       rules: [
@@ -180,13 +174,14 @@ resource honeyOrigin 'Microsoft.Cdn/profiles/originGroups/origins@2024-06-01-pre
   parent: honeyOriginGroup
   name: 'http-frontend-origin'
   properties: {
-    address: httpFrontendFqdn
+    hostName: httpFrontendFqdn
     httpPort: 80
     httpsPort: 443
     enabledState: 'Enabled'
     priority: 1
     weight: 100
     originHostHeader: httpFrontendFqdn
+    enforceCertificateNameCheck: true
   }
 }
 
@@ -213,13 +208,14 @@ resource dashFrontendOrigin 'Microsoft.Cdn/profiles/originGroups/origins@2024-06
   parent: dashOriginGroup
   name: 'dashboard-frontend-origin'
   properties: {
-    address: dashboardFrontendFqdn
+    hostName: dashboardFrontendFqdn
     httpPort: 80
     httpsPort: 443
     enabledState: 'Enabled'
     priority: 1
     weight: 100
     originHostHeader: dashboardFrontendFqdn
+    enforceCertificateNameCheck: true
   }
 }
 
@@ -227,13 +223,14 @@ resource dashBackendOrigin 'Microsoft.Cdn/profiles/originGroups/origins@2024-06-
   parent: dashOriginGroup
   name: 'dashboard-backend-origin'
   properties: {
-    address: dashboardBackendFqdn
+    hostName: dashboardBackendFqdn
     httpPort: 80
     httpsPort: 443
     enabledState: 'Enabled'
     priority: 2
     weight: 50
     originHostHeader: dashboardBackendFqdn
+    enforceCertificateNameCheck: true
   }
 }
 
@@ -304,12 +301,14 @@ resource securityPolicy 'Microsoft.Cdn/profiles/securityPolicies@2024-06-01-prev
   properties: {
     parameters: {
       type: 'WebApplicationFirewall'
-      wafPolicy: wafPolicy.id
+      wafPolicy: {
+        id: wafPolicy.id
+      }
       associations: [
         {
           domains: [
-            honeyEndpoint.id
-            dashEndpoint.id
+            { id: honeyEndpoint.id }
+            { id: dashEndpoint.id }
           ]
           patternsToMatch: ['/*']
         }
