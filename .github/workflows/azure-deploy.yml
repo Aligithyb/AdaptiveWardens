@@ -478,9 +478,11 @@ jobs:
           echo "  dashboard-backend:  $DASH_BACKEND_FQDN"
 
       - name: Deploy Azure Front Door + WAF (Bicep)
+        env:
+          ALLOWED_COUNTRIES: ${{ inputs.allowed_countries }}
         run: |
           # Parse allowed countries from workflow input (or empty = all allowed)
-          COUNTRIES="${{ inputs.allowed_countries }}"
+          COUNTRIES="$ALLOWED_COUNTRIES"
           if [ -z "$COUNTRIES" ]; then
             COUNTRIES_JSON="[]"
           else
@@ -592,8 +594,10 @@ jobs:
           echo "DASH_BACKEND_FQDN=$DASH_BACKEND_FQDN" >> $GITHUB_ENV
 
       - name: Deploy Front Door + WAF
+        env:
+          ALLOWED_COUNTRIES: ${{ inputs.allowed_countries }}
         run: |
-          COUNTRIES="${{ inputs.allowed_countries }}"
+          COUNTRIES="$ALLOWED_COUNTRIES"
           if [ -z "$COUNTRIES" ]; then
             COUNTRIES_JSON="[]"
           else
