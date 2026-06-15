@@ -3,12 +3,18 @@
 from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+import asyncio
+import hashlib
+import httpx
 import sqlite3
 import csv
 import io
 import json
 import os
+from datetime import datetime, timezone
 from typing import List, Dict, Any
+
+from threat_intel import enrich_ip, _ensure_ti_table, _get_cache
 
 app = FastAPI(title="SOC Dashboard API")
 
@@ -22,6 +28,7 @@ app.add_middleware(
 
 DB_PATH = os.getenv("DB_PATH", "/data/app_state.db")
 DASHBOARD_API_KEY = os.getenv("DASHBOARD_API_KEY", "")
+AI_ENGINE_URL = os.getenv("AI_ENGINE_URL", "http://ai-engine:8002")
 
 @app.middleware("http")
 async def require_api_key(request: Request, call_next):
@@ -341,6 +348,236 @@ def export_session_csv(session_id: str):
         )
     except sqlite3.OperationalError:
         raise HTTPException(status_code=500, detail="Database error")
+
+
+# ---------------------------------------------------------------------------
+# AI report endpoint
+# ---------------------------------------------------------------------------
+
+def _ensure_ai_reports_table(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ai_reports (
+            session_id   TEXT PRIMARY KEY,
+            content_hash TEXT NOT NULL,
+            report_json  TEXT NOT NULL,
+            generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+
+
+def _content_hash(commands: list, techniques: list, iocs: list) -> str:
+    payload = json.dumps({"c": commands, "t": techniques, "i": iocs}, sort_keys=True, default=str)
+    return hashlib.md5(payload.encode()).hexdigest()
+
+
+@app.get("/api/reports/{session_id}/ai-summary")
+async def get_ai_summary(session_id: str):
+    """Return (or generate) an AI SOC incident report for a session.
+
+    Hits are served from ai_reports table without calling the AI engine.
+    A stale cache entry (content_hash mismatch) triggers regeneration.
+    """
+    try:
+        detail = get_session_details(session_id)
+    except HTTPException:
+        raise
+
+    commands = detail.get("commands", [])
+    techniques = detail.get("techniques", [])
+    iocs = detail.get("iocs", [])
+    session = detail.get("session", {})
+    chash = _content_hash(commands, techniques, iocs)
+
+    try:
+        with get_db_connection() as conn:
+            _ensure_ai_reports_table(conn)
+            row = conn.execute(
+                "SELECT report_json, content_hash, generated_at FROM ai_reports WHERE session_id = ?",
+                (session_id,)
+            ).fetchone()
+
+        if row and row["content_hash"] == chash:
+            return {
+                "report": json.loads(row["report_json"]),
+                "cached": True,
+                "generated_at": row["generated_at"],
+            }
+    except sqlite3.OperationalError as e:
+        pass
+
+    # Generate report via ai-engine
+    try:
+        async with httpx.AsyncClient(timeout=35.0) as client:
+            resp = await client.post(
+                f"{AI_ENGINE_URL}/summarize-session",
+                json={
+                    "session": session,
+                    "commands": commands,
+                    "techniques": techniques,
+                    "iocs": iocs,
+                },
+            )
+            resp.raise_for_status()
+            report = resp.json().get("report", {})
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"AI engine unavailable: {e}")
+
+    # Persist to cache
+    try:
+        with get_db_connection() as conn:
+            _ensure_ai_reports_table(conn)
+            conn.execute(
+                "INSERT OR REPLACE INTO ai_reports (session_id, content_hash, report_json, generated_at) "
+                "VALUES (?, ?, ?, datetime('now'))",
+                (session_id, chash, json.dumps(report))
+            )
+            conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    return {
+        "report": report,
+        "cached": False,
+        "generated_at": None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Threat Intelligence endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/threat-intel/ips")
+async def get_threat_intel_all():
+    """Enrich all unique attacker IPs. Cache-first; cold start is slow."""
+    try:
+        with get_db_connection() as conn:
+            _ensure_ti_table(conn)
+            rows = conn.execute("""
+                SELECT
+                    source_ip,
+                    COUNT(*)                       AS session_count,
+                    MAX(start_time)                AS last_seen,
+                    MIN(start_time)                AS first_seen,
+                    MAX(country)                   AS country
+                FROM sessions
+                GROUP BY source_ip
+                ORDER BY session_count DESC
+            """).fetchall()
+            unique_ips = [dict(r) for r in rows]
+    except sqlite3.OperationalError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Enrich all IPs concurrently (cache makes this fast on warm runs)
+    async def _enrich_one(ip_row: dict) -> dict:
+        with get_db_connection() as conn:
+            _ensure_ti_table(conn)
+            enriched = await enrich_ip(ip_row["source_ip"], conn)
+        enriched["session_count"] = ip_row["session_count"]
+        enriched["last_seen"]     = ip_row["last_seen"]
+        enriched["first_seen"]    = ip_row["first_seen"]
+        enriched["country"]       = ip_row["country"] or ""
+        return enriched
+
+    results = await asyncio.gather(*[_enrich_one(r) for r in unique_ips])
+
+    # Sort: confirmed malicious first, then by abuse score, then by session count
+    def _sort_key(r):
+        vt_mal  = (r.get("virustotal") or {}).get("malicious", 0) or 0
+        abuse   = (r.get("abuseipdb") or {}).get("abuse_confidence_score", 0) or 0
+        return (-vt_mal, -abuse, -r.get("session_count", 0))
+
+    results.sort(key=_sort_key)
+    return {"ips": results}
+
+
+@app.get("/api/threat-intel/ip/{ip}")
+async def get_threat_intel_single(ip: str):
+    """Full enrichment + session history for one attacker IP."""
+    try:
+        with get_db_connection() as conn:
+            _ensure_ti_table(conn)
+            enriched = await enrich_ip(ip, conn)
+
+            sessions = conn.execute("""
+                SELECT session_id, start_time, end_time, protocol,
+                       username, status, command_count, country
+                FROM sessions
+                WHERE source_ip = ?
+                ORDER BY start_time DESC
+            """, (ip,)).fetchall()
+
+            session_list = []
+            for s in sessions:
+                sd = dict(s)
+                score, level = _compute_risk(sd["session_id"], conn)
+                sd["risk_level"] = level
+                sd["risk_score"] = score
+                tech_count = conn.execute(
+                    "SELECT COUNT(*) FROM attack_techniques WHERE session_id=?",
+                    (sd["session_id"],)
+                ).fetchone()[0]
+                sd["technique_count"] = tech_count
+                session_list.append(sd)
+
+        enriched["sessions"] = session_list
+        return enriched
+    except sqlite3.OperationalError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/threat-intel/blocklist")
+async def get_blocklist():
+    """Export confirmed malicious / high-abuse IPs as a plain-text blocklist."""
+    try:
+        with get_db_connection() as conn:
+            _ensure_ti_table(conn)
+            unique_ips = conn.execute(
+                "SELECT DISTINCT source_ip FROM sessions"
+            ).fetchall()
+
+        bad_ips: list[str] = []
+        for row in unique_ips:
+            ip = row[0]
+            with get_db_connection() as conn:
+                vt    = _get_cache(conn, ip, "virustotal") or {}
+                abuse = _get_cache(conn, ip, "abuseipdb") or {}
+
+            vt_bad    = (vt.get("malicious") or 0) > 0
+            abuse_bad = (abuse.get("abuse_confidence_score") or 0) >= 50
+            # Fallback: include Critical/High risk IPs even without TI data
+            if not vt_bad and not abuse_bad:
+                with get_db_connection() as conn:
+                    _, level = _compute_risk(ip, conn) if False else (0, "Low")
+                    sessions = conn.execute(
+                        "SELECT session_id FROM sessions WHERE source_ip=?", (ip,)
+                    ).fetchall()
+                    for s in sessions:
+                        _, level = _compute_risk(s[0], conn)
+                        if level in ("Critical", "High"):
+                            abuse_bad = True
+                            break
+
+            if vt_bad or abuse_bad:
+                bad_ips.append(ip)
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        lines = [
+            f"# AdaptiveWardens Blocklist — generated {now}",
+            f"# {len(bad_ips)} IP(s) — criteria: VT malicious > 0 OR AbuseIPDB >= 50%",
+            "# Compatible with: iptables, ufw, firewalld, plain IP lists",
+            "",
+        ] + bad_ips
+
+        content = "\n".join(lines) + "\n"
+        filename = f"blocklist-{datetime.now(timezone.utc).strftime('%Y%m%d')}.txt"
+        return Response(
+            content=content,
+            media_type="text/plain",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except sqlite3.OperationalError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------------------------------------------------------------------------

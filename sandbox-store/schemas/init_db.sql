@@ -171,3 +171,27 @@ CREATE TABLE IF NOT EXISTS persistent_state (
     PRIMARY KEY (source_ip, kind, name)
 );
 CREATE INDEX IF NOT EXISTS idx_persistent_ip ON persistent_state(source_ip);
+
+-- Threat Intelligence cache — enrichment results from VT, AbuseIPDB, ip-api.com.
+-- Keyed by (ioc_value, source_api) with TTL-based expiry. Global, not per-session.
+CREATE TABLE IF NOT EXISTS threat_intel_cache (
+    ioc_value   TEXT NOT NULL,
+    source_api  TEXT NOT NULL,   -- 'virustotal', 'abuseipdb', 'ipapi'
+    result_json TEXT NOT NULL,
+    cached_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expires_at  TIMESTAMP NOT NULL,
+    PRIMARY KEY (ioc_value, source_api)
+);
+CREATE INDEX IF NOT EXISTS idx_ti_cache_ioc     ON threat_intel_cache(ioc_value);
+CREATE INDEX IF NOT EXISTS idx_ti_cache_expires ON threat_intel_cache(expires_at);
+
+-- AI-generated SOC incident reports cached per session.
+-- content_hash is md5(commands+techniques+iocs JSON) so reports are
+-- regenerated only when the underlying data changes (open sessions grow).
+CREATE TABLE IF NOT EXISTS ai_reports (
+    session_id   TEXT PRIMARY KEY,
+    content_hash TEXT NOT NULL,
+    report_json  TEXT NOT NULL,
+    generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+);
