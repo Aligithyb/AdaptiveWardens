@@ -10,8 +10,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ ./src/
 COPY schemas/ ./schemas/
 
-# Create data directory
-RUN mkdir -p /data
+# Create data directory and set ownership for the app user
+RUN mkdir -p /data && chown -R 1001:1001 /data /app
 
 # Expose port
 EXPOSE 8001

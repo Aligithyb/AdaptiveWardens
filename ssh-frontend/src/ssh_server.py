@@ -824,8 +824,7 @@ def _aws_imds_creds() -> str:
         "Code": "Success",
         "LastUpdated": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "Type": "AWS-HMAC",
-        # nosemgrep: generic.secrets.security
-        "AccessKeyId": os.getenv("CANARY_AWS_ACCESS_KEY", "AKIAVLQNEXOPAY1PROD7"),
+        "AccessKeyId": os.getenv("CANARY_AWS_ACCESS_KEY", "AKIAVLQNEXOPAY1PROD7"),  # nosemgrep
         "SecretAccessKey": os.getenv("CANARY_AWS_SECRET_KEY", "nxp/FakeK3y+wJalrXUtnFEMI/K7MDENG/bPxRfi"),
         "Token": "IQoJb3JpZ2luX2VjEMj//////////wEaCXVzLWVhc3QtMSJHMEUCIQDNExoPay+FakeSessionToken+For+Prod+Role==",
         "Expiration": exp.strftime("%Y-%m-%dT%H:%M:%SZ"),
