@@ -492,7 +492,6 @@ jobs:
               httpFrontendFqdn="$HTTP_FQDN" \
               dashboardFrontendFqdn="$DASH_FQDN" \
               allowedCountries="${COUNTRIES_JSON}" \
-              rateLimitThreshold=200 \
             --output none
           echo "Application Gateway WAF deployed."
 
@@ -583,7 +582,6 @@ jobs:
               httpFrontendFqdn="$HTTP_FQDN" \
               dashboardFrontendFqdn="$DASH_FQDN" \
               allowedCountries="${COUNTRIES_JSON}" \
-              rateLimitThreshold=200 \
             --output none
           echo "Application Gateway WAF deployed."
 
