@@ -831,10 +831,15 @@ jobs:
             echo "  Remediation applied."
           fi
 
-          # Check OWASP ruleset version
+          # Check OWASP ruleset version (try both with and without properties prefix)
           RULESET=$(az network application-gateway waf-policy show \
             --name "$WAF_NAME" --resource-group "$RG" \
-            --query "properties.managedRules.managedRuleSets[0].ruleSetVersion" -o tsv 2>/dev/null || echo "")
+            --query "managedRules.managedRuleSets[0].ruleSetVersion" -o tsv 2>/dev/null || echo "")
+          if [ -z "$RULESET" ]; then
+            RULESET=$(az network application-gateway waf-policy show \
+              --name "$WAF_NAME" --resource-group "$RG" \
+              --query "properties.managedRules.managedRuleSets[0].ruleSetVersion" -o tsv 2>/dev/null || echo "")
+          fi
           if [ "$RULESET" = "3.2" ]; then
             echo "OK: OWASP CRS $RULESET"
           else
@@ -879,9 +884,16 @@ jobs:
             DRIFT=$((DRIFT + 1))
           fi
 
+          # provisioningState is at top-level in az network output, not under properties
           PROV=$(az network application-gateway show \
             --name "$GW_NAME" --resource-group "$RG" \
-            --query "properties.provisioningState" -o tsv)
+            --query "provisioningState" -o tsv)
+          if [ -z "$PROV" ]; then
+            # fallback: check under properties for older API versions
+            PROV=$(az network application-gateway show \
+              --name "$GW_NAME" --resource-group "$RG" \
+              --query "properties.provisioningState" -o tsv)
+          fi
           if [ "$PROV" = "Succeeded" ]; then
             echo "OK: Provisioning state = Succeeded"
           else
