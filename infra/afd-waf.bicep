@@ -4,7 +4,7 @@ param wafPolicyName string
 @description('Name of the Application Gateway')
 param appGwName string
 
-@description('Azure region (use same region as ACA — swedencentral)')
+@description('Azure region (use same as ACA — swedencentral)')
 param location string
 
 @description('FQDN of the HTTP honeypot ACA app')
@@ -16,20 +16,16 @@ param dashboardFrontendFqdn string
 @description('ISO country codes to allow (empty = all allowed)')
 param allowedCountries array = []
 
-@description('Max requests per IP per minute (0 = disabled)')
-param rateLimitThreshold int = 200
-
 var subnetName = 'appgw-subnet'
 var publicIpName = '${appGwName}-pip'
 var vnetName = '${appGwName}-vnet'
 
-// ── WAF Policy ──────────────────────────────────────────────────────────
 resource wafPolicy 'Microsoft.Network/applicationGatewayWebApplicationFirewallPolicies@2022-09-01' = {
   name: wafPolicyName
   location: location
   properties: {
     policySettings: {
-      enabledState: 'Enabled'
+      state: 'Enabled'
       mode: 'Prevention'
       requestBodyCheck: true
       fileUploadLimitInMb: 100
@@ -93,21 +89,19 @@ resource wafPolicy 'Microsoft.Network/applicationGatewayWebApplicationFirewallPo
         {
           ruleSetType: 'OWASP'
           ruleSetVersion: '3.2'
-          ruleSetAction: 'Block'
-          exclusions: [
-            {
-              matchVariable: 'RequestHeaderNames'
-              selector: 'User-Agent'
-              selectorMatchOperator: 'Equals'
-            }
-          ]
+        }
+      ]
+      exclusions: [
+        {
+          matchVariable: 'RequestHeaderNames'
+          selector: 'User-Agent'
+          selectorMatchOperator: 'Equals'
         }
       ]
     }
   }
 }
 
-// ── VNet + Subnet for App Gateway ──────────────────────────────────────
 resource vnet 'Microsoft.Network/virtualNetworks@2022-09-01' = {
   name: vnetName
   location: location
@@ -126,7 +120,6 @@ resource vnet 'Microsoft.Network/virtualNetworks@2022-09-01' = {
   }
 }
 
-// ── Public IP ───────────────────────────────────────────────────────────
 resource publicIp 'Microsoft.Network/publicIPAddresses@2022-09-01' = {
   name: publicIpName
   location: location
@@ -138,14 +131,11 @@ resource publicIp 'Microsoft.Network/publicIPAddresses@2022-09-01' = {
   }
 }
 
-// ── Application Gateway v2 WAF ─────────────────────────────────────────
 resource appGw 'Microsoft.Network/applicationGateways@2022-09-01' = {
   name: appGwName
   location: location
   dependsOn: [
     vnet
-    publicIp
-    wafPolicy
   ]
   properties: {
     sku: {
@@ -177,10 +167,6 @@ resource appGw 'Microsoft.Network/applicationGateways@2022-09-01' = {
       {
         name: 'port-80'
         properties: { port: 80 }
-      }
-      {
-        name: 'port-443'
-        properties: { port: 443 }
       }
     ]
     backendAddressPools: [
@@ -225,7 +211,7 @@ resource appGw 'Microsoft.Network/applicationGateways@2022-09-01' = {
     ]
     httpListeners: [
       {
-        name: 'honeypot-listener-80'
+        name: 'public-listener'
         properties: {
           frontendIPConfiguration: {
             id: resourceId('Microsoft.Network/applicationGateways/frontendIPConfigurations', appGwName, 'appGwFrontend')
@@ -234,65 +220,61 @@ resource appGw 'Microsoft.Network/applicationGateways@2022-09-01' = {
             id: resourceId('Microsoft.Network/applicationGateways/frontendPorts', appGwName, 'port-80')
           }
           protocol: 'Http'
-          hostName: ''
-          hostNames: []
           requireServerNameIndication: false
         }
       }
+    ]
+    urlPathMaps: [
       {
-        name: 'dashboard-listener-80'
+        name: 'aw-url-path-map'
         properties: {
-          frontendIPConfiguration: {
-            id: resourceId('Microsoft.Network/applicationGateways/frontendIPConfigurations', appGwName, 'appGwFrontend')
+          defaultBackendAddressPool: {
+            id: resourceId('Microsoft.Network/applicationGateways/backendAddressPools', appGwName, 'http-honeypool')
           }
-          frontendPort: {
-            id: resourceId('Microsoft.Network/applicationGateways/frontendPorts', appGwName, 'port-80')
+          defaultBackendHttpSettings: {
+            id: resourceId('Microsoft.Network/applicationGateways/backendHttpSettingsCollection', appGwName, 'https-honeypot-setting')
           }
-          protocol: 'Http'
-          hostName: ''
-          hostNames: []
-          requireServerNameIndication: false
+          pathRules: [
+            {
+              name: 'dashboard-path'
+              properties: {
+                paths: [
+                  '/dashboard*',
+                  '/dashboard/*'
+                ]
+                backendAddressPool: {
+                  id: resourceId('Microsoft.Network/applicationGateways/backendAddressPools', appGwName, 'dashboard-pool')
+                }
+                backendHttpSettings: {
+                  id: resourceId('Microsoft.Network/applicationGateways/backendHttpSettingsCollection', appGwName, 'https-dashboard-setting')
+                }
+              }
+            }
+          ]
         }
       }
     ]
     requestRoutingRules: [
       {
-        name: 'honeypot-rule'
+        name: 'main-rule'
         properties: {
           ruleType: 'PathBasedRouting'
           httpListener: {
-            id: resourceId('Microsoft.Network/applicationGateways/httpListeners', appGwName, 'honeypot-listener-80')
+            id: resourceId('Microsoft.Network/applicationGateways/httpListeners', appGwName, 'public-listener')
           }
-          backendAddressPool: {
-            id: resourceId('Microsoft.Network/applicationGateways/backendAddressPools', appGwName, 'http-honeypool')
-          }
-          backendHttpSettings: {
-            id: resourceId('Microsoft.Network/applicationGateways/backendHttpSettingsCollection', appGwName, 'https-honeypot-setting')
-          }
-        }
-      }
-      {
-        name: 'dashboard-rule'
-        properties: {
-          ruleType: 'Basic'
-          httpListener: {
-            id: resourceId('Microsoft.Network/applicationGateways/httpListeners', appGwName, 'dashboard-listener-80')
-          }
-          backendAddressPool: {
-            id: resourceId('Microsoft.Network/applicationGateways/backendAddressPools', appGwName, 'dashboard-pool')
-          }
-          backendHttpSettings: {
-            id: resourceId('Microsoft.Network/applicationGateways/backendHttpSettingsCollection', appGwName, 'https-dashboard-setting')
+          urlPathMap: {
+            id: resourceId('Microsoft.Network/applicationGateways/urlPathMaps', appGwName, 'aw-url-path-map')
           }
         }
       }
     ]
+    firewallPolicy: {
+      id: wafPolicy.id
+    }
+    enableHttp2: false
   }
 }
 
-// ── Outputs ─────────────────────────────────────────────────────────────
 output appGwPublicIp string = publicIp.properties.ipAddress
 output appGwId string = appGw.id
 output wafPolicyId string = wafPolicy.id
-output backendHoneypotFqdn string = httpFrontendFqdn
-output backendDashboardFqdn string = dashboardFrontendFqdn
