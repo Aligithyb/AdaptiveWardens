@@ -132,15 +132,10 @@ jobs:
       - name: Ensure VNET and ACA Environment (required for external TCP ingress)
         run: |
           RG="${{ env.AZURE_RG }}"
+          LOCATION="${{ env.AZURE_LOCATION }}"
           ACA_ENV="${{ env.AZURE_ACA_ENV }}"
           VNET_NAME="aw-aca-vnet"
           SUBNET_NAME="aca-infra-subnet"
-
-          # Use the existing ACA environment's location (avoids Azure policy region restrictions)
-          LOCATION=$(az containerapp env show --name "$ACA_ENV" --resource-group "$RG" \
-            --query location -o tsv 2>/dev/null || echo "swedencentral")
-
-          echo "Using location: $LOCATION"
 
           # Create VNet if missing
           if ! az network vnet show --name "$VNET_NAME" --resource-group "$RG" &>/dev/null; then
