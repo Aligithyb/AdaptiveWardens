@@ -10,6 +10,7 @@ import { IOCSummary } from '@/components/IOCSummary';
 import { MitreAttackMap } from '@/components/MitreAttackMap';
 import { MetricsStats } from '@/components/MetricsStats';
 import { Reports } from '@/components/Reports';
+import { ThreatIntelligence } from '@/components/ThreatIntelligence';
 
 const AttackHeatmap = dynamic(
   () => import('@/components/AttackHeatmap').then(m => m.AttackHeatmap),
@@ -52,6 +53,7 @@ export default function DashboardPage() {
           {activeView === 'mitre-attack' && <MitreAttackMap />}
           {activeView === 'metrics' && <MetricsStats />}
           {activeView === 'reports' && <Reports />}
+          {activeView === 'threat-intelligence' && <ThreatIntelligence />}
         </main>
       </div>
     </div>

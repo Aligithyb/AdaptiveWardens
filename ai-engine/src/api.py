@@ -5,6 +5,8 @@ from llm_provider import LLMProvider
 from response_cache import ResponseCache
 from extractor import extract_iocs
 from mitre import map_command_to_mitre
+from mitre_ai import classify_with_llm
+from report import generate_session_report
 from deterministic import lookup as deterministic_lookup
 
 app = FastAPI(title="AI Engine")
@@ -19,9 +21,32 @@ class CommandRequest(BaseModel):
     history: Optional[List[Dict]] = []
 
 
+class SessionSummaryRequest(BaseModel):
+    session: Dict
+    commands: List[Dict] = []
+    techniques: List[Dict] = []
+    iocs: List[Dict] = []
+
+
+def _resolve_mitre(command: str) -> list:
+    """Hybrid MITRE resolver: regex → cached AI verdict → fresh AI call."""
+    hits = map_command_to_mitre(command)
+    if hits:
+        return hits
+
+    cached = cache.get_mitre(command)
+    if cached is not None:
+        return cached
+
+    ai = classify_with_llm(command, llm)
+    # Cache even an empty list so we don't re-ask for the same unknown command.
+    cache.set_mitre(command, ai)
+    return ai
+
+
 @app.post("/generate-response")
 async def generate_response(req: CommandRequest):
-    mitre_techniques = map_command_to_mitre(req.command)
+    mitre_techniques = _resolve_mitre(req.command)
 
     # Tier-1 / C3: short-circuit deterministic commands. Free, instant, no tokens.
     det = deterministic_lookup(req.command, req.context)
@@ -76,6 +101,19 @@ async def mitre_match(req: MitreMatchRequest):
     return {
         "mitre_techniques": map_command_to_mitre(req.command),
     }
+
+
+@app.post("/summarize-session")
+async def summarize_session(req: SessionSummaryRequest):
+    """Generate a structured SOC incident report for a session."""
+    payload = {
+        "session": req.session,
+        "commands": req.commands,
+        "techniques": req.techniques,
+        "iocs": req.iocs,
+    }
+    report = generate_session_report(payload, llm)
+    return {"report": report}
 
 
 @app.get("/health")
