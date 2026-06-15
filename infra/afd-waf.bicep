@@ -257,6 +257,7 @@ resource appGw 'Microsoft.Network/applicationGateways@2022-09-01' = {
       {
         name: 'main-rule'
         properties: {
+          priority: 10
           ruleType: 'PathBasedRouting'
           httpListener: {
             id: resourceId('Microsoft.Network/applicationGateways/httpListeners', appGwName, 'public-listener')
