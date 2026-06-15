@@ -5,22 +5,16 @@
     "wafPolicyName": {
       "value": "aw-waf-policy"
     },
-    "frontDoorName": {
-      "value": "aw-afd"
+    "appGwName": {
+      "value": "aw-appgw"
     },
-    "honeyEndpointName": {
-      "value": "honeypot"
-    },
-    "dashEndpointName": {
-      "value": "dashboard"
+    "location": {
+      "value": "swedencentral"
     },
     "httpFrontendFqdn": {
       "value": ""
     },
     "dashboardFrontendFqdn": {
-      "value": ""
-    },
-    "dashboardBackendFqdn": {
       "value": ""
     },
     "allowedCountries": {
