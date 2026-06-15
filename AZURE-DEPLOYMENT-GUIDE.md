@@ -372,63 +372,18 @@ LA_ID=$(az monitor log-analytics workspace show \
   --workspace-name "$LOG_ANALYTICS" --resource-group "$RG" \
   --query id -o tsv)
 
-# ── 4. Virtual Network for ACA (required for external TCP ingress) ──────────
-echo "==> VNet: $ACA_VNET_NAME"
-if ! az network vnet show --name "$ACA_VNET_NAME" --resource-group "$RG" &>/dev/null; then
-  az network vnet create \
-    --resource-group "$RG" \
-    --name "$ACA_VNET_NAME" \
-    --location "$LOCATION" \
-    --address-prefix "10.2.0.0/16" \
-    --tags Project=AdaptiveWardens
-  echo "  VNet created."
-else
-  echo "  Already exists."
-fi
-ACA_SUBNET_ID=$(az network vnet subnet show --name "$ACA_SUBNET_NAME" --vnet-name "$ACA_VNET_NAME" --resource-group "$RG" --query id -o tsv 2>/dev/null || echo "")
-if [ -z "$ACA_SUBNET_ID" ]; then
-  az network vnet subnet create \
-    --resource-group "$RG" \
-    --vnet-name "$ACA_VNET_NAME" \
-    --name "$ACA_SUBNET_NAME" \
-    --address-prefix "10.2.0.0/23" \
-    --delegations "Microsoft.App/environments"
-  ACA_SUBNET_ID=$(az network vnet subnet show --name "$ACA_SUBNET_NAME" --vnet-name "$ACA_VNET_NAME" --resource-group "$RG" --query id -o tsv)
-  echo "  Subnet created."
-else
-  echo "  Subnet already exists."
-fi
-
-# ── 5. Container Apps Environment (with VNET) ──────────────────────────────
+# ── 4. Container Apps Environment ───────────────────────────────────────────
 echo "==> ACA Environment: $ACA_ENV"
-if az containerapp env show --name "$ACA_ENV" --resource-group "$RG" &>/dev/null; then
-  HAS_VNET=$(az containerapp env show --name "$ACA_ENV" --resource-group "$RG" --query "properties.vnetConfiguration.infrastructureSubnetId" -o tsv 2>/dev/null || echo "")
-  if [ -n "$HAS_VNET" ]; then
-    echo "  Already exists with VNET."
-  else
-    echo "  WARNING: Recreating env without VNET. Apps will be deleted first."
-    for APP in aw-sandbox-store aw-ai-engine aw-dashboard-backend aw-ssh-frontend aw-http-frontend aw-dashboard-frontend; do
-      az containerapp delete --name "$APP" --resource-group "$RG" --yes 2>/dev/null || true
-    done
-    az containerapp env delete --name "$ACA_ENV" --resource-group "$RG" --yes
-    az containerapp env create \
-      --resource-group "$RG" \
-      --name "$ACA_ENV" \
-      --location "$LOCATION" \
-      --logs-workspace-id "$LA_ID" \
-      --infrastructure-subnet-resource-id "$ACA_SUBNET_ID" \
-      --tags Project=AdaptiveWardens
-    echo "  Recreated with VNET."
-  fi
-else
+if ! az containerapp env show --name "$ACA_ENV" --resource-group "$RG" &>/dev/null; then
   az containerapp env create \
     --resource-group "$RG" \
     --name "$ACA_ENV" \
     --location "$LOCATION" \
     --logs-workspace-id "$LA_ID" \
-    --infrastructure-subnet-resource-id "$ACA_SUBNET_ID" \
     --tags Project=AdaptiveWardens
-  echo "  Created with VNET."
+  echo "  Created."
+else
+  echo "  Already exists."
 fi
 
 # ── 5. Storage Account + File Share ─────────────────────────────────────────
@@ -1188,7 +1143,6 @@ export AZURE_LOCATION=eastus          # or: westeurope, eastus2, etc.
 export AZURE_RG=AdaptiveWardens
 export AZURE_ACR=awregistry
 export AZURE_ACA_ENV=aw-ca-env
-export AZURE_ACA_VNET_NAME=aw-aca-vnet   # VNet for ACA external TCP ingress
 export AZURE_STORAGE_ACCOUNT=awstorage  # Must be GLOBALLY UNIQUE across all Azure
 # If awstorage is taken, pick a variant like awstorage42 or awstorageproject
 
@@ -1203,12 +1157,11 @@ bash scripts/azure-setup.sh
 | 1 | Resource Group | `az group create --name AdaptiveWardens --location eastus` |
 | 2 | Container Registry | `az acr create --name awregistry --sku Basic --admin-enabled true` |
 | 3 | Log Analytics | `az monitor log-analytics workspace create --workspace-name aw-logs` |
-| 4 | VNet + Subnet (for ACA) | `az network vnet create ... && az network vnet subnet create --delegations Microsoft.App/environments` |
-| 5 | ACA Environment | `az containerapp env create --name aw-ca-env --infrastructure-subnet-resource-id <SUBNET_ID>` |
-| 6 | Storage Account | `az storage account create --name awstorage --sku Standard_LRS` |
-| 7 | File Share | `az storage share create --name awdata --quota 10` |
-| 8 | Key Vault | `az keyvault create --name aw-kv` |
-| 9 | Service Principal | `az ad sp create-for-rbac --name AdaptiveWardensGH --role Contributor` |
+| 4 | ACA Environment | `az containerapp env create --name aw-ca-env --logs-workspace-id <LA_ID>` |
+| 5 | Storage Account | `az storage account create --name awstorage --sku Standard_LRS` |
+| 6 | File Share | `az storage share create --name awdata --quota 10` |
+| 7 | Key Vault | `az keyvault create --name aw-kv` |
+| 8 | Service Principal | `az ad sp create-for-rbac --name AdaptiveWardensGH --role Contributor` |
 
 ### What the script outputs:
 
