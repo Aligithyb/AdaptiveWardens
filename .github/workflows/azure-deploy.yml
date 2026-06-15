@@ -129,6 +129,24 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      - name: Ensure ACA environment exists
+        run: |
+          ACA_ENV="${{ env.AZURE_ACA_ENV }}"
+          RG="${{ env.AZURE_RG }}"
+          if ! az containerapp env show --name "$ACA_ENV" --resource-group "$RG" &>/dev/null; then
+            echo "ACA environment not found — recreating..."
+            LOCATION=$(az group show --name "$RG" --query location -o tsv)
+            az containerapp env create \
+              --resource-group "$RG" \
+              --name "$ACA_ENV" \
+              --location "$LOCATION" \
+              --tags Project=AdaptiveWardens \
+              --output none
+            echo "Recreated."
+          else
+            echo "ACA environment exists."
+          fi
+
       - name: Register Azure File Share with ACA Environment
         run: |
           az containerapp env storage set \
