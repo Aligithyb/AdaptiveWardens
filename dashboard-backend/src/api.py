@@ -18,12 +18,11 @@ from threat_intel import enrich_ip, _ensure_ti_table, _get_cache
 
 app = FastAPI(title="SOC Dashboard API")
 
-# nosemgrep: python.fastapi.security.wildcard-cors.wildcard-cors
 # The backend is internal-only (no external ingress) with API-key auth on all
 # non-health endpoints, so broad CORS is safe for the SOC dashboard use case.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # nosemgrep
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
