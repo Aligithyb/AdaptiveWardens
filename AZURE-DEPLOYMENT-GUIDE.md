@@ -41,6 +41,13 @@ We are deploying 6 containerized services to Azure Container Apps (ACA):
 - SSH frontend uses TCP ingress (not HTTP) on port 2222
 - Secrets are stored as GitHub Secrets and injected via `--secrets` + `secretref:` in `az containerapp create/update`
 - Dashboard-backend reads sandbox-store's SQLite file directly (same volume mount)
+- **Azure Front Door Standard** sits in front of the HTTP honeypot and SOC dashboard, providing:
+  - OWASP CRS 3.2 WAF (SQLi, XSS, LFI, RCE detection at the edge)
+  - Geo-filtering (optional: restrict to target countries)
+  - Per-IP rate limiting
+  - Layer 7 DDoS protection
+  - TLS termination with auto-renewing certs
+  - Real attacker IP via `X-Forwarded-For` header
 
 ---
 
@@ -82,7 +89,7 @@ az login  # opens browser to authenticate
 
 Here is every file we will create or modify, grouped by location:
 
-### Files to CREATE (10 files):
+### Files to CREATE (13 files):
 
 | # | File path | Content length |
 |---|-----------|---------------|
@@ -96,13 +103,18 @@ Here is every file we will create or modify, grouped by location:
 | 8 | `.github/workflows/azure-deploy.yml` | 448 lines |
 | 9 | `.github/workflows/rollback.yml` | 98 lines |
 | 10 | `docs/aca-deployment-reference.md` | 159 lines |
+| 11 | `infra/afd-waf.bicep` | Bicep template — Front Door profile + WAF policy + security policy |
+| 12 | `infra/afd-waf.parameters.json` | Parameters for Front Door Bicep deployment |
 
-### Files to MODIFY (2 files):
+### Files to MODIFY (4 files):
 
 | # | File path | Change |
 |---|-----------|--------|
-| 11 | `dashboard-frontend/Dockerfile` | Rewrite to multi-stage build |
-| 12 | `dashboard-frontend/next.config.mjs` | Add `output: 'standalone'` |
+| 13 | `dashboard-frontend/Dockerfile` | Rewrite to multi-stage build |
+| 14 | `dashboard-frontend/next.config.mjs` | Add `output: 'standalone'` |
+| 15 | `http-frontend/src/http_server.py` | Add Front Door header handling (`X-Forwarded-For`, `X-Azure-FDID`, `X-Azure-Ref`) |
+| 16 | `aca-specs/http-frontend.yaml` | Add Front Door WAF comment documentation |
+| 17 | `aca-specs/dashboard-frontend.yaml` | Add Front Door WAF comment documentation |
 
 ### Files that stay UNCHANGED (they are already correct):
 
@@ -1206,7 +1218,13 @@ Add each secret one by one. Use the **exact names** shown below.
 | `LLM_PER_IP_RATE_LIMIT_WINDOW` | `60` | Rate limit window in seconds |
 | `DASHBOARD_API_KEY` | `generate-a-random-32-char-string` | **Important:** generate this with `openssl rand -hex 32` or use a UUID. This is the shared secret between dashboard-frontend and dashboard-backend. |
 
-**After adding all secrets**, verify by going to Settings → Secrets → Actions. You should see at least 20 secrets listed.
+### Front Door secrets (optional — for WAF geo-filtering)
+
+| Secret name | What to paste | How to get it |
+|-------------|---------------|---------------|
+| `FRONTDOOR_FDID` | Front Door instance ID | `az afd profile show --name aw-afd -g AdaptiveWardens --query properties.frontDoorId -o tsv` (after first deployment) |
+
+**After adding all secrets**, verify by going to Settings → Secrets → Actions. You should see at least 21 secrets listed.
 
 ---
 
@@ -1250,11 +1268,18 @@ Go to GitHub → Actions → "Azure Container Apps Deploy" → "Run workflow" �
   → ssh-frontend: creating/updating (TCP 2222)... waiting... ✓
   → http-frontend: creating/updating (HTTP 8080)... waiting... ✓
   → dashboard-frontend: creating/updating (HTTP 3000)... waiting... ✓
-✓ Verify external endpoints (curl /health)
-✓ Deployment summary with all FQDNs
+✓ Capture ACA FQDNs for Front Door origins
+✓ Deploy Front Door + WAF (Bicep template)
+  → WAF Policy (OWASP CRS 3.2, geo-filter, rate-limit)
+  → Front Door Standard profile
+  → 2 endpoints (honeypot, dashboard)
+  → Origin groups + origins pointing to ACA FQDNs
+  → Routes with HTTPS redirect + WAF association
+✓ Retrieving Front Door endpoints
+✓ Deployment summary with all ACA + Front Door URLs
 ```
 
-**Total time:** 8-15 minutes for first deployment (builds + image push + container provisioning). Subsequent deployments are faster (layer caching, updates instead of creates).
+**Total time:** 10-18 minutes for first deployment (builds + image push + container provisioning + Front Door provisioning). Subsequent deployments are faster (layer caching, updates instead of creates).
 
 ---
 
@@ -1268,27 +1293,54 @@ In the workflow output, the final step prints:
 ========================================
   Deployment complete (sha: a1b2c3d...)
 ========================================
+  === Azure Container Apps ===
   aw-sandbox-store           (internal)
   aw-ai-engine               (internal)
   aw-dashboard-backend       (internal)
   aw-ssh-frontend            awesome-bush-1234.eastus.azurecontainerapps.io:2222
-  aw-http-frontend           awesome-tree-5678.eastus.azurecontainerapps.io
-  aw-dashboard-frontend      awesome-water-9012.eastus.azurecontainerapps.io
+  aw-http-frontend           awesome-tree-5678.eastus.azurecontainerapps.io (ACA origin)
+  aw-dashboard-frontend      awesome-water-9012.eastus.azurecontainerapps.io (ACA origin)
+
+  === Azure Front Door (WAF Protected) ===
+  HTTP Honeypot              https://honeypot-xxxxx.azurefd.net
+  SOC Dashboard              https://dashboard-xxxxx.azurefd.net
 ========================================
 ```
 
+**Always use the Front Door URLs** (`*.azurefd.net`) for external access to the HTTP honeypot and SOC dashboard. The ACA origin URLs are for Front Door's internal use only and bypass WAF protection.
+
 Save the FQDNs for the external services.
 
-### 9.2 Test HTTP honeypot
+### 9.2 Test HTTP honeypot (via Front Door)
 
 ```bash
-# Replace with your actual FQDN
-curl -s https://awesome-tree-5678.eastus.azurecontainerapps.io/health
+# Replace with your actual Front Door hostname
+FD_HOST="honeypot-xxxxx.azurefd.net"
+
+# Test health endpoint
+curl -s https://$FD_HOST/health
 # Expected: {"status":"healthy"}
 
+# Test root (should show NexoPay login page)
+curl -s https://$FD_HOST | head -5
+# Expected: <!DOCTYPE html> ... NexoPay — Employee Portal
+
+# Test WAF: SQL injection attempt (should get 403 blocked)
+curl -s -o /dev/null -w "%{http_code}" "https://$FD_HOST/?id=1' UNION SELECT * FROM users--"
+# Expected: 403 (blocked by WAF)
+
 # Open in browser:
-# https://awesome-tree-5678.eastus.azurecontainerapps.io
+# https://$FD_HOST
 # You should see the attacker web terminal page
+```
+
+### 9.2b Bypass test (direct ACA access)
+```bash
+# Direct ACA origin access still works but bypasses WAF
+ACA_HTTP=$(az containerapp show --name aw-http-frontend -g AdaptiveWardens \
+  --query properties.configuration.ingress.fqdn -o tsv)
+curl -s https://$ACA_HTTP/health
+# Expected: still works, but no WAF protection
 ```
 
 ### 9.3 Test SSH honeypot
@@ -1299,14 +1351,17 @@ ssh root@awesome-bush-1234.eastus.azurecontainerapps.io -p 2222
 # You should get a fake Linux shell
 ```
 
-### 9.4 Test SOC Dashboard
+### 9.4 Test SOC Dashboard (via Front Door)
 
 ```bash
-curl -s https://awesome-water-9012.eastus.azurecontainerapps.io/health
+FD_HOST="dashboard-xxxxx.azurefd.net"
+
+# Test health
+curl -s https://$FD_HOST/health
 # Expected: {"status":"healthy"}
 
 # Open in browser:
-# https://awesome-water-9012.eastus.azurecontainerapps.io
+# https://$FD_HOST
 # Login with password: gradproject2025
 # (or whatever you set DASHBOARD_PASSWORD to)
 ```
@@ -1418,6 +1473,81 @@ ACA automatically resolves container app names within the same environment. No s
 | ai-engine | Internal | 8002 | HTTP | (not accessible from internet) |
 | dashboard-backend | Internal | 8003 | HTTP | (not accessible from internet) |
 
+### Azure Front Door + WAF Architecture
+
+**Azure Front Door Standard** sits at the network edge, protecting the HTTP honeypot and SOC dashboard:
+
+```
+Attacker / SOC Analyst
+        |
+        ▼
+┌─────────────────────────────────────────────┐
+│         Azure Front Door Standard           │
+│                                             │
+│  ┌───────────────────────────────────────┐  │
+│  │      WAF Policy (aw-waf-policy)       │  │
+│  │  ┌─────────────────────────────────┐  │  │
+│  │  │ OWASP CRS 3.2 (Managed Rules)   │  │  │
+│  │  │ • SQL Injection                 │  │  │
+│  │  │ • Cross-Site Scripting (XSS)    │  │  │
+│  │  │ • Local File Inclusion (LFI)    │  │  │
+│  │  │ • Remote Code Execution (RCE)   │  │  │
+│  │  │ • Path Traversal                │  │  │
+│  │  └─────────────────────────────────┘  │  │
+│  │  ┌─────────────────────────────────┐  │  │
+│  │  │ Custom Rules                    │  │  │
+│  │  │ • Geo-filtering (country allow) │  │  │
+│  │  │ • Per-IP rate limiting          │  │  │
+│  │  │ • Block suspicious user-agents  │  │  │
+│  │  │ • Block direct origin access    │  │  │
+│  │  └─────────────────────────────────┘  │  │
+│  └───────────────────────────────────────┘  │
+│                                             │
+│  ┌──────────────┐   ┌──────────────────┐    │
+│  │ Honeypot Endp│   │ Dashboard Endp   │    │
+│  │ honeypot-*   │   │ dashboard-*      │    │
+│  │ .azurefd.net │   │ .azurefd.net     │    │
+│  └──────┬───────┘   └───────┬──────────┘    │
+└─────────┼───────────────────┼────────────────┘
+          │                   │
+          ▼                   ▼
+┌──────────────────┐  ┌──────────────────┐
+│ aw-http-frontend │  │ aw-dashboard-    │
+│ (ACA origin)     │  │ frontend (ACA)   │
+│ Port 8080        │  │ Port 3000        │
+│ HTTPS only       │  │ HTTPS only       │
+└──────────────────┘  └──────────────────┘
+```
+
+#### Key behaviors:
+- **Attacker IP**: Front Door sets `X-Forwarded-For` to the real client IP. The http-frontend code already extracts this (first value in the header).
+- **TLS termination**: Front Door handles HTTPS. By default, it forwards to ACA over HTTPS (end-to-end encrypted).
+- **WAF blocked requests**: Never reach the origin. The attacker receives a 403 with a reference ID.
+- **Geo-filtering**: Optional. Deploy with empty `allowedCountries` to allow all (recommended for honeypot data collection).
+- **Rate limiting**: 200 requests/minute per client IP (customizable via Bicep parameter).
+- **DDoS protection**: Edge-level volumetric attack absorption (included with Front Door Standard).
+
+#### Front Door resources created by infra/afd-waf.bicep:
+| Resource | Type | Name |
+|----------|------|------|
+| WAF Policy | `Microsoft.Network/frontDoorWebApplicationFirewallPolicies` | `aw-waf-policy` |
+| Front Door Profile | `Microsoft.Cdn/profiles` | `aw-afd` |
+| Honeypot Endpoint | `Microsoft.Cdn/profiles/afdEndpoints` | `honeypot` |
+| Dashboard Endpoint | `Microsoft.Cdn/profiles/afdEndpoints` | `dashboard` |
+| Honeypot Origin Group | `Microsoft.Cdn/profiles/originGroups` | `honeypot-origin-group` |
+| Dashboard Origin Group | `Microsoft.Cdn/profiles/originGroups` | `dashboard-origin-group` |
+| Security Policy | `Microsoft.Cdn/profiles/securityPolicies` | `aw-afd-waf-policy` |
+
+#### Headers added by Front Door (visible to the origin):
+| Header | Value | Used by |
+|--------|-------|---------|
+| `X-Forwarded-For` | `<client-ip>, <edge-ip>` | http-frontend (real attacker IP) |
+| `X-Forwarded-Proto` | `http` or `https` | http-frontend (protocol detection) |
+| `X-Forwarded-Host` | Original host header | http-frontend (host detection) |
+| `X-Azure-ClientIP` | `<client-ip>` | http-frontend (fallback IP source) |
+| `X-Azure-Ref` | `<correlation-id>` | http-frontend (request tracing) |
+| `X-Azure-FDID` | `<front-door-id>` | http-frontend (FD verification) |
+
 ### Required Environment Variables Per Service
 
 **sandbox-store:**
@@ -1452,6 +1582,7 @@ ACA automatically resolves container app names within the same environment. No s
 - `PYTHONUNBUFFERED=1`
 - `SANDBOX_URL=http://aw-sandbox-store`
 - `AI_ENGINE_URL=http://aw-ai-engine`
+- `FRONTDOOR_FDID=` (optional — if set, validates X-Azure-FDID header)
 
 **dashboard-backend:**
 - `PYTHONUNBUFFERED=1`
@@ -1467,7 +1598,7 @@ ACA automatically resolves container app names within the same environment. No s
 
 ## 12. Cost Breakdown
 
-### Azure Infrastructure ($58/month)
+### Azure Infrastructure ($78/month)
 
 | Resource | SKU | Monthly Cost |
 |----------|-----|-------------|
@@ -1482,7 +1613,9 @@ ACA automatically resolves container app names within the same environment. No s
 | dashboard-frontend (0.5 CPU, 1 GB RAM) | Consumption, always-on | ~$6.00 |
 | Storage Account + File Share (10 GB) | Standard LRS | ~$2.00 |
 | Key Vault | Standard | ~$0.06 |
-| **Total** | | **~$58.00** |
+| Azure Front Door Standard | Standard | ~$20.00 |
+| Front Door WAF Policy | Standard | ~$5.00 |
+| **Total** | | **~$83.00** |
 
 ### Savings tip
 Set `--min-replicas 0` on non-critical services (dashboard-frontend, dashboard-backend) — they scale to zero when idle. Only sandbox-store and ai-engine need to stay warm for SSH/HTTP responsiveness.
@@ -1577,6 +1710,40 @@ export AZURE_STORAGE_ACCOUNT=awstorage42
 bash scripts/azure-setup.sh
 ```
 Update `STORAGE_ACCOUNT` and `STORAGE_KEY` GitHub secrets.
+
+### Problem: Front Door WAF blocks legitimate traffic
+
+**Cause 1:** Geo-filtering is blocking a country you want to allow.
+**Fix:** Redeploy with updated allowed countries:
+```bash
+# Use the AFD-only workflow input:
+# allowed_countries: "US,GB,CA,AU,DE,FR,NL,SE,NO,DK,FI,IE,JP,SG,BR,IN"
+```
+Or via CLI:
+```bash
+az deployment group create -g AdaptiveWardens --template-file infra/afd-waf.bicep \
+  --parameters wafPolicyName=aw-waf-policy frontDoorName=aw-afd \
+    honeyEndpointName=honeypot dashEndpointName=dashboard \
+    httpFrontendFqdn="$HTTP_FQDN" dashboardFrontendFqdn="$DASH_FQDN" \
+    dashboardBackendFqdn="$DASH_BACKEND_FQDN" \
+    allowedCountries='["US","GB","CA"]' rateLimitThreshold=200
+```
+
+**Cause 2:** Rate limit is too aggressive.
+**Fix:** Increase `rateLimitThreshold` in the Bicep parameters (default: 200/min).
+
+**Cause 3:** OWASP rules are false-positives for the dashboard.
+**Fix:** Add exclusions to the WAF managed rules in `infra/afd-waf.bicep`.
+
+### Problem: Front Door shows "Origin not reachable"
+
+**Cause:** The ACA origin FQDNs have changed (e.g., after re-deploying the ACA environment).
+**Fix:** Run the "Azure Container Apps Deploy" workflow with `afd_only=true` to update Front Door origins with the current ACA FQDNs.
+
+### Problem: X-Forwarded-For shows Front Door IP instead of real client IP
+
+**Cause:** The network flow is direct to ACA instead of through Front Door.
+**Fix:** Ensure clients access the Front Door endpoint (`*.azurefd.net`) instead of the ACA origin URL (`*.azurecontainerapps.io`). The http-frontend code extracts the first IP from X-Forwarded-For when present.
 
 ### Problem: Need to reset the service principal password
 

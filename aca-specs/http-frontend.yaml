@@ -8,6 +8,17 @@ properties:
     ingress:
       external: true
       targetPort: 8080
+      # ── Azure Front Door WAF ─────────────────────────────────────────
+      # This app sits behind Azure Front Door Standard. Inbound traffic
+      # from the Internet arrives via Front Door, which applies:
+      #   - OWASP CRS 3.2 (SQLi, XSS, LFI, RCE, etc.)
+      #   - Geo-filtering
+      #   - Rate limiting per client IP
+      #   - DDoS protection at the edge
+      # The real client IP is available in the X-Forwarded-For header.
+      # For production, add ipSecurityRestrictions to allow only Front
+      # Door's backend IP ranges (published weekly by Azure).
+      # ─────────────────────────────────────────────────────────────────
     registries:
       - server: awreg8802.azurecr.io
         username: awreg8802
