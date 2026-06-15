@@ -124,6 +124,8 @@ jobs:
     concurrency: aca-deploy   # prevents parallel deploys from conflicting
 
     steps:
+      - uses: actions/checkout@v4
+
       - name: Log in to Azure
         uses: azure/login@v2
         with:
