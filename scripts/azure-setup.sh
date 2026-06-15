@@ -48,7 +48,7 @@ echo "==========================================================================
 echo ""
 
 # ── 1. Resource Group ────────────────────────────────────────────────────────
-echo "[1/8] Resource Group: $RG"
+echo "[1/9] Resource Group: $RG"
 az group create \
   --name "$RG" \
   --location "$LOCATION" \
@@ -57,7 +57,7 @@ az group create \
 echo "  Done."
 
 # ── 2. Azure Container Registry ──────────────────────────────────────────────
-echo "[2/8] Azure Container Registry: $ACR_NAME"
+echo "[2/9] Azure Container Registry: $ACR_NAME"
 if ! az acr show --name "$ACR_NAME" --resource-group "$RG" &>/dev/null; then
   az acr create \
     --resource-group "$RG" \
@@ -81,7 +81,7 @@ ACR_PASSWORD=$(az acr credential show \
 echo "  Login server: $ACR_LOGIN_SERVER"
 
 # ── 3. Log Analytics Workspace ───────────────────────────────────────────────
-echo "[3/8] Log Analytics Workspace: $LOG_ANALYTICS"
+echo "[3/9] Log Analytics Workspace: $LOG_ANALYTICS"
 if ! az monitor log-analytics workspace show \
   --workspace-name "$LOG_ANALYTICS" \
   --resource-group "$RG" &>/dev/null; then
@@ -105,8 +105,13 @@ LA_KEY=$(az monitor log-analytics workspace get-shared-keys \
   --resource-group "$RG" \
   --query primarySharedKey -o tsv)
 
+LA_WORKSPACE_ID=$(az monitor log-analytics workspace show \
+  --workspace-name "$LOG_ANALYTICS" \
+  --resource-group "$RG" \
+  --query id -o tsv)
+
 # ── 4. Container Apps Environment ────────────────────────────────────────────
-echo "[4/8] ACA Environment: $ACA_ENV"
+echo "[4/9] ACA Environment: $ACA_ENV"
 if ! az containerapp env show \
   --name "$ACA_ENV" \
   --resource-group "$RG" &>/dev/null; then
@@ -124,7 +129,7 @@ else
 fi
 
 # ── 5. Storage Account ───────────────────────────────────────────────────────
-echo "[5/8] Storage Account: $STORAGE_ACCOUNT"
+echo "[5/9] Storage Account: $STORAGE_ACCOUNT"
 if ! az storage account show \
   --name "$STORAGE_ACCOUNT" \
   --resource-group "$RG" &>/dev/null; then
@@ -148,7 +153,7 @@ STORAGE_KEY=$(az storage account keys list \
   --query "[0].value" -o tsv)
 
 # ── 6. Azure File Share ──────────────────────────────────────────────────────
-echo "[6/8] File Share: $FILE_SHARE"
+echo "[6/9] File Share: $FILE_SHARE"
 SHARE_EXISTS=$(az storage share exists \
   --name "$FILE_SHARE" \
   --account-name "$STORAGE_ACCOUNT" \
@@ -166,8 +171,19 @@ else
   echo "  Already exists — skipping."
 fi
 
+# ── 6b. Compliance Evidence Container ─────────────────────────────────────────
+echo "[6b/9] Compliance evidence container..."
+az storage container create \
+  --name "compliance-evidence" \
+  --account-name "$STORAGE_ACCOUNT" \
+  --account-key "$STORAGE_KEY" \
+  --public-access off \
+  --fail-on-exist \
+  --output none 2>/dev/null || echo "  Already exists — skipping."
+echo "  Created (private, immutable-ready)."
+
 # ── 7. Key Vault ─────────────────────────────────────────────────────────────
-echo "[7/8] Key Vault: $KEY_VAULT"
+echo "[7/9] Key Vault: $KEY_VAULT"
 if ! az keyvault show \
   --name "$KEY_VAULT" \
   --resource-group "$RG" &>/dev/null; then
@@ -195,7 +211,7 @@ else
 fi
 
 # ── 8. Service Principal for GitHub Actions ──────────────────────────────────
-echo "[8/8] Service Principal: $SP_NAME"
+echo "[8/9] Service Principal: $SP_NAME"
 SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 SP_EXISTS=$(az ad sp list \
   --display-name "$SP_NAME" \
@@ -237,9 +253,14 @@ echo "  │ ACR_USERNAME                │ $ACR_NAME"
 echo "  │ ACR_PASSWORD                │ $ACR_PASSWORD"
 echo "  │ AZURE_RG                    │ $RG"
 echo "  │ AZURE_ACA_ENV               │ $ACA_ENV"
+echo "  │ AZURE_LOCATION              │ $LOCATION"
 echo "  │ STORAGE_ACCOUNT             │ $STORAGE_ACCOUNT"
 echo "  │ STORAGE_KEY                 │ $STORAGE_KEY"
 echo "  │ FILE_SHARE                  │ $FILE_SHARE"
+echo "  │ KEY_VAULT                   │ $KEY_VAULT"
+echo "  │ AZURE_LOG_ANALYTICS         │ $LOG_ANALYTICS"
+echo "  │ LA_WORKSPACE_ID             │ $LA_WORKSPACE_ID"
+echo "  │ AZURE_SUBSCRIPTION_ID       │ $SUBSCRIPTION_ID"
 echo "  └─────────────────────────────┴───────────────────────────────────────────┘"
 echo ""
 echo "  AZURE_CREDENTIALS (paste this entire JSON into the GitHub Secret):"
@@ -265,6 +286,17 @@ echo "  CANARY_STRIPE_KEY         → canarytokens.org (optional)"
 echo "  CANARY_DNS_HOSTNAME       → canarytokens.org (optional)"
 echo "  DASHBOARD_API_KEY         → run: openssl rand -hex 32"
 echo ""
+echo "============================================================================="
+echo "  COMPLIANCE SECRETS (add these too for compliance automation):"
+echo "============================================================================="
+echo "  These are automatically captured from your Azure resources above:"
+echo "    AZURE_LOG_ANALYTICS  = $LOG_ANALYTICS"
+echo "    LA_WORKSPACE_ID      = $LA_WORKSPACE_ID"
+echo "    KEY_VAULT            = $KEY_VAULT"
+echo "    AZURE_SUBSCRIPTION_ID = $SUBSCRIPTION_ID"
+echo "    AZURE_LOCATION       = $LOCATION"
+echo ""
+echo "  Add all of the above (including AZURE_LOCATION) as GitHub Secrets."
 echo "  After adding all secrets, push to main to trigger deployment."
 echo "  Delete .azure-sp-credentials.json once you've saved the secret."
 echo "============================================================================="
