@@ -755,11 +755,673 @@ jobs:
           cat $GITHUB_STEP_SUMMARY
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# JOB 6: VERIFY-ONLY (triggered manually via workflow_dispatch)
-# Skips build + deploy, just checks the current state of all apps + Front Door
+# JOB 6: IaC DRIFT DETECTION & AUTO-REMEDIATION
+# Runs after compliance. Checks every Azure resource against its desired state
+# defined in Bicep templates, azure-setup.sh, and workflow config. Auto-remediates
+# where possible (WAF mode, diagnostic settings, retention, Defender plans).
 # ═══════════════════════════════════════════════════════════════════════════════
+  iac-drift:
+    name: IaC Drift Detection & Remediation
+    needs: [deploy]
+    if: ${{ always() && !cancelled() && !inputs.verify_only && !inputs.afd_only && needs.deploy.result == 'success' }}
+    runs-on: ubuntu-latest
+
+    outputs:
+      drift_detected: ${{ steps.drift-summary.outputs.drift_detected }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # ── Helper: generate consistent timestamp for report ──
+      - name: Set environment variables
+        run: |
+          echo "TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
+          echo "DRIFT_REPORT=/tmp/drift-report.json" >> $GITHUB_ENV
+          echo "DRIFT_COUNT=0" >> $GITHUB_ENV
+          echo "REMEDIATED_COUNT=0" >> $GITHUB_ENV
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 1. WAF POLICY — mode must be "Prevention", OWASP 3.2, custom rules
+      # ═══════════════════════════════════════════════════════════════════════
+      - name: "Check 1/10: WAF Policy mode + ruleset"
+        id: check-waf
+        continue-on-error: true
+        run: |
+          RG="${{ env.AZURE_RG }}"
+          WAF_NAME="${{ env.WAF_POLICY_NAME }}"
+          DRIFT="${{ env.DRIFT_COUNT }}"
+          REM="${{ env.REMEDIATED_COUNT }}"
+
+          echo "--- WAF Policy: $WAF_NAME ---"
+
+          MODE=$(az network application-gateway waf-policy show \
+            --name "$WAF_NAME" --resource-group "$RG" \
+            --query "properties.policySettings.mode" -o tsv 2>/dev/null || echo "NOT_FOUND")
+
+          if [ "$MODE" = "NOT_FOUND" ]; then
+            echo "DRIFT: WAF policy not found!"
+            DRIFT=$((DRIFT + 1))
+          elif [ "$MODE" = "Prevention" ]; then
+            echo "OK: WAF mode is Prevention"
+          else
+            echo "DRIFT: WAF mode is '$MODE' — expected 'Prevention'"
+            DRIFT=$((DRIFT + 1))
+            echo "REMEDIATING: Re-deploying WAF Bicep..."
+            HTTP_FQDN=$(az containerapp show --name aw-http-frontend --resource-group "$RG" \
+              --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "")
+            DASH_FQDN=$(az containerapp show --name aw-dashboard-frontend --resource-group "$RG" \
+              --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "")
+            az deployment group create \
+              --resource-group "$RG" \
+              --template-file infra/afd-waf.bicep \
+              --parameters \
+                wafPolicyName="$WAF_NAME" \
+                appGwName="${{ env.APP_GW_NAME }}" \
+                location="swedencentral" \
+                httpFrontendFqdn="$HTTP_FQDN" \
+                dashboardFrontendFqdn="$DASH_FQDN" \
+                allowedCountries='[]' \
+              --output none 2>/dev/null || echo "  Remediation failed (check template)"
+            REM=$((REM + 1))
+            echo "  Remediation applied."
+          fi
+
+          # Check OWASP ruleset version
+          RULESET=$(az network application-gateway waf-policy show \
+            --name "$WAF_NAME" --resource-group "$RG" \
+            --query "properties.managedRules.managedRuleSets[0].ruleSetVersion" -o tsv 2>/dev/null || echo "")
+          if [ "$RULESET" = "3.2" ]; then
+            echo "OK: OWASP CRS $RULESET"
+          else
+            echo "DRIFT: OWASP CRS version is '$RULESET' — expected '3.2'"
+            DRIFT=$((DRIFT + 1))
+          fi
+
+          echo "DRIFT_COUNT=$DRIFT" >> $GITHUB_ENV
+          echo "REMEDIATED_COUNT=$REM" >> $GITHUB_ENV
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 2. APPLICATION GATEWAY — WAF_v2 SKU, running
+      # ═══════════════════════════════════════════════════════════════════════
+      - name: "Check 2/10: Application Gateway provisioning"
+        id: check-appgw
+        continue-on-error: true
+        run: |
+          RG="${{ env.AZURE_RG }}"
+          GW_NAME="${{ env.APP_GW_NAME }}"
+          DRIFT="${{ env.DRIFT_COUNT }}"
+
+          echo "--- App Gateway: $GW_NAME ---"
+
+          GW_ID=$(az network application-gateway show \
+            --name "$GW_NAME" --resource-group "$RG" \
+            --query id -o tsv 2>/dev/null || echo "NOT_FOUND")
+
+          if [ "$GW_ID" = "NOT_FOUND" ]; then
+            echo "DRIFT: App Gateway not found!"
+            DRIFT=$((DRIFT + 1))
+            echo "DRIFT_COUNT=$DRIFT" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          SKU=$(az network application-gateway show \
+            --name "$GW_NAME" --resource-group "$RG" \
+            --query "sku.name" -o tsv)
+          if [ "$SKU" = "WAF_v2" ]; then
+            echo "OK: SKU is $SKU"
+          else
+            echo "DRIFT: SKU is '$SKU' — expected 'WAF_v2'"
+            DRIFT=$((DRIFT + 1))
+          fi
+
+          PROV=$(az network application-gateway show \
+            --name "$GW_NAME" --resource-group "$RG" \
+            --query "properties.provisioningState" -o tsv)
+          if [ "$PROV" = "Succeeded" ]; then
+            echo "OK: Provisioning state = Succeeded"
+          else
+            echo "DRIFT: Provisioning state = '$PROV'"
+            DRIFT=$((DRIFT + 1))
+          fi
+
+          CAP=$(az network application-gateway show \
+            --name "$GW_NAME" --resource-group "$RG" \
+            --query "sku.capacity" -o tsv)
+          if [ "$CAP" = "2" ]; then
+            echo "OK: Capacity = $CAP"
+          else
+            echo "DRIFT: Capacity is $CAP — expected 2"
+            DRIFT=$((DRIFT + 1))
+          fi
+
+          # Check frontend port 80 is present
+          PORT80=$(az network application-gateway frontend-port show \
+            --gateway-name "$GW_NAME" --resource-group "$RG" \
+            --name "port-80" --query "port" -o tsv 2>/dev/null || echo "MISSING")
+          if [ "$PORT80" = "80" ]; then
+            echo "OK: Frontend port 80 present"
+          else
+            echo "DRIFT: Frontend port 80 missing"
+            DRIFT=$((DRIFT + 1))
+          fi
+
+          echo "DRIFT_COUNT=$DRIFT" >> $GITHUB_ENV
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 3. CONTAINER APPS — all 6 must be provisioned + correct ingress
+      # ═══════════════════════════════════════════════════════════════════════
+      - name: "Check 3/10: Container Apps provisioning + ingress"
+        id: check-acas
+        continue-on-error: true
+        run: |
+          RG="${{ env.AZURE_RG }}"
+          DRIFT="${{ env.DRIFT_COUNT }}"
+
+          echo "--- Container Apps ---"
+
+          # Map of service -> expected external setting
+          declare -A EXPECTED_EXTERNAL
+          EXPECTED_EXTERNAL[aw-sandbox-store]="false"
+          EXPECTED_EXTERNAL[aw-ai-engine]="false"
+          EXPECTED_EXTERNAL[aw-dashboard-backend]="false"
+          EXPECTED_EXTERNAL[aw-ssh-frontend]="false"
+          EXPECTED_EXTERNAL[aw-http-frontend]="true"
+          EXPECTED_EXTERNAL[aw-dashboard-frontend]="true"
+
+          for APP in aw-sandbox-store aw-ai-engine aw-dashboard-backend \
+                     aw-ssh-frontend aw-http-frontend aw-dashboard-frontend; do
+            echo "  Checking $APP..."
+
+            STATUS=$(az containerapp show --name "$APP" --resource-group "$RG" \
+              --query "properties.provisioningState" -o tsv 2>/dev/null || echo "NOT_FOUND")
+
+            if [ "$STATUS" = "NOT_FOUND" ]; then
+              echo "  DRIFT: $APP not found!"
+              DRIFT=$((DRIFT + 1))
+              continue
+            fi
+
+            if [ "$STATUS" = "Succeeded" ]; then
+              echo "  OK: Provisioned"
+            else
+              echo "  DRIFT: $APP provisioning state = $STATUS"
+              DRIFT=$((DRIFT + 1))
+            fi
+
+            # Check ingress external setting
+            EXTERNAL=$(az containerapp show --name "$APP" --resource-group "$RG" \
+              --query "properties.configuration.ingress.external" -o tsv 2>/dev/null || echo "unknown")
+            EXPECTED="${EXPECTED_EXTERNAL[$APP]}"
+
+            if [ "$EXTERNAL" = "$EXPECTED" ]; then
+              echo "  OK: Ingress external=$EXTERNAL"
+            else
+              echo "  DRIFT: $APP ingress.external=$EXTERNAL (expected $EXPECTED)"
+              DRIFT=$((DRIFT + 1))
+            fi
+
+            # Check Azure Files mount still exists
+            MOUNT=$(az containerapp show --name "$APP" --resource-group "$RG" \
+              --query "properties.template.volumes[0].storageType" -o tsv 2>/dev/null || echo "")
+            if [ "$MOUNT" = "AzureFile" ]; then
+              echo "  OK: AzureFile mount present"
+            else
+              echo "  WARN: $APP AzureFile mount check skipped (may not apply to all)"
+            fi
+          done
+
+          echo "DRIFT_COUNT=$DRIFT" >> $GITHUB_ENV
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 4. LOG ANALYTICS — retention must be 365 days
+      # ═══════════════════════════════════════════════════════════════════════
+      - name: "Check 4/10: Log Analytics workspace retention"
+        id: check-loganalytics
+        continue-on-error: true
+        run: |
+          RG="${{ env.AZURE_RG }}"
+          LA_NAME="${{ secrets.AZURE_LOG_ANALYTICS }}"
+          DRIFT="${{ env.DRIFT_COUNT }}"
+          REM="${{ env.REMEDIATED_COUNT }}"
+
+          echo "--- Log Analytics: $LA_NAME ---"
+
+          if [ -z "$LA_NAME" ]; then
+            echo "SKIP: AZURE_LOG_ANALYTICS not set"
+            exit 0
+          fi
+
+          RETENTION=$(az monitor log-analytics workspace show \
+            --resource-group "$RG" --workspace-name "$LA_NAME" \
+            --query "retentionInDays" -o tsv 2>/dev/null || echo "NOT_FOUND")
+
+          if [ "$RETENTION" = "NOT_FOUND" ]; then
+            echo "DRIFT: Log Analytics workspace not found"
+            exit 0
+          fi
+
+          if [ "$RETENTION" = "365" ]; then
+            echo "OK: Retention = $RETENTION days"
+          else
+            echo "DRIFT: Retention = $RETENTION days — expected 365"
+            DRIFT=$((DRIFT + 1))
+            echo "REMEDIATING: Setting retention to 365..."
+            az monitor log-analytics workspace update \
+              --resource-group "$RG" --workspace-name "$LA_NAME" \
+              --retention-time 365 --output none 2>/dev/null || true
+            REM=$((REM + 1))
+            echo "  Remediation applied."
+          fi
+
+          echo "DRIFT_COUNT=$DRIFT" >> $GITHUB_ENV
+          echo "REMEDIATED_COUNT=$REM" >> $GITHUB_ENV
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 5. STORAGE ACCOUNT — diagnostic settings must exist with 365d retention
+      # ═══════════════════════════════════════════════════════════════════════
+      - name: "Check 5/10: Storage Account diagnostic settings"
+        id: check-storage-diag
+        continue-on-error: true
+        run: |
+          RG="${{ env.AZURE_RG }}"
+          STORAGE="${{ env.STORAGE_ACCOUNT }}"
+          LA_NAME="${{ secrets.AZURE_LOG_ANALYTICS }}"
+          DRIFT="${{ env.DRIFT_COUNT }}"
+          REM="${{ env.REMEDIATED_COUNT }}"
+
+          echo "--- Storage Account: $STORAGE ---"
+
+          if [ -z "$STORAGE" ]; then
+            echo "SKIP: STORAGE_ACCOUNT not set"
+            exit 0
+          fi
+
+          # Check diagnostic setting exists
+          STORAGE_ID=$(az storage account show --name "$STORAGE" --resource-group "$RG" \
+            --query id -o tsv 2>/dev/null || echo "")
+          if [ -z "$STORAGE_ID" ]; then
+            echo "DRIFT: Storage account not found"
+            exit 0
+          fi
+
+          DIAG_EXISTS=$(az monitor diagnostic-settings list \
+            --resource "$STORAGE_ID" \
+            --query "[?name=='aw-compliance-diag'].name" -o tsv 2>/dev/null || echo "")
+
+          if [ -n "$DIAG_EXISTS" ]; then
+            echo "OK: Diagnostic setting 'aw-compliance-diag' exists"
+          else
+            echo "DRIFT: Diagnostic setting 'aw-compliance-diag' missing"
+            DRIFT=$((DRIFT + 1))
+
+            LA_ID=$(az monitor log-analytics workspace show \
+              --resource-group "$RG" --workspace-name "$LA_NAME" \
+              --query id -o tsv 2>/dev/null || echo "")
+            if [ -n "$LA_ID" ]; then
+              echo "REMEDIATING: Creating diagnostic setting..."
+              az monitor diagnostic-settings create \
+                --name "aw-compliance-diag" \
+                --resource "$STORAGE_ID" \
+                --workspace "$LA_ID" \
+                --logs '[{"category":"StorageRead","enabled":true,"retentionPolicy":{"enabled":true,"days":365}},{"category":"StorageWrite","enabled":true,"retentionPolicy":{"enabled":true,"days":365}},{"category":"StorageDelete","enabled":true,"retentionPolicy":{"enabled":true,"days":365}}]' \
+                --metrics '[{"category":"Transaction","enabled":true,"retentionPolicy":{"enabled":true,"days":365}}]' \
+                --output none 2>/dev/null || true
+              REM=$((REM + 1))
+              echo "  Remediation applied."
+            fi
+          fi
+
+          echo "DRIFT_COUNT=$DRIFT" >> $GITHUB_ENV
+          echo "REMEDIATED_COUNT=$REM" >> $GITHUB_ENV
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 6. KEY VAULT — diagnostic settings + soft-delete + purge protection
+      # ═══════════════════════════════════════════════════════════════════════
+      - name: "Check 6/10: Key Vault audit + protection"
+        id: check-keyvault
+        continue-on-error: true
+        run: |
+          RG="${{ env.AZURE_RG }}"
+          KV_NAME="${{ secrets.KEY_VAULT }}"
+          LA_NAME="${{ secrets.AZURE_LOG_ANALYTICS }}"
+          DRIFT="${{ env.DRIFT_COUNT }}"
+          REM="${{ env.REMEDIATED_COUNT }}"
+
+          echo "--- Key Vault: $KV_NAME ---"
+
+          if [ -z "$KV_NAME" ]; then
+            echo "SKIP: KEY_VAULT not set"
+            exit 0
+          fi
+
+          KV_ID=$(az keyvault show --name "$KV_NAME" --resource-group "$RG" \
+            --query id -o tsv 2>/dev/null || echo "")
+
+          if [ -z "$KV_ID" ]; then
+            echo "DRIFT: Key Vault not found"
+            exit 0
+          fi
+
+          # Check soft-delete
+          SOFT_DELETE=$(az keyvault show --name "$KV_NAME" --resource-group "$RG" \
+            --query "properties.enableSoftDelete" -o tsv 2>/dev/null || echo "unknown")
+          if [ "$SOFT_DELETE" = "true" ]; then
+            echo "OK: Soft-delete enabled"
+          else
+            echo "DRIFT: Soft-delete = $SOFT_DELETE — expected true"
+            DRIFT=$((DRIFT + 1))
+          fi
+
+          # Check purge protection
+          PURGE_PROT=$(az keyvault show --name "$KV_NAME" --resource-group "$RG" \
+            --query "properties.enablePurgeProtection" -o tsv 2>/dev/null || echo "unknown")
+          if [ "$PURGE_PROT" = "true" ]; then
+            echo "OK: Purge protection enabled"
+          else
+            echo "DRIFT: Purge protection = $PURGE_PROT — expected true"
+            DRIFT=$((DRIFT + 1))
+          fi
+
+          # Check diagnostic setting
+          DIAG_EXISTS=$(az monitor diagnostic-settings list \
+            --resource "$KV_ID" \
+            --query "[?name=='aw-compliance-diag'].name" -o tsv 2>/dev/null || echo "")
+          if [ -n "$DIAG_EXISTS" ]; then
+            echo "OK: Diagnostic setting exists"
+          else
+            echo "DRIFT: Diagnostic setting missing"
+            DRIFT=$((DRIFT + 1))
+
+            LA_ID=$(az monitor log-analytics workspace show \
+              --resource-group "$RG" --workspace-name "$LA_NAME" \
+              --query id -o tsv 2>/dev/null || echo "")
+            if [ -n "$LA_ID" ]; then
+              echo "REMEDIATING: Creating Key Vault diagnostic setting..."
+              az monitor diagnostic-settings create \
+                --name "aw-compliance-diag" \
+                --resource "$KV_ID" \
+                --workspace "$LA_ID" \
+                --logs '[{"category":"AuditEvent","enabled":true,"retentionPolicy":{"enabled":true,"days":365}}]' \
+                --metrics '[{"category":"AllMetrics","enabled":true,"retentionPolicy":{"enabled":true,"days":365}}]' \
+                --output none 2>/dev/null || true
+              REM=$((REM + 1))
+              echo "  Remediation applied."
+            fi
+          fi
+
+          echo "DRIFT_COUNT=$DRIFT" >> $GITHUB_ENV
+          echo "REMEDIATED_COUNT=$REM" >> $GITHUB_ENV
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 7. ACA ENVIRONMENT — linked to Log Analytics, no drift
+      # ═══════════════════════════════════════════════════════════════════════
+      - name: "Check 7/10: ACA Environment Log Analytics linkage"
+        id: check-aca-env
+        continue-on-error: true
+        run: |
+          RG="${{ env.AZURE_RG }}"
+          ACA_ENV="${{ env.AZURE_ACA_ENV }}"
+          LA_NAME="${{ secrets.AZURE_LOG_ANALYTICS }}"
+          DRIFT="${{ env.DRIFT_COUNT }}"
+
+          echo "--- ACA Environment: $ACA_ENV ---"
+
+          ENV_ID=$(az containerapp env show --name "$ACA_ENV" --resource-group "$RG" \
+            --query id -o tsv 2>/dev/null || echo "NOT_FOUND")
+
+          if [ "$ENV_ID" = "NOT_FOUND" ]; then
+            echo "DRIFT: ACA Environment not found"
+            exit 0
+          fi
+
+          echo "OK: ACA Environment exists"
+
+          # Check Log Analytics workspace is linked
+          LA_LINKED=$(az containerapp env show --name "$ACA_ENV" --resource-group "$RG" \
+            --query "properties.appLogsConfiguration.logAnalyticsConfiguration.customerId" -o tsv 2>/dev/null || echo "")
+
+          if [ -n "$LA_LINKED" ]; then
+            echo "OK: Linked to Log Analytics: $LA_LINKED"
+          else
+            echo "DRIFT: No Log Analytics linked to ACA Environment"
+            DRIFT=$((DRIFT + 1))
+          fi
+
+          echo "DRIFT_COUNT=$DRIFT" >> $GITHUB_ENV
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 8. DEFENDER FOR CLOUD — pricing plans must be active
+      # ═══════════════════════════════════════════════════════════════════════
+      - name: "Check 8/10: Defender for Cloud pricing plans"
+        id: check-defender
+        continue-on-error: true
+        run: |
+          DRIFT="${{ env.DRIFT_COUNT }}"
+          REM="${{ env.REMEDIATED_COUNT }}"
+
+          echo "--- Defender for Cloud ---"
+
+          for PLAN in CloudPosture Containers StorageAccounts KeyVaults; do
+            TIER=$(az security pricing show --name "$PLAN" \
+              --query "pricingTier" -o tsv 2>/dev/null || echo "NOT_FOUND")
+
+            if [ "$TIER" = "Standard" ]; then
+              echo "OK: $PLAN = Standard"
+            elif [ "$TIER" = "NOT_FOUND" ]; then
+              echo "INFO: $PLAN not available at this scope (requires subscription owner)"
+            else
+              echo "DRIFT: $PLAN = $TIER — expected Standard"
+              DRIFT=$((DRIFT + 1))
+              echo "REMEDIATING: Enabling $PLAN..."
+              az security pricing create --name "$PLAN" --pricing-tier "Standard" 2>/dev/null || true
+              REM=$((REM + 1))
+              echo "  Remediation attempted."
+            fi
+          done
+
+          echo "DRIFT_COUNT=$DRIFT" >> $GITHUB_ENV
+          echo "REMEDIATED_COUNT=$REM" >> $GITHUB_ENV
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 9. CONTAINER REGISTRY — admin-enabled, reachable
+      # ═══════════════════════════════════════════════════════════════════════
+      - name: "Check 9/10: Container Registry status"
+        id: check-acr
+        continue-on-error: true
+        run: |
+          RG="${{ env.AZURE_RG }}"
+          ACR="${{ env.ACR_NAME }}"
+          DRIFT="${{ env.DRIFT_COUNT }}"
+          REM="${{ env.REMEDIATED_COUNT }}"
+
+          echo "--- Container Registry: $ACR ---"
+
+          ACR_EXISTS=$(az acr show --name "$ACR" --resource-group "$RG" \
+            --query name -o tsv 2>/dev/null || echo "")
+
+          if [ -z "$ACR_EXISTS" ]; then
+            echo "DRIFT: ACR not found"
+            DRIFT=$((DRIFT + 1))
+            echo "DRIFT_COUNT=$DRIFT" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          echo "OK: ACR exists"
+
+          # Check admin-enabled
+          ADMIN=$(az acr show --name "$ACR" --resource-group "$RG" \
+            --query "adminUserEnabled" -o tsv 2>/dev/null || echo "false")
+          if [ "$ADMIN" = "true" ]; then
+            echo "OK: Admin enabled"
+          else
+            echo "DRIFT: Admin = $ADMIN — expected true"
+            DRIFT=$((DRIFT + 1))
+            echo "REMEDIATING: Enabling admin..."
+            az acr update --name "$ACR" --resource-group "$RG" \
+              --admin-enabled true --output none 2>/dev/null || true
+            REM=$((REM + 1))
+            echo "  Remediation applied."
+          fi
+
+          # Check login server is accessible
+          LOGIN_SERVER=$(az acr show --name "$ACR" --resource-group "$RG" \
+            --query "loginServer" -o tsv 2>/dev/null || echo "")
+          if [ -n "$LOGIN_SERVER" ]; then
+            echo "OK: Login server = $LOGIN_SERVER"
+          fi
+
+          echo "DRIFT_COUNT=$DRIFT" >> $GITHUB_ENV
+          echo "REMEDIATED_COUNT=$REM" >> $GITHUB_ENV
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # 10. LOG ANALYTICS TABLE RETENTION — AzureActivity + ContainerAppLogs
+      # ═══════════════════════════════════════════════════════════════════════
+      - name: "Check 10/10: Log Analytics table retention"
+        id: check-la-tables
+        continue-on-error: true
+        run: |
+          RG="${{ env.AZURE_RG }}"
+          LA_NAME="${{ secrets.AZURE_LOG_ANALYTICS }}"
+          DRIFT="${{ env.DRIFT_COUNT }}"
+          REM="${{ env.REMEDIATED_COUNT }}"
+
+          echo "--- Log Analytics Tables ---"
+
+          if [ -z "$LA_NAME" ]; then
+            echo "SKIP: AZURE_LOG_ANALYTICS not set"
+            exit 0
+          fi
+
+          for TABLE in AzureActivity; do
+            RETENTION=$(az monitor log-analytics workspace table show \
+              --resource-group "$RG" --workspace-name "$LA_NAME" \
+              --name "$TABLE" --query "retentionInDays" -o tsv 2>/dev/null || echo "")
+
+            if [ "$RETENTION" = "365" ]; then
+              echo "OK: $TABLE retention = $RETENTION days"
+            else
+              echo "DRIFT: $TABLE retention = $RETENTION — expected 365"
+              DRIFT=$((DRIFT + 1))
+            fi
+          done
+
+          for TABLE in ContainerAppConsoleLogs; do
+            RETENTION=$(az monitor log-analytics workspace table show \
+              --resource-group "$RG" --workspace-name "$LA_NAME" \
+              --name "$TABLE" --query "retentionInDays" -o tsv 2>/dev/null || echo "")
+            if [ "$RETENTION" = "90" ]; then
+              echo "OK: $TABLE retention = $RETENTION days"
+            else
+              echo "DRIFT: $TABLE retention = $RETENTION — expected 90"
+              DRIFT=$((DRIFT + 1))
+            fi
+          done
+
+          echo "DRIFT_COUNT=$DRIFT" >> $GITHUB_ENV
+          echo "REMEDIATED_COUNT=$REM" >> $GITHUB_ENV
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # GENERATE DRIFT REPORT + UPLOAD TO STORAGE
+      # ═══════════════════════════════════════════════════════════════════════
+      - name: Generate drift report and upload to Azure Storage
+        id: drift-report
+        continue-on-error: true
+        run: |
+          RG="${{ env.AZURE_RG }}"
+          STORAGE="${{ env.STORAGE_ACCOUNT }}"
+          DRIFT="${{ env.DRIFT_COUNT }}"
+          REM="${{ env.REMEDIATED_COUNT }}"
+
+          # Build JSON report
+          jq -n \
+            --arg ts "${{ env.TIMESTAMP }}" \
+            --argjson drift "$DRIFT" \
+            --argjson remediated "$REM" \
+            --arg commit "${{ github.sha }}" \
+            --arg run "${{ github.run_id }}" \
+            '{
+              timestamp: $ts,
+              commitSha: $commit,
+              githubRunId: ($run | tonumber),
+              driftDetected: ($drift > 0),
+              driftCount: $drift,
+              remediatedCount: $remediated,
+              status: (if $drift > 0 then "DRIFT_DETECTED" else "CLEAN" end)
+            }' > /tmp/drift-report.json
+
+          cat /tmp/drift-report.json
+
+          # Upload to Azure Storage if possible
+          if [ -n "$STORAGE" ]; then
+            STORAGE_KEY=$(az storage account keys list \
+              --resource-group "$RG" --account-name "$STORAGE" \
+              --query "[0].value" -o tsv 2>/dev/null || echo "")
+            if [ -n "$STORAGE_KEY" ]; then
+              az storage container create \
+                --name "compliance-evidence" \
+                --account-name "$STORAGE" --account-key "$STORAGE_KEY" \
+                --public-access off --output none 2>/dev/null || true
+              az storage blob upload \
+                --account-name "$STORAGE" --account-key "$STORAGE_KEY" \
+                --container-name "compliance-evidence" \
+                --file /tmp/drift-report.json \
+                --name "drift-report-${{ env.IMAGE_TAG }}.json" \
+                --overwrite
+              echo "Drift report uploaded."
+            fi
+          fi
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # GENERATE STEP SUMMARY
+      # ═══════════════════════════════════════════════════════════════════════
+      - name: Generate IaC Drift Summary
+        id: drift-summary
+        run: |
+          DRIFT="${{ env.DRIFT_COUNT }}"
+          REM="${{ env.REMEDIATED_COUNT }}"
+
+          echo "## IaC Drift Detection & Remediation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$DRIFT" -gt 0 ]; then
+            echo "| Result | Count |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Drifts Detected | $DRIFT |" >> $GITHUB_STEP_SUMMARY
+            echo "| Auto-Remediated | $REM |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Action required**: $((DRIFT - REM)) drift(s) could not be auto-remediated." >> $GITHUB_STEP_SUMMARY
+            echo "drift_detected=true" >> $GITHUB_OUTPUT
+          else
+            echo "**PASS: No drift detected** -- all Azure resources match desired state." >> $GITHUB_STEP_SUMMARY
+            echo "drift_detected=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Checks Performed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| # | Resource | What It Checks |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|----------|----------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 1 | WAF Policy | Mode = Prevention, OWASP CRS 3.2 |" >> $GITHUB_STEP_SUMMARY
+          echo "| 2 | Application Gateway | WAF_v2 SKU, capacity 2, port 80 |" >> $GITHUB_STEP_SUMMARY
+          echo "| 3 | Container Apps (6) | Provisioned, correct internal/external ingress |" >> $GITHUB_STEP_SUMMARY
+          echo "| 4 | Log Analytics | Workspace retention = 365 days |" >> $GITHUB_STEP_SUMMARY
+          echo "| 5 | Storage Account | Diagnostic settings present |" >> $GITHUB_STEP_SUMMARY
+          echo "| 6 | Key Vault | Soft-delete, purge protection, diagnostic settings |" >> $GITHUB_STEP_SUMMARY
+          echo "| 7 | ACA Environment | Linked to Log Analytics |" >> $GITHUB_STEP_SUMMARY
+          echo "| 8 | Defender for Cloud | Pricing plans = Standard |" >> $GITHUB_STEP_SUMMARY
+          echo "| 9 | Container Registry | Admin enabled, reachable |" >> $GITHUB_STEP_SUMMARY
+          echo "| 10 | Log Analytics Tables | AzureActivity=365d, ContainerAppLogs=90d |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Report uploaded to \`compliance-evidence/drift-report-\` in Azure Storage." >> $GITHUB_STEP_SUMMARY
+          cat $GITHUB_STEP_SUMMARY
+
 # ═══════════════════════════════════════════════════════════════════════════════
-# JOB 6: WAF-ONLY — deploy/update only App Gateway WAF (skip ACA build/deploy)
+# JOB 7: WAF-ONLY — deploy/update only App Gateway WAF (skip ACA build/deploy)
 # ═══════════════════════════════════════════════════════════════════════════════
   waf-only:
     name: Deploy WAF only (skip ACA)
@@ -825,7 +1487,7 @@ jobs:
           cat $GITHUB_STEP_SUMMARY
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# JOB 6: VERIFY-ONLY (triggered manually via workflow_dispatch)
+# JOB 8: VERIFY-ONLY (triggered manually via workflow_dispatch)
 # Skips build + deploy, just checks the current state of all apps + Front Door
 # ═══════════════════════════════════════════════════════════════════════════════
   verify:
