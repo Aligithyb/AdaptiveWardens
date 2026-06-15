@@ -26,6 +26,8 @@ LOCATION="${AZURE_LOCATION:-westeurope}"
 RG="${AZURE_RG:-AdaptiveWardens}"
 ACR_NAME="${AZURE_ACR:-awregistry}"
 ACA_ENV="${AZURE_ACA_ENV:-aw-ca-env}"
+ACA_VNET_NAME="${AZURE_ACA_VNET_NAME:-aw-aca-vnet}"
+ACA_SUBNET_NAME="${AZURE_ACA_SUBNET_NAME:-aca-infra-subnet}"
 LOG_ANALYTICS="${AZURE_LOG_ANALYTICS:-aw-logs}"
 STORAGE_ACCOUNT="${AZURE_STORAGE_ACCOUNT:-awstorage}"
 FILE_SHARE="${AZURE_FILE_SHARE:-awdata}"
@@ -36,19 +38,20 @@ echo ""
 echo "============================================================================="
 echo "  AdaptiveWardens — Azure Infrastructure Setup"
 echo "============================================================================="
-echo "  Resource Group  : $RG"
-echo "  Location        : $LOCATION"
-echo "  ACR             : $ACR_NAME"
-echo "  ACA Environment : $ACA_ENV"
-echo "  Storage Account : $STORAGE_ACCOUNT"
-echo "  File Share      : $FILE_SHARE"
-echo "  Key Vault       : $KEY_VAULT"
-echo "  Service Principal: $SP_NAME"
+echo "  Resource Group    : $RG"
+echo "  Location          : $LOCATION"
+echo "  ACR               : $ACR_NAME"
+echo "  ACA Environment   : $ACA_ENV"
+echo "  ACA VNet          : $ACA_VNET_NAME ($ACA_SUBNET_NAME)"
+echo "  Storage Account   : $STORAGE_ACCOUNT"
+echo "  File Share        : $FILE_SHARE"
+echo "  Key Vault         : $KEY_VAULT"
+echo "  Service Principal : $SP_NAME"
 echo "============================================================================="
 echo ""
 
 # ── 1. Resource Group ────────────────────────────────────────────────────────
-echo "[1/9] Resource Group: $RG"
+echo "[1/10] Resource Group: $RG"
 az group create \
   --name "$RG" \
   --location "$LOCATION" \
@@ -57,7 +60,7 @@ az group create \
 echo "  Done."
 
 # ── 2. Azure Container Registry ──────────────────────────────────────────────
-echo "[2/9] Azure Container Registry: $ACR_NAME"
+echo "[2/10] Azure Container Registry: $ACR_NAME"
 if ! az acr show --name "$ACR_NAME" --resource-group "$RG" &>/dev/null; then
   az acr create \
     --resource-group "$RG" \
@@ -81,7 +84,7 @@ ACR_PASSWORD=$(az acr credential show \
 echo "  Login server: $ACR_LOGIN_SERVER"
 
 # ── 3. Log Analytics Workspace ───────────────────────────────────────────────
-echo "[3/9] Log Analytics Workspace: $LOG_ANALYTICS"
+echo "[3/10] Log Analytics Workspace: $LOG_ANALYTICS"
 if ! az monitor log-analytics workspace show \
   --workspace-name "$LOG_ANALYTICS" \
   --resource-group "$RG" &>/dev/null; then
@@ -110,26 +113,93 @@ LA_WORKSPACE_ID=$(az monitor log-analytics workspace show \
   --resource-group "$RG" \
   --query id -o tsv)
 
-# ── 4. Container Apps Environment ────────────────────────────────────────────
-echo "[4/9] ACA Environment: $ACA_ENV"
-if ! az containerapp env show \
+# ── 3b. Virtual Network for ACA (required for external TCP ingress) ────────────
+echo "[4/10] Virtual Network: $ACA_VNET_NAME"
+if ! az network vnet show --name "$ACA_VNET_NAME" --resource-group "$RG" &>/dev/null; then
+  az network vnet create \
+    --resource-group "$RG" \
+    --name "$ACA_VNET_NAME" \
+    --location "$LOCATION" \
+    --address-prefix "10.2.0.0/16" \
+    --tags Project=AdaptiveWardens \
+    --output none
+  echo "  VNet created."
+else
+  echo "  VNet already exists — skipping."
+fi
+
+ACA_SUBNET_ID=$(az network vnet subnet show \
+  --name "$ACA_SUBNET_NAME" \
+  --vnet-name "$ACA_VNET_NAME" \
+  --resource-group "$RG" \
+  --query id -o tsv 2>/dev/null || echo "")
+
+if [ -z "$ACA_SUBNET_ID" ]; then
+  echo "  Creating delegated subnet ($ACA_SUBNET_NAME) for ACA..."
+  az network vnet subnet create \
+    --resource-group "$RG" \
+    --vnet-name "$ACA_VNET_NAME" \
+    --name "$ACA_SUBNET_NAME" \
+    --address-prefix "10.2.0.0/23" \
+    --delegations "Microsoft.App/environments" \
+    --output none
+  ACA_SUBNET_ID=$(az network vnet subnet show \
+    --name "$ACA_SUBNET_NAME" \
+    --vnet-name "$ACA_VNET_NAME" \
+    --resource-group "$RG" \
+    --query id -o tsv)
+  echo "  Subnet created: $ACA_SUBNET_ID"
+else
+  echo "  Subnet already exists — skipping."
+fi
+
+# ── 4. Container Apps Environment (with VNET for external TCP) ──────────────
+echo "[5/10] ACA Environment: $ACA_ENV"
+if az containerapp env show \
   --name "$ACA_ENV" \
   --resource-group "$RG" &>/dev/null; then
+  # Check if it already has VNET
+  HAS_VNET=$(az containerapp env show \
+    --name "$ACA_ENV" \
+    --resource-group "$RG" \
+    --query "properties.vnetConfiguration.infrastructureSubnetId" -o tsv 2>/dev/null || echo "")
+  if [ -n "$HAS_VNET" ]; then
+    echo "  Already exists with VNET — skipping."
+  else
+    echo "  WARNING: Environment exists without VNET. Recreating with VNET will"
+    echo "  delete all existing container apps (they'll be redeployed by CI/CD)."
+    echo "  Continuing in 5 seconds... (Ctrl+C to abort)"
+    sleep 5
+    for APP in aw-sandbox-store aw-ai-engine aw-dashboard-backend aw-ssh-frontend aw-http-frontend aw-dashboard-frontend; do
+      az containerapp delete --name "$APP" --resource-group "$RG" --yes --output none 2>/dev/null || true
+    done
+    az containerapp env delete --name "$ACA_ENV" --resource-group "$RG" --yes --output none
+    az containerapp env create \
+      --resource-group "$RG" \
+      --name "$ACA_ENV" \
+      --location "$LOCATION" \
+      --logs-workspace-id "$LA_ID" \
+      --logs-workspace-key "$LA_KEY" \
+      --infrastructure-subnet-resource-id "$ACA_SUBNET_ID" \
+      --tags Project=AdaptiveWardens \
+      --output none
+    echo "  Recreated with VNET."
+  fi
+else
   az containerapp env create \
     --resource-group "$RG" \
     --name "$ACA_ENV" \
     --location "$LOCATION" \
     --logs-workspace-id "$LA_ID" \
     --logs-workspace-key "$LA_KEY" \
+    --infrastructure-subnet-resource-id "$ACA_SUBNET_ID" \
     --tags Project=AdaptiveWardens \
     --output none
-  echo "  Created."
-else
-  echo "  Already exists — skipping."
+  echo "  Created with VNET."
 fi
 
 # ── 5. Storage Account ───────────────────────────────────────────────────────
-echo "[5/9] Storage Account: $STORAGE_ACCOUNT"
+echo "[6/10] Storage Account: $STORAGE_ACCOUNT"
 if ! az storage account show \
   --name "$STORAGE_ACCOUNT" \
   --resource-group "$RG" &>/dev/null; then
@@ -153,7 +223,7 @@ STORAGE_KEY=$(az storage account keys list \
   --query "[0].value" -o tsv)
 
 # ── 6. Azure File Share ──────────────────────────────────────────────────────
-echo "[6/9] File Share: $FILE_SHARE"
+echo "[7/10] File Share: $FILE_SHARE"
 SHARE_EXISTS=$(az storage share exists \
   --name "$FILE_SHARE" \
   --account-name "$STORAGE_ACCOUNT" \
@@ -172,7 +242,7 @@ else
 fi
 
 # ── 6b. Compliance Evidence Container ─────────────────────────────────────────
-echo "[6b/9] Compliance evidence container..."
+echo "[8/10] Compliance evidence container..."
 az storage container create \
   --name "compliance-evidence" \
   --account-name "$STORAGE_ACCOUNT" \
@@ -183,7 +253,7 @@ az storage container create \
 echo "  Created (private, immutable-ready)."
 
 # ── 7. Key Vault ─────────────────────────────────────────────────────────────
-echo "[7/9] Key Vault: $KEY_VAULT"
+echo "[9/10] Key Vault: $KEY_VAULT"
 if ! az keyvault show \
   --name "$KEY_VAULT" \
   --resource-group "$RG" &>/dev/null; then
@@ -211,7 +281,7 @@ else
 fi
 
 # ── 8. Service Principal for GitHub Actions ──────────────────────────────────
-echo "[8/9] Service Principal: $SP_NAME"
+echo "[10/10] Service Principal: $SP_NAME"
 SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 SP_EXISTS=$(az ad sp list \
   --display-name "$SP_NAME" \
@@ -253,6 +323,8 @@ echo "  │ ACR_USERNAME                │ $ACR_NAME"
 echo "  │ ACR_PASSWORD                │ $ACR_PASSWORD"
 echo "  │ AZURE_RG                    │ $RG"
 echo "  │ AZURE_ACA_ENV               │ $ACA_ENV"
+echo "  │ AZURE_ACA_VNET_NAME         │ $ACA_VNET_NAME"
+echo "  │ AZURE_ACA_SUBNET_NAME       │ $ACA_SUBNET_NAME"
 echo "  │ AZURE_LOCATION              │ $LOCATION"
 echo "  │ STORAGE_ACCOUNT             │ $STORAGE_ACCOUNT"
 echo "  │ STORAGE_KEY                 │ $STORAGE_KEY"
