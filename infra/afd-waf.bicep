@@ -26,9 +26,9 @@ param allowedCountries array = []
 param rateLimitThreshold int = 200
 
 // ── WAF Policy ──────────────────────────────────────────────────────────
-resource wafPolicy 'Microsoft.Network/frontDoorWebApplicationFirewallPolicies@2024-03-01' = {
+resource wafPolicy 'Microsoft.Network/frontDoorWebApplicationFirewallPolicies@2024-02-01' = {
   name: wafPolicyName
-  location: 'Global'
+  location: 'global'
   sku: {
     name: 'Standard_AzureFrontDoor'
   }
