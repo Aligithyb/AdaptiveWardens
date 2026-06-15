@@ -561,19 +561,50 @@ jobs:
           az security pricing create --name 'KeyVaults' --pricing-tier 'Standard' 2>/dev/null || echo "  (optional)"
           echo "Defender for Cloud enabled (or already enabled)."
 
-      - name: Deploy compliance infrastructure (Bicep)
+      - name: Deploy compliance infrastructure
         continue-on-error: true
         run: |
-          az deployment group create \
-            --resource-group "${{ env.AZURE_RG }}" \
-            --template-file infra/compliance.bicep \
-            --parameters \
-              logAnalyticsName="${{ secrets.AZURE_LOG_ANALYTICS }}" \
-              logAnalyticsWorkspaceId="${{ secrets.LA_WORKSPACE_ID }}" \
-              keyVaultName="${{ secrets.KEY_VAULT }}" \
-              storageAccountName="${{ env.STORAGE_ACCOUNT }}" \
-            --output none
-          echo "Compliance infrastructure deployed."
+          RG="${{ env.AZURE_RG }}"
+          LA_NAME="${{ secrets.AZURE_LOG_ANALYTICS }}"
+          STORAGE="${{ env.STORAGE_ACCOUNT }}"
+          KV_NAME="${{ secrets.KEY_VAULT }}"
+
+          echo "--- Log Analytics: 365-day retention ---"
+          az monitor log-analytics workspace update \
+            --resource-group "$RG" \
+            --workspace-name "$LA_NAME" \
+            --retention-time 365 \
+            --output none 2>/dev/null || echo "  (skipped)"
+
+          echo "--- Storage Account: diagnostic settings ---"
+          LA_ID=$(az monitor log-analytics workspace show \
+            --resource-group "$RG" \
+            --workspace-name "$LA_NAME" \
+            --query id -o tsv 2>/dev/null || echo "")
+          if [ -n "$LA_ID" ]; then
+            az monitor diagnostic-settings create \
+              --name "aw-compliance-diag" \
+              --resource "$(az storage account show --name "$STORAGE" --resource-group "$RG" --query id -o tsv 2>/dev/null)" \
+              --workspace "$LA_ID" \
+              --logs '[{"category":"StorageRead","enabled":true,"retentionPolicy":{"enabled":true,"days":365}},{"category":"StorageWrite","enabled":true,"retentionPolicy":{"enabled":true,"days":365}},{"category":"StorageDelete","enabled":true,"retentionPolicy":{"enabled":true,"days":365}}]' \
+              --metrics '[{"category":"Transaction","enabled":true,"retentionPolicy":{"enabled":true,"days":365}}]' \
+              --output none 2>/dev/null || echo "  (skipped)"
+          else
+            echo "  (Log Analytics workspace not found)"
+          fi
+
+          echo "--- Key Vault: diagnostic settings ---"
+          if [ -n "$LA_ID" ] && [ -n "$KV_NAME" ]; then
+            az monitor diagnostic-settings create \
+              --name "aw-compliance-diag" \
+              --resource "$(az keyvault show --name "$KV_NAME" --resource-group "$RG" --query id -o tsv 2>/dev/null)" \
+              --workspace "$LA_ID" \
+              --logs '[{"category":"AuditEvent","enabled":true,"retentionPolicy":{"enabled":true,"days":365}}]' \
+              --metrics '[{"category":"AllMetrics","enabled":true,"retentionPolicy":{"enabled":true,"days":365}}]' \
+              --output none 2>/dev/null || echo "  (skipped)"
+          fi
+
+          echo "Compliance infrastructure configured."
 
       - name: Assign Azure Policy initiatives (requires Resource Policy Contributor)
         continue-on-error: true
@@ -617,12 +648,26 @@ jobs:
         continue-on-error: true
         if: ${{ env.STORAGE_ACCOUNT != '' }}
         run: |
-          az storage blob upload-batch \
-            --account-name "${{ env.STORAGE_ACCOUNT }}" \
-            --destination "compliance-evidence" \
-            --source "./compliance-evidence" \
-            --overwrite
-          echo "Evidence uploaded to compliance-evidence/ container."
+          STORAGE="${{ env.STORAGE_ACCOUNT }}"
+          RG="${{ env.AZURE_RG }}"
+          STORAGE_KEY=$(az storage account keys list --resource-group "$RG" --account-name "$STORAGE" --query "[0].value" -o tsv 2>/dev/null || echo "")
+          if [ -n "$STORAGE_KEY" ]; then
+            az storage container create \
+              --name "compliance-evidence" \
+              --account-name "$STORAGE" \
+              --account-key "$STORAGE_KEY" \
+              --public-access off \
+              --output none 2>/dev/null || true
+            az storage blob upload-batch \
+              --account-name "$STORAGE" \
+              --account-key "$STORAGE_KEY" \
+              --destination "compliance-evidence" \
+              --source "./compliance-evidence" \
+              --overwrite
+            echo "Evidence uploaded to compliance-evidence/ container."
+          else
+            echo "Could not retrieve storage key — skipping upload."
+          fi
 
       # ── Compliance Summary for GitHub Step Summary ──
       - name: Generate Compliance Summary

@@ -44,6 +44,9 @@ NON_COMPLIANT=$(jq '[.[] | select(.complianceState=="NonCompliant")] | length' "
 COMPLIANT=$(jq '[.[] | select(.complianceState=="Compliant")] | length' "$POLICY_FILE" 2>/dev/null || echo 0)
 echo "  Total evaluations: $TOTAL_POLICIES"
 echo "  Compliant: $COMPLIANT  Non-compliant: $NON_COMPLIANT"
+if [ "$TOTAL_POLICIES" -eq 0 ]; then
+  echo "  (No policy assignments — install Azure Policy initiatives to see compliance data)"
+fi
 
 # ── 2. Defender for Cloud Secure Score ─────────────────────────────────────────
 echo "[2/8] Defender for Cloud secure score..."
