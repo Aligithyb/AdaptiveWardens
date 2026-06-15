@@ -1466,7 +1466,7 @@ ACA automatically resolves container app names within the same environment. No s
 
 | Service | Type | Port | Transport | External URL |
 |---------|------|------|-----------|-------------|
-| ssh-frontend | External | 2222 | TCP | `*.livelymushroom-5ab49a9e.swedencentral.azurecontainerapps.io:2222` |
+| ssh-frontend | External | 2222 | TCP | `*.azurecontainerapps.io:2222` |
 | http-frontend | External | 8080 | HTTP | `*.azurecontainerapps.io` |
 | dashboard-frontend | External | 3000 | HTTP | `*.azurecontainerapps.io` |
 | sandbox-store | Internal | 8001 | HTTP | (not accessible from internet) |
