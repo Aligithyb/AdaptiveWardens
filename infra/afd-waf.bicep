@@ -20,6 +20,63 @@ var subnetName = 'appgw-subnet'
 var publicIpName = '${appGwName}-pip'
 var vnetName = '${appGwName}-vnet'
 
+var geoRules = empty(allowedCountries) ? [] : [
+  {
+    name: 'GeoFilter'
+    priority: 10
+    ruleType: 'MatchRule'
+    action: 'Block'
+    matchConditions: [
+      {
+        matchVariables: [
+          { variableName: 'RemoteAddr', selector: null }
+        ]
+        operator: 'GeoMatch'
+        negationConditon: true
+        transforms: []
+        matchValues: allowedCountries
+      }
+    ]
+  }
+]
+var otherRules = [
+  {
+    name: 'BlockSuspiciousUA'
+    priority: 20
+    ruleType: 'MatchRule'
+    action: 'Block'
+    matchConditions: [
+      {
+        matchVariables: [
+          { variableName: 'RequestHeaders', selector: 'User-Agent' }
+        ]
+        operator: 'Contains'
+        negationConditon: false
+        transforms: ['Lowercase']
+        matchValues: ['nmap', 'masscan', 'zgrab', 'sqlmap', 'nuclei', 'nikto', 'dirbuster']
+      }
+    ]
+  }
+  {
+    name: 'BlockSensitivePaths'
+    priority: 30
+    ruleType: 'MatchRule'
+    action: 'Block'
+    matchConditions: [
+      {
+        matchVariables: [
+          { variableName: 'RequestUri', selector: null }
+        ]
+        operator: 'Contains'
+        negationConditon: false
+        transforms: ['Lowercase']
+        matchValues: ['.env', '.git/config', 'wp-admin', 'phpmyadmin', 'actuator/', '/admin/', 'aws_access_key']
+      }
+    ]
+  }
+]
+var customRules = concat(geoRules, otherRules)
+
 resource wafPolicy 'Microsoft.Network/applicationGatewayWebApplicationFirewallPolicies@2022-09-01' = {
   name: wafPolicyName
   location: location
@@ -31,59 +88,7 @@ resource wafPolicy 'Microsoft.Network/applicationGatewayWebApplicationFirewallPo
       fileUploadLimitInMb: 100
       maxRequestBodySizeInKb: 128
     }
-    customRules: [
-      {
-        name: 'GeoFilter'
-        priority: 10
-        ruleType: 'MatchRule'
-        action: 'Block'
-        matchConditions: [
-          {
-            matchVariables: [
-              { variableName: 'RemoteAddr', selector: null }
-            ]
-            operator: 'GeoMatch'
-            negationConditon: true
-            transforms: []
-            matchValues: allowedCountries
-          }
-        ]
-      }
-      {
-        name: 'BlockSuspiciousUA'
-        priority: 20
-        ruleType: 'MatchRule'
-        action: 'Block'
-        matchConditions: [
-          {
-            matchVariables: [
-              { variableName: 'RequestHeaders', selector: 'User-Agent' }
-            ]
-            operator: 'Contains'
-            negationConditon: false
-            transforms: ['Lowercase']
-            matchValues: ['nmap', 'masscan', 'zgrab', 'sqlmap', 'nuclei', 'nikto', 'dirbuster']
-          }
-        ]
-      }
-      {
-        name: 'BlockSensitivePaths'
-        priority: 30
-        ruleType: 'MatchRule'
-        action: 'Block'
-        matchConditions: [
-          {
-            matchVariables: [
-              { variableName: 'RequestUri', selector: null }
-            ]
-            operator: 'Contains'
-            negationConditon: false
-            transforms: ['Lowercase']
-            matchValues: ['.env', '.git/config', 'wp-admin', 'phpmyadmin', 'actuator/', '/admin/', 'aws_access_key']
-          }
-        ]
-      }
-    ]
+    customRules: customRules
     managedRules: {
       managedRuleSets: [
         {
