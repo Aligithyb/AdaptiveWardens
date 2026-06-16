@@ -341,7 +341,7 @@ jobs:
               "properties": {
                 "environmentId": "/subscriptions/7a549bf6-96a8-4af0-8a02-01417c246b57/resourceGroups/AdaptiveWardens/providers/Microsoft.App/managedEnvironments/aw-ca-env",
                 "configuration": {
-                  "ingress": { "external": true, "targetPort": 2222, "transport": "tcp" },
+                  "ingress": { "external": false, "targetPort": 2222, "transport": "tcp" },
                   "registries": [{ "server": "awreg8802.azurecr.io", "username": "awreg8802", "passwordSecretRef": "acr-password" }],
                   "secrets": [
                     { "name": "acr-password", "value": "${{ secrets.ACR_PASSWORD }}" }
@@ -959,7 +959,7 @@ jobs:
           EXPECTED_EXTERNAL[aw-sandbox-store]="false"
           EXPECTED_EXTERNAL[aw-ai-engine]="false"
           EXPECTED_EXTERNAL[aw-dashboard-backend]="false"
-          EXPECTED_EXTERNAL[aw-ssh-frontend]="true"
+          EXPECTED_EXTERNAL[aw-ssh-frontend]="false"
           EXPECTED_EXTERNAL[aw-http-frontend]="true"
           EXPECTED_EXTERNAL[aw-dashboard-frontend]="true"
 
