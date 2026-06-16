@@ -161,6 +161,7 @@ services:
     environment:
       - NODE_ENV=development
       - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:-gradproject2025}
+      - NEXT_PUBLIC_API_URL=http://18.207.156.94:8003 
     restart: unless-stopped
     depends_on:
       - dashboard-backend
