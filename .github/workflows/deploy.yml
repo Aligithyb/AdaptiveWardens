@@ -1,57 +1,36 @@
-name: Deploy to Azure VM
+name: Deploy AdaptiveWardens
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
 
 jobs:
-  sast:
-    name: Run SAST Scanner (Semgrep)
-    if: "!contains(github.event.head_commit.message, '[skip-sec]')"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run Semgrep
-        uses: semgrep/semgrep-action@v1
-        with:
-          config: "p/default p/owasp-top-ten"
-        continue-on-error: true
-
-  dast:
-    name: Run DAST Scanner (OWASP ZAP)
-    if: "!contains(github.event.head_commit.message, '[skip-sec]')"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Prepare environment
-        run: cp .env.example .env
-      - name: Spin up Docker Compose
-        run: docker compose up -d --build
-      - name: Wait for services
-        run: sleep 30
-      - name: Run ZAP Baseline Scan
-        uses: zaproxy/action-baseline@v0.14.0
-        with:
-          target: 'http://localhost:3000'
-          fail_action: false
-        continue-on-error: true
-
   deploy:
-    name: Deploy to Azure
-    needs: [sast, dast]
-    if: "always() && (needs.sast.result == 'success' || needs.sast.result == 'failure' || needs.sast.result == 'skipped') && (needs.dast.result == 'success' || needs.dast.result == 'failure' || needs.dast.result == 'skipped')"
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy via SSH
+      - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.AZURE_VM_HOST }}
-          username: ${{ secrets.AZURE_VM_USER }}
-          key: ${{ secrets.AZURE_VM_SSH_KEY }}
-          script_stop: true
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            cd /home/azureuser/honeypot/AdaptiveWardens
+            cd ~/AdaptiveWardens
+
             git pull origin main
-            docker compose up --build -d
-            docker image prune -f
+
+            cat > .env << ENVEOF
+            DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }}
+            DEEPSEEK_MODEL=deepseek-chat
+            DASHBOARD_PASSWORD=${{ secrets.DASHBOARD_PASSWORD }}
+            SSH_PORT=2222
+            HTTP_PORT=8080
+            DASHBOARD_PORT=3000
+            SANDBOX_API_PORT=8001
+            LLM_DAILY_INPUT_TOKEN_BUDGET=50000
+            LLM_DAILY_OUTPUT_TOKEN_BUDGET=20000
+            ENVEOF
+
+            docker compose build --no-cache dashboard-frontend
+            docker compose up -d
+            docker compose ps

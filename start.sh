@@ -8,7 +8,7 @@ if ! command -v docker &> /dev/null; then
   exit 1
 fi
 
-if ! command -v docker-compose &> /dev/null; then
+if ! command -v docker compose &> /dev/null; then
   echo "Error: Docker Compose is not installed"
   exit 1
 fi
@@ -21,11 +21,11 @@ fi
 
 echo ""
 echo "Building containers..."
-docker-compose build --no-cache
+docker compose build --no-cache
 
 echo ""
 echo "Starting services..."
-docker-compose up -d
+docker compose up -d
 
 echo ""
 echo "Waiting for services to start..."
@@ -33,7 +33,7 @@ sleep 15
 
 echo ""
 echo "Service Status:"
-docker-compose ps
+docker compose ps
 
 echo ""
 echo "=========================================="
@@ -50,11 +50,11 @@ echo "Test with:"
 echo "  ssh root@localhost -p 2222"
 echo ""
 echo "Commands:"
-echo "  View logs:        docker-compose logs -f"
-echo "  View SSH logs:    docker-compose logs -f ssh-frontend"
-echo "  View API logs:    docker-compose logs -f sandbox-store"
-echo "  View AI logs:     docker-compose logs -f ai-engine"
-echo "  View dashboard:   docker-compose logs -f dashboard-frontend"
+echo "  View logs:        docker compose logs -f"
+echo "  View SSH logs:    docker compose logs -f ssh-frontend"
+echo "  View API logs:    docker compose logs -f sandbox-store"
+echo "  View AI logs:     docker compose logs -f ai-engine"
+echo "  View dashboard:   docker compose logs -f dashboard-frontend"
 echo "  Stop services:    ./stop.sh"
-echo "  Restart:          docker-compose restart"
+echo "  Restart:          docker compose restart"
 echo ""
