@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Dashboard Backend API"""
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 import asyncio
 import hashlib
+import hmac as hmac_mod
 import httpx
+import secrets
 import sqlite3
 import csv
 import io
@@ -16,7 +20,73 @@ from typing import List, Dict, Any
 
 from threat_intel import enrich_ip, _ensure_ti_table, _get_cache
 
-app = FastAPI(title="SOC Dashboard API")
+
+# ---------------------------------------------------------------------------
+# User / Auth helpers
+# ---------------------------------------------------------------------------
+
+def _ensure_users_table(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            username    TEXT    UNIQUE NOT NULL,
+            email       TEXT,
+            full_name   TEXT    NOT NULL,
+            password_hash TEXT  NOT NULL,
+            role        TEXT    NOT NULL
+                            CHECK(role IN ('admin','soc_analyst','it_staff','read_only')),
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_login  TIMESTAMP,
+            is_active   INTEGER DEFAULT 1
+        )
+    """)
+    conn.commit()
+
+
+def _hash_password(password: str, salt: str | None = None) -> str:
+    if salt is None:
+        salt = secrets.token_hex(16)
+    key = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt.encode('utf-8'), 100_000)
+    return f"{salt}:{key.hex()}"
+
+
+def _verify_password(password: str, stored: str) -> bool:
+    try:
+        salt, key_hex = stored.split(':', 1)
+        expected = _hash_password(password, salt)
+        return hmac_mod.compare_digest(expected, stored)
+    except Exception:
+        return False
+
+
+def _seed_default_users(conn):
+    defaults = [
+        ('admin',      'admin@adaptivewardens.local',      'System Administrator', 'Admin@SOC2025!',   'admin'),
+        ('j.smith',    'j.smith@adaptivewardens.local',    'John Smith',           'Analyst@SOC2025!', 'soc_analyst'),
+        ('it.support', 'it.support@adaptivewardens.local', 'Support Engineer',     'Support@SOC2025!', 'it_staff'),
+        ('auditor',    'auditor@adaptivewardens.local',    'Security Auditor',     'Viewer@SOC2025!',  'read_only'),
+    ]
+    for username, email, full_name, password, role in defaults:
+        if not conn.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone():
+            conn.execute(
+                "INSERT INTO users (username, email, full_name, password_hash, role) VALUES (?,?,?,?,?)",
+                (username, email, full_name, _hash_password(password), role)
+            )
+    conn.commit()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        with get_db_connection() as conn:
+            _ensure_users_table(conn)
+            _seed_default_users(conn)
+    except Exception as e:
+        print(f"[startup] users table init warning: {e}")
+    yield
+
+
+app = FastAPI(title="SOC Dashboard API", lifespan=lifespan)
 
 # The backend is internal-only (no external ingress) with API-key auth on all
 # non-health endpoints, so broad CORS is safe for the SOC dashboard use case.
@@ -32,9 +102,11 @@ DB_PATH = os.getenv("DB_PATH", "/data/app_state.db")
 DASHBOARD_API_KEY = os.getenv("DASHBOARD_API_KEY", "")
 AI_ENGINE_URL = os.getenv("AI_ENGINE_URL", "http://ai-engine:8002")
 
+AUTH_EXEMPT = {"/health", "/api/auth/login"}
+
 @app.middleware("http")
 async def require_api_key(request: Request, call_next):
-    if DASHBOARD_API_KEY and request.url.path != "/health":
+    if DASHBOARD_API_KEY and request.url.path not in AUTH_EXEMPT:
         if request.headers.get("X-API-Key", "") != DASHBOARD_API_KEY:
             return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
     return await call_next(request)
@@ -580,6 +652,61 @@ async def get_blocklist():
         )
     except sqlite3.OperationalError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Auth endpoints
+# ---------------------------------------------------------------------------
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/auth/login")
+def login(body: LoginRequest):
+    username = body.username.strip().lower()
+    try:
+        with get_db_connection() as conn:
+            _ensure_users_table(conn)
+            user = conn.execute(
+                "SELECT * FROM users WHERE username=? AND is_active=1", (username,)
+            ).fetchone()
+    except sqlite3.OperationalError as e:
+        raise HTTPException(status_code=503, detail=f"Database error: {e}")
+
+    if not user or not _verify_password(body.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    try:
+        with get_db_connection() as conn:
+            conn.execute(
+                "UPDATE users SET last_login=datetime('now') WHERE username=?", (username,)
+            )
+            conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    return {
+        "username": user["username"],
+        "full_name": user["full_name"],
+        "email": user["email"],
+        "role": user["role"],
+    }
+
+
+@app.get("/api/auth/users")
+def list_users():
+    """Return all users (admin view). API-key protected by middleware."""
+    try:
+        with get_db_connection() as conn:
+            _ensure_users_table(conn)
+            rows = conn.execute(
+                "SELECT username, email, full_name, role, created_at, last_login, is_active FROM users ORDER BY role, username"
+            ).fetchall()
+            return {"users": [dict(r) for r in rows]}
+    except sqlite3.OperationalError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 # ---------------------------------------------------------------------------

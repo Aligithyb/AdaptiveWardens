@@ -1,23 +1,52 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createSessionToken, UserRole } from '@/lib/auth';
 
-const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || 'gradproject2025';
+const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8003';
 
 export async function POST(req: NextRequest) {
   try {
-    const { password } = await req.json();
-    if (password === DASHBOARD_PASSWORD) {
-      const res = NextResponse.json({ ok: true });
-      res.cookies.set('session', 'authenticated', {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        maxAge: 60 * 60 * 4, // 4 hours
-        path: '/',
-      });
-      return res;
+    const { username, password } = await req.json();
+    if (!username || !password) {
+      return NextResponse.json({ error: 'Username and password required' }, { status: 400 });
     }
-    return NextResponse.json({ error: 'invalid password' }, { status: 401 });
+
+    // Validate credentials against backend
+    let userData: { username: string; full_name: string; role: UserRole };
+    try {
+      const backendRes = await fetch(`${BACKEND_URL}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+        signal: AbortSignal.timeout(8000),
+      });
+
+      if (!backendRes.ok) {
+        return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
+      }
+      userData = await backendRes.json();
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'TimeoutError') {
+        return NextResponse.json({ error: 'Authentication service unavailable' }, { status: 503 });
+      }
+      return NextResponse.json({ error: 'Authentication service unavailable' }, { status: 503 });
+    }
+
+    const token = await createSessionToken({
+      username: userData.username,
+      role: userData.role,
+      fullName: userData.full_name,
+    });
+
+    const res = NextResponse.json({ ok: true, role: userData.role, fullName: userData.full_name });
+    res.cookies.set('session', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 60 * 60 * 4, // 4 hours
+      path: '/',
+    });
+    return res;
   } catch {
-    return NextResponse.json({ error: 'bad request' }, { status: 400 });
+    return NextResponse.json({ error: 'Bad request' }, { status: 400 });
   }
 }
