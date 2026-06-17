@@ -3,6 +3,7 @@ name: Deploy AdaptiveWardens
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -16,21 +17,24 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             cd ~/AdaptiveWardens
-
             git pull origin main
-
             cat > .env << ENVEOF
+            GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
             DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }}
-            DEEPSEEK_MODEL=deepseek-chat
-            DASHBOARD_PASSWORD=${{ secrets.DASHBOARD_PASSWORD }}
+            JWT_SECRET=${{ secrets.JWT_SECRET }}
+            SLACK_WEBHOOK_URL=${{ secrets.SLACK_WEBHOOK_URL }}
+            SLACK_BOT_TOKEN=${{ secrets.SLACK_BOT_TOKEN }}
+            SLACK_CHANNEL=${{ secrets.SLACK_CHANNEL }}
             SSH_PORT=2222
             HTTP_PORT=8080
             DASHBOARD_PORT=3000
             SANDBOX_API_PORT=8001
-            LLM_DAILY_INPUT_TOKEN_BUDGET=50000
-            LLM_DAILY_OUTPUT_TOKEN_BUDGET=20000
+            LOG_LEVEL=INFO
+            MAX_SESSIONS=50
+            SESSION_TIMEOUT=1800
+            ENABLE_RATE_LIMITING=true
+            NEXT_PUBLIC_API_URL=http://18.207.156.94:8003
             ENVEOF
-
-            docker compose build --no-cache dashboard-frontend
+            docker compose build --no-cache
             docker compose up -d
             docker compose ps
