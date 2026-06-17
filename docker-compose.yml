@@ -18,6 +18,8 @@ services:
       - CANARY_AWS_SECRET_KEY=${CANARY_AWS_SECRET_KEY}
       - CANARY_STRIPE_KEY=${CANARY_STRIPE_KEY}
       - CANARY_DNS_HOSTNAME=${CANARY_DNS_HOSTNAME}
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     healthcheck:
       test: [ "CMD", "python", "-c", "import requests; requests.get('http://localhost:8001/health')" ]
@@ -45,6 +47,8 @@ services:
       - LLM_PER_IP_RATE_LIMIT_CALLS=${LLM_PER_IP_RATE_LIMIT_CALLS:-30}
       - LLM_PER_IP_RATE_LIMIT_WINDOW=${LLM_PER_IP_RATE_LIMIT_WINDOW:-60}
       - SANDBOX_URL=http://sandbox-store:8001
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
@@ -62,8 +66,9 @@ services:
     ports:
       - "2222:2222"
     networks:
-      - prod-internal
-      - dmz
+      dmz:
+        mac_address: "00:50:56:3c:a1:f4"
+      prod-internal:
     volumes:
       - ./ssh-frontend/src/ssh_server.py:/app/ssh_server.py
       - sandbox-data:/data
@@ -71,6 +76,14 @@ services:
       - SANDBOX_URL=http://sandbox-store:8001
       - AI_ENGINE_URL=http://ai-engine:8002
       - PYTHONUNBUFFERED=1
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - SETUID
+      - SETGID
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "echo 'x' > /dev/tcp/localhost/2222 || exit 1"]
@@ -130,6 +143,8 @@ services:
       - AI_ENGINE_URL=http://ai-engine:8002
       - VIRUSTOTAL_API_KEY=${VIRUSTOTAL_API_KEY:-}
       - ABUSEIPDB_API_KEY=${ABUSEIPDB_API_KEY:-}
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8003/health')"]

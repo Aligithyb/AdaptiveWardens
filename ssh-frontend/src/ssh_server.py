@@ -120,9 +120,13 @@ def _journal_ts(minutes_ago: int = 0) -> str:
 
 
 def _kernel_threads() -> str:
-    """ps aux kernel thread rows with dates derived from BOOT_TIME."""
+    """Dense ps aux output — 50+ processes mimicking a real production Ubuntu 22 server."""
     kd = _kern_date()
+    rr = random.randint
+    up_h = int((time.time() - BOOT_TIME) // 3600)
+    up_m = int(((time.time() - BOOT_TIME) % 3600) // 60)
     return (
+        # PID 1 + kernel threads
         f"root           1  0.0  0.0  167524 11120 ?  Ss   {kd}   0:05 /sbin/init splash\n"
         f"root           2  0.0  0.0       0     0 ?  S    {kd}   0:00 [kthreadd]\n"
         f"root           3  0.0  0.0       0     0 ?  I<   {kd}   0:00 [rcu_gp]\n"
@@ -130,16 +134,69 @@ def _kernel_threads() -> str:
         f"root           6  0.0  0.0       0     0 ?  I<   {kd}   0:00 [kworker/0:0H-events_highpri]\n"
         f"root           9  0.0  0.0       0     0 ?  I<   {kd}   0:00 [mm_percpu_wq]\n"
         f"root          10  0.0  0.0       0     0 ?  S    {kd}   0:00 [ksoftirqd/0]\n"
-        f"root          11  0.0  0.0       0     0 ?  I    {kd}   0:{random.randint(15,19)} [rcu_sched]\n"
+        f"root          11  0.0  0.0       0     0 ?  I    {kd}   0:{rr(15,19)} [rcu_sched]\n"
         f"root          12  0.0  0.0       0     0 ?  S    {kd}   0:00 [migration/0]\n"
         f"root          13  0.0  0.0       0     0 ?  S    {kd}   0:00 [idle_inject/0]\n"
+        f"root          14  0.0  0.0       0     0 ?  S    {kd}   0:00 [cpuhp/0]\n"
+        f"root          20  0.0  0.0       0     0 ?  S    {kd}   0:00 [cpuhp/1]\n"
+        f"root          21  0.0  0.0       0     0 ?  S    {kd}   0:00 [migration/1]\n"
+        f"root          22  0.0  0.0       0     0 ?  S    {kd}   0:00 [ksoftirqd/1]\n"
         f"root          34  0.0  0.0       0     0 ?  S<   {kd}   0:00 [kdevtmpfs]\n"
+        f"root          36  0.0  0.0       0     0 ?  I<   {kd}   0:00 [inet_frag_wq]\n"
+        f"root          37  0.0  0.0       0     0 ?  S    {kd}   0:00 [kauditd]\n"
+        f"root          52  0.0  0.0       0     0 ?  S<   {kd}   0:00 [oom_reaper]\n"
+        f"root          54  0.0  0.0       0     0 ?  I<   {kd}   0:00 [writeback]\n"
+        f"root          55  0.0  0.0       0     0 ?  S    {kd}   0:00 [kcompactd0]\n"
+        f"root          56  0.0  0.0       0     0 ?  SN   {kd}   0:00 [khugepaged]\n"
         f"root         134  0.0  0.0   14476  7248 ?  Ss   {kd}   0:00 /usr/sbin/sshd -D\n"
-        f"root         892  0.1  0.0   55280  9512 ?  Ss   {kd}  {int((time.time()-BOOT_TIME)//3600):>2}:{int(((time.time()-BOOT_TIME)%3600)//60):02d} nginx: master process /etc/nginx/nginx.conf\n"
-        f"www-data     893  0.0  0.0   55720  {5412+random.randint(-200,200)} ?  S    {kd}   0:{random.randint(10,14)} nginx: worker process\n"
-        f"root        2048  0.0  0.1   65116 {18432+random.randint(-512,512)} ?  Ssl  {kd}   0:{random.randint(6,10)} /usr/bin/redis-server 127.0.0.1:6379\n"
-        f"postgres    2150  0.0  0.2  222532 {38912+random.randint(-1024,1024)} ?  Ss   {kd}   0:{random.randint(20,25)} /usr/lib/postgresql/14/bin/postgres\n"
-        f"root        3100  0.1  0.4  896512 {68512+random.randint(-2048,2048)} ?  Ssl  {kd}  {int((time.time()-BOOT_TIME)//3600):>2}:{int(((time.time()-BOOT_TIME)%3600)//60):02d} node /opt/nexopay/server.js\n"
+        f"root         135  0.0  0.0   14820  {rr(5100,5400)} ?  Ss   {kd}   0:00 sshd: root@pts/0\n"
+        # systemd support daemons
+        f"root         151  0.0  0.0   70824  {rr(9000,11000)} ?  Ss   {kd}   0:00 /lib/systemd/systemd-journald\n"
+        f"root         168  0.0  0.0   28040  {rr(4000,6000)} ?  Ss   {kd}   0:00 /lib/systemd/systemd-udevd\n"
+        f"root         197  0.0  0.0   17372  {rr(3000,4000)} ?  Ss   {kd}   0:00 /lib/systemd/systemd-networkd\n"
+        f"root         212  0.0  0.0   17440  {rr(2000,3500)} ?  Ss   {kd}   0:00 /lib/systemd/systemd-resolved\n"
+        f"root         224  0.0  0.0   14632  {rr(1500,2500)} ?  Ss   {kd}   0:00 /lib/systemd/systemd-logind\n"
+        f"message+     230  0.0  0.0   10820  {rr(2000,3000)} ?  Ss   {kd}   0:00 /usr/bin/dbus-daemon --system\n"
+        # Security / audit
+        f"root         245  0.0  0.0   26532  {rr(3000,4500)} ?  Ssl  {kd}   0:{rr(1,4)} /sbin/auditd\n"
+        f"root         268  0.0  0.0   27416  {rr(6000,8000)} ?  Ss   {kd}   0:{rr(0,2)} /usr/sbin/fail2ban-server -xf start\n"
+        # Cron / at
+        f"root         289  0.0  0.0   10244  {rr(2000,3000)} ?  Ss   {kd}   0:00 /usr/sbin/cron -f\n"
+        f"root         291  0.0  0.0    6700  {rr(1000,2000)} ?  Ss   {kd}   0:00 /usr/sbin/atd -f\n"
+        # rsyslog
+        f"syslog       298  0.0  0.0  224944  {rr(4000,6000)} ?  Ssl  {kd}   0:{rr(0,2)} /usr/sbin/rsyslogd -n\n"
+        # nginx (master + 4 workers)
+        f"root         892  0.1  0.0   55280  9512 ?  Ss   {kd}  {up_h:>2}:{up_m:02d} nginx: master process /etc/nginx/nginx.conf\n"
+        f"www-data     893  0.0  0.0   55720  {5412+rr(-200,200)} ?  S    {kd}   0:{rr(10,14)} nginx: worker process\n"
+        f"www-data     894  0.0  0.0   55720  {5300+rr(-200,200)} ?  S    {kd}   0:{rr(10,14)} nginx: worker process\n"
+        f"www-data     895  0.0  0.0   55692  {5280+rr(-200,200)} ?  S    {kd}   0:{rr(10,14)} nginx: worker process\n"
+        f"www-data     896  0.0  0.0   55668  {5260+rr(-200,200)} ?  S    {kd}   0:{rr(10,14)} nginx: worker process\n"
+        # Redis
+        f"redis       2048  0.1  0.1   65116 {18432+rr(-512,512)} ?  Ssl  {kd}   0:{rr(6,10)} /usr/bin/redis-server 127.0.0.1:6379\n"
+        # PostgreSQL 14 (supervisor + 8 workers + autovacuum)
+        f"postgres    2150  0.0  0.2  222532 {38912+rr(-1024,1024)} ?  Ss   {kd}   0:{rr(20,25)} /usr/lib/postgresql/14/bin/postgres -D /var/lib/postgresql/14/main\n"
+        f"postgres    2151  0.0  0.1  222532 {14336+rr(-512,512)} ?  Ss   {kd}   0:00 postgres: checkpointer\n"
+        f"postgres    2152  0.0  0.1  222532 {13824+rr(-512,512)} ?  Ss   {kd}   0:00 postgres: background writer\n"
+        f"postgres    2153  0.0  0.1  222532 {13312+rr(-512,512)} ?  Ss   {kd}   0:00 postgres: walwriter\n"
+        f"postgres    2154  0.0  0.0  222932  {5120+rr(-256,256)} ?  Ss   {kd}   0:00 postgres: autovacuum launcher\n"
+        f"postgres    2155  0.0  0.0  184352  {4096+rr(-256,256)} ?  Ss   {kd}   0:00 postgres: stats collector\n"
+        f"postgres    2156  0.0  0.0  184096  {3840+rr(-256,256)} ?  Ss   {kd}   0:00 postgres: logical replication launcher\n"
+        f"postgres    2160  0.1  0.3  225248 {46080+rr(-2048,2048)} ?  Ss   {kd}   0:{rr(3,8)} postgres: nexopay_app nexopay_prod 10.0.1.45(38412) idle\n"
+        f"postgres    2161  0.1  0.3  225184 {45056+rr(-2048,2048)} ?  Ss   {kd}   0:{rr(3,8)} postgres: nexopay_app nexopay_prod 10.0.1.45(38418) idle\n"
+        f"postgres    2162  0.0  0.2  224832 {38912+rr(-1024,1024)} ?  Ss   {kd}   0:{rr(1,4)} postgres: nexopay_app nexopay_prod 10.0.1.45(38424) idle in transaction\n"
+        f"postgres    2163  0.1  0.3  225312 {47104+rr(-2048,2048)} ?  Ss   {kd}   0:{rr(3,8)} postgres: nexopay_app nexopay_prod 10.0.1.45(38430) SELECT\n"
+        # Node.js NexoPay (4 workers)
+        f"nexopay     3100  2.1  4.3  921344 {180224+rr(-4096,4096)} ?  Ssl  {kd}  {up_h:>2}:{up_m:02d} node /opt/nexopay/server.js --cluster\n"
+        f"nexopay     3101  1.8  3.9  876288 {163840+rr(-4096,4096)} ?  Sl   {kd}  {up_h-1:>2}:{up_m:02d} node /opt/nexopay/worker.js\n"
+        f"nexopay     3102  1.9  4.0  891904 {167936+rr(-4096,4096)} ?  Sl   {kd}  {up_h-1:>2}:{up_m:02d} node /opt/nexopay/worker.js\n"
+        f"nexopay     3103  1.7  3.8  856064 {159744+rr(-4096,4096)} ?  Sl   {kd}  {up_h-1:>2}:{up_m:02d} node /opt/nexopay/worker.js\n"
+        # Health check script
+        f"nexopay     4012  0.0  0.1   19068  {rr(8000,10000)} ?  S    {kd}   0:00 /usr/bin/node /opt/nexopay/scripts/health-check.js\n"
+        # kworker threads (appear dynamically on real systems)
+        f"root        5121  0.0  0.0       0     0 ?  I    {kd}   0:00 [kworker/u8:2-events_unbound]\n"
+        f"root        5234  0.0  0.0       0     0 ?  I    {kd}   0:00 [kworker/1:1-events]\n"
+        f"root        5890  0.0  0.0       0     0 ?  I    {kd}   0:00 [kworker/0:2-events]\n"
+        f"root        6102  0.0  0.0       0     0 ?  I    {kd}   0:00 [kworker/u8:0-events_unbound]\n"
     )
 
 
@@ -579,10 +636,26 @@ def _format_ls_long(entry: dict) -> str:
 # ---------------------------------------------------------------------------
 # Container-escape / baremetal-validation probes
 # ---------------------------------------------------------------------------
+_PROC1_CGROUP = (
+    "12:cpuset:/\n"
+    "11:memory:/system.slice/nexopay-api.service\n"
+    "10:blkio:/system.slice/nexopay-api.service\n"
+    "9:rdma:/\n"
+    "8:perf_event:/\n"
+    "7:pids:/system.slice/nexopay-api.service\n"
+    "6:cpu,cpuacct:/system.slice/nexopay-api.service\n"
+    "5:freezer:/\n"
+    "4:devices:/system.slice/nexopay-api.service\n"
+    "3:net_cls,net_prio:/\n"
+    "2:hugetlb:/\n"
+    "1:name=systemd:/system.slice/nexopay-api.service\n"
+    "0::/system.slice/nexopay-api.service"
+)
+
 CONTAINER_ESCAPE_PROBES = {
-    "cat /proc/1/cgroup":                  "0::/init.scope",
-    "cat /proc/self/cgroup":               "0::/user.slice/user-1000.slice/session-3.scope",
-    "cat /.dockerenv":                     "cat: /.dockerenv: No such file or directory",
+    "cat /proc/1/cgroup":                  _PROC1_CGROUP,
+    "cat /proc/self/cgroup":               "0::/user.slice/user-1000.slice/session-3.scope\n1:name=systemd:/user.slice/user-0.slice/session-3.scope",
+    "cat /.dockerenv":                     "",
     "ls /.dockerenv":                      "ls: cannot access '/.dockerenv': No such file or directory",
     "ls -la /.dockerenv":                  "ls: cannot access '/.dockerenv': No such file or directory",
     "systemd-detect-virt":                 "none",
@@ -606,7 +679,8 @@ STATIC_RESPONSES = {
     "ifconfig": lambda ctx: (
         "eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500\n"
         "        inet 10.0.1.45  netmask 255.255.255.0  broadcast 10.0.1.255\n"
-        "        inet6 fe80::a00:1ff:fe2d:4501  prefixlen 64  scopeid 0x20<link>\n"
+        "        inet6 fe80::250:56ff:fe3c:a1f4  prefixlen 64  scopeid 0x20<link>\n"
+        "        ether 00:50:56:3c:a1:f4  txqueuelen 1000  (Ethernet)\n"
         "        RX packets 3456789  bytes 2345678901 (2.3 GB)\n"
         "        TX packets 1234567  bytes 987654321  (987.6 MB)\n"
         "lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536\n"
@@ -617,12 +691,13 @@ STATIC_RESPONSES = {
         "    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\n"
         "    inet 127.0.0.1/8 scope host lo\n"
         "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP\n"
-        "    link/ether 02:00:01:2d:45:01 brd ff:ff:ff:ff:ff:ff\n"
+        "    link/ether 00:50:56:3c:a1:f4 brd ff:ff:ff:ff:ff:ff\n"
         "    inet 10.0.1.45/24 brd 10.0.1.255 scope global eth0"
     ),
     "ip a": lambda ctx: (
         "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536\n    inet 127.0.0.1/8 scope host lo\n"
         "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\n"
+        "    link/ether 00:50:56:3c:a1:f4 brd ff:ff:ff:ff:ff:ff\n"
         "    inet 10.0.1.45/24 brd 10.0.1.255 scope global eth0"
     ),
     "df -h": lambda ctx: (
@@ -1152,16 +1227,18 @@ _SLOW_CMDS = {
 
 
 def _realistic_delay(cmd: str) -> float:
+    # Floor raised to 180ms for all paths — destroys the timing oracle that
+    # reveals AI (800-4000ms) vs static (<20ms) response source to attackers.
     parts = cmd.split()
     base = parts[0] if parts else ""
     if base in _INSTANT_CMDS:
-        return random.uniform(0.002, 0.018)
+        return random.uniform(0.18, 0.35)
     if base in _SLOW_CMDS:
         lo, hi = _SLOW_CMDS[base]
-        return random.uniform(lo, hi)
+        return random.uniform(max(lo, 0.18), hi)
     if base in _FAST_CMDS:
-        return random.uniform(0.020, 0.120)
-    return random.uniform(0.030, 0.150)
+        return random.uniform(0.18, 0.40)
+    return random.uniform(0.20, 0.45)
 
 
 def get_fallback(cmd: str, ctx: dict) -> str:
@@ -1845,6 +1922,25 @@ class SessionHandler(asyncssh.SSHServerSession):
 
         if cmd in CONTAINER_ESCAPE_PROBES:
             await self._handle_intercept(cmd, CONTAINER_ESCAPE_PROBES[cmd])
+            return
+
+        # history -c / history -w: clear in-memory nav history so up-arrow is
+        # empty and `history` returns nothing — forensic SQLite log is unaffected.
+        if cmd.lower() in ("history -c", "history -w", "history -cw", "history -wc"):
+            self._cmd_history.clear()
+            self._hist_cleared = True
+            await asyncio.sleep(_realistic_delay(cmd))
+            self._set_exit(0)
+            self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
+            asyncio.create_task(self._record(cmd, "", int(0)))
+            return
+
+        # `history` respects whether -c was previously called
+        if cmd == "history" or re.match(r'^history\s+-[0-9]+$', cmd):
+            if getattr(self, '_hist_cleared', False):
+                await self._handle_intercept(cmd, "")
+            else:
+                await self._handle_intercept(cmd, STATIC_RESPONSES["history"](self.context))
             return
 
         if cmd == "cd" or cmd.startswith("cd "):
@@ -2535,6 +2631,19 @@ class SessionHandler(asyncssh.SSHServerSession):
                     output = datetime.utcnow().strftime("%a %b %d %H:%M:%S UTC %Y")
             else:
                 output = datetime.utcnow().strftime("%a %b %d %H:%M:%S UTC %Y")
+        elif ('<<' in cmd or '\n' in cmd) and ('://' in cmd):
+            # Heredoc / multi-line payload: scan each line for wget/curl calls
+            for line in cmd.split('\n'):
+                line = line.strip()
+                if (line.startswith('wget ') or (line.startswith('curl ') and '://' in line)):
+                    dl = _extract_download_url(line)
+                    if dl:
+                        url, fname = dl
+                        fs = random.randint(4096, 1 << 19)
+                        asyncio.create_task(self._record_ioc({"ioc_type": "url", "value": url, "confidence": 0.85}))
+                        asyncio.create_task(self._record_malware_download(url=url, filename=fname, file_size=fs, command=line))
+            output = get_fallback(cmd, self.context)
+            from_fallback = True
         elif cmd_lower.startswith("wget ") or (cmd_lower.startswith("curl ") and "://" in cmd_lower):
             dl = _extract_download_url(cmd)
             if dl:
@@ -2732,7 +2841,6 @@ class SessionHandler(asyncssh.SSHServerSession):
         elif len(non_flags) == 1:
             host = non_flags[0]
 
-        await asyncio.sleep(random.uniform(0.1, 0.4))
         port_banners = {
             "6379": "+PONG\r\n",
             "5432": "connection to server at \"" + (host or "localhost") + "\", failed: FATAL:  password authentication failed for user \"root\"",
@@ -2741,11 +2849,18 @@ class SessionHandler(asyncssh.SSHServerSession):
             "27017": "MongoDB connection attempt denied",
         }
         if port in port_banners:
+            await asyncio.sleep(random.uniform(0.1, 0.4))
             output = port_banners[port]
-        elif host and not port:
-            output = f"Ncat: Connection refused."
         else:
-            output = f"Ncat: No route to host."
+            # Outbound-filtered production server: TCP SYN is sent but no reply.
+            # Realistic behaviour is a timeout, NOT an immediate refusal.
+            await asyncio.sleep(random.uniform(3.0, 5.5))
+            if host and port:
+                output = f"nc: connect to {host} port {port} (tcp) timed out: Operation timed out"
+            elif host:
+                output = f"nc: connect to {host} port 1 (tcp) timed out: Operation timed out"
+            else:
+                output = "nc: missing hostname"
 
         self._write_line(output)
         self.command_history.append({"command": cmd, "output": output})
