@@ -4,7 +4,7 @@ import { Shield, Filter } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
 
-export function IOCSummary() {
+export function IOCSummary({ onIPClick }: { onIPClick?: (ip: string) => void }) {
   const [filterType, setFilterType] = useState('all');
   const [filterSeverity, setFilterSeverity] = useState('all');
   const [iocs, setIocs] = useState<any[]>([]);
@@ -112,7 +112,18 @@ export function IOCSummary() {
                     {ioc.ioc_type}
                   </span>
                 </td>
-                <td className="px-6 py-4 text-sm text-slate-300">{ioc.value}</td>
+                <td className="px-6 py-4 text-sm">
+                  {ioc.ioc_type === 'ip' && onIPClick ? (
+                    <button
+                      className="font-mono text-cyan-400 hover:text-cyan-300 transition-colors cursor-pointer"
+                      onClick={() => onIPClick(ioc.value)}
+                    >
+                      {ioc.value}
+                    </button>
+                  ) : (
+                    <span className="text-slate-300">{ioc.value}</span>
+                  )}
+                </td>
                 <td className="px-6 py-4 text-sm text-cyan-400">{ioc.session_id}</td>
                 <td className="px-6 py-4">
                   <span className={`px-2 py-1 text-xs rounded border ${getSeverityColor(severityFromConfidence(ioc.confidence))}`}>
