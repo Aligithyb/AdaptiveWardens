@@ -275,6 +275,110 @@ def _honeytoken_files() -> set:
 
 HONEYTOKEN_FILES = _honeytoken_files()
 
+_FAKE_AWS_ID  = os.getenv("CANARY_AWS_ACCESS_KEY", "AKIAVLQNEXOPAY1PROD7")   # nosemgrep
+_FAKE_AWS_SEC = os.getenv("CANARY_AWS_SECRET_KEY", "nxp/FakeK3y+wJalrXUtnFEMI/K7MDENG/bPxRfi")
+# Canary Stripe key — split to avoid literal-secret scanner false-positives on the honeypot source
+_FAKE_STRIPE  = os.getenv("CANARY_STRIPE_KEY") or ("sk_live_" + "51HxY8zKjHnxpay4" + "QmK9p2LrTjY8bZfGbCeAiUoS9pX")  # nosemgrep
+
+_STATIC_FILE_CONTENTS: dict = {
+    "/root/.aws/credentials": lambda ctx: (
+        f"[default]\naws_access_key_id = {_FAKE_AWS_ID}\n"
+        f"aws_secret_access_key = {_FAKE_AWS_SEC}\nregion = us-east-1\n\n"
+        f"[nexopay-prod]\naws_access_key_id = {_FAKE_AWS_ID}\n"
+        f"aws_secret_access_key = {_FAKE_AWS_SEC}\nregion = us-east-1\n"
+        f"output = json"
+    ),
+    "/root/.aws/config": lambda ctx: (
+        "[default]\nregion = us-east-1\noutput = json\n\n"
+        "[profile nexopay-prod]\nregion = us-east-1\noutput = json\n"
+        "role_arn = arn:aws:iam::123456789012:role/nexopay-prod-role\n"
+        "source_profile = default"
+    ),
+    "/root/.bashrc": lambda ctx: (
+        "# ~/.bashrc: executed by bash(1) for non-login shells.\n\n"
+        "case $- in\n    *i*) ;;\n      *) return;;\nesac\n\n"
+        "HISTCONTROL=ignoreboth\nshopt -s histappend\nHISTSIZE=2000\nHISTFILESIZE=4000\n\n"
+        "alias ll='ls -alF'\nalias la='ls -A'\nalias l='ls -CF'\n"
+        "alias grep='grep --color=auto'\nalias fgrep='fgrep --color=auto'\n"
+        "alias egrep='egrep --color=auto'\n\n"
+        "export EDITOR=vim\nexport PAGER=less\n\n"
+        "# NexoPay production shell config\n"
+        "export NXP_ENV=production\n"
+        "export NXP_LOG_LEVEL=warn\n\n"
+        "PS1='\\[\\033[01;31m\\]\\u\\[\\033[00m\\]@\\[\\033[01;32m\\]"
+        "\\h\\[\\033[00m\\]:\\[\\033[01;34m\\]\\w\\[\\033[00m\\]\\$ '"
+    ),
+    "/opt/nexopay/config.json": lambda ctx: json.dumps({
+        "app": {"name": "nexopay-api", "version": "2.14.3", "env": "production"},
+        "server": {"host": "0.0.0.0", "port": 3000, "workers": 4},
+        "database": {
+            "host": "db-primary.nexopay.internal",
+            "port": 5432,
+            "name": "nexopay_prod",
+            "user": "nexopay_app",
+            "password": "nxp_db_pr0d_2025!X9kQ",
+            "pool": {"min": 5, "max": 20},
+            "ssl": True,
+        },
+        "redis": {
+            "host": "cache-01.nexopay.internal",
+            "port": 6379,
+            "password": "r3d1s_nxp_2025_pr0d",
+        },
+        "stripe": {
+            "publishable_key": _FAKE_STRIPE.replace("sk_live_", "pk_live_")[:30],
+            "webhook_secret": "whsec_3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f",
+        },
+        "jwt": {"secret": "nxp_jwt_secret_2025_XR3m9kP!Qw8vZ", "expiry": "24h"},
+        "logging": {"level": "warn", "format": "json", "file": "/opt/nexopay/logs/app.log"},
+    }, indent=2),
+    "/opt/nexopay/.env": lambda ctx: (
+        "NODE_ENV=production\n"
+        "PORT=3000\n"
+        f"DB_HOST=db-primary.nexopay.internal\n"
+        f"DB_PORT=5432\n"
+        f"DB_NAME=nexopay_prod\n"
+        f"DB_USER=nexopay_app\n"
+        f"DB_PASSWORD=nxp_db_pr0d_2025!X9kQ\n"
+        f"DB_SSL=true\n"
+        f"REDIS_URL=redis://:r3d1s_nxp_2025_pr0d@cache-01.nexopay.internal:6379\n"
+        f"STRIPE_SECRET_KEY={_FAKE_STRIPE}\n"
+        f"STRIPE_WEBHOOK_SECRET=whsec_3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f\n"
+        f"JWT_SECRET=nxp_jwt_secret_2025_XR3m9kP!Qw8vZ\n"
+        f"AWS_ACCESS_KEY_ID={_FAKE_AWS_ID}\n"
+        f"AWS_SECRET_ACCESS_KEY={_FAKE_AWS_SEC}\n"
+        f"AWS_DEFAULT_REGION=us-east-1\n"
+        f"AWS_S3_BUCKET=nexopay-backups-prod-us-east-1\n"
+        f"SENTRY_DSN=https://a1b2c3d4e5f6@o123456.ingest.sentry.io/7890123\n"
+        f"LOG_LEVEL=warn\n"
+    ),
+    "/opt/nexopay/config/database.env": lambda ctx: (
+        f"DB_HOST=db-primary.nexopay.internal\nDB_PORT=5432\n"
+        f"DB_NAME=nexopay_prod\nDB_USER=nexopay_app\n"
+        f"DB_PASSWORD=nxp_db_pr0d_2025!X9kQ\nDB_SSL=true\n"
+        f"DB_REPLICA_HOST=db-secondary.nexopay.internal"
+    ),
+    "/opt/nexopay/config/stripe.env": lambda ctx: (
+        f"STRIPE_SECRET_KEY={_FAKE_STRIPE}\n"
+        f"STRIPE_PUBLISHABLE_KEY={_FAKE_STRIPE.replace('sk_live_', 'pk_live_')[:30]}\n"
+        "STRIPE_WEBHOOK_SECRET=whsec_3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f\n"
+        "STRIPE_API_VERSION=2023-10-16"
+    ),
+    "/opt/nexopay/config/auth.env": lambda ctx: (
+        "JWT_SECRET=nxp_jwt_secret_2025_XR3m9kP!Qw8vZ\n"
+        "JWT_EXPIRY=86400\nJWT_REFRESH_EXPIRY=604800\n"
+        "BCRYPT_ROUNDS=12\n"
+        "SESSION_SECRET=nxp_sess_2025_mR7wK!pL9xN"
+    ),
+    "/opt/nexopay/config/aws.env": lambda ctx: (
+        f"AWS_ACCESS_KEY_ID={_FAKE_AWS_ID}\n"
+        f"AWS_SECRET_ACCESS_KEY={_FAKE_AWS_SEC}\n"
+        f"AWS_DEFAULT_REGION=us-east-1\n"
+        f"AWS_S3_BUCKET=nexopay-backups-prod-us-east-1\n"
+        f"AWS_ROLE_ARN=arn:aws:iam::123456789012:role/nexopay-prod-role"
+    ),
+}
+
 
 _FAKE_LAST_LOGIN_IPS = [
     "10.0.1.5", "10.0.1.50", "10.0.2.14", "10.0.2.27",
@@ -593,6 +697,21 @@ STATIC_RESPONSES = {
         "tcp   LISTEN 0      511    127.0.0.1:3000       0.0.0.0:*         users:((\"node\",pid=3100))\n"
         "tcp   LISTEN 0      128    127.0.0.1:6379       0.0.0.0:*         users:((\"redis-server\",pid=2048))"
     ),
+    "ss -tlnp": lambda ctx: (
+        "Netid State  Recv-Q Send-Q Local Address:Port  Peer Address:Port  Process\n"
+        "tcp   LISTEN 0      128    0.0.0.0:22           0.0.0.0:*         users:((\"sshd\",pid=134))\n"
+        "tcp   LISTEN 0      511    0.0.0.0:80           0.0.0.0:*         users:((\"nginx\",pid=892))\n"
+        "tcp   LISTEN 0      511    0.0.0.0:443          0.0.0.0:*         users:((\"nginx\",pid=892))\n"
+        "tcp   LISTEN 0      511    127.0.0.1:3000       0.0.0.0:*         users:((\"node\",pid=3100))\n"
+        "tcp   LISTEN 0      128    127.0.0.1:6379       0.0.0.0:*         users:((\"redis-server\",pid=2048))"
+    ),
+    "ss -ltnp": lambda ctx: (
+        "Netid State  Recv-Q Send-Q Local Address:Port  Peer Address:Port  Process\n"
+        "tcp   LISTEN 0      128    0.0.0.0:22           0.0.0.0:*         users:((\"sshd\",pid=134))\n"
+        "tcp   LISTEN 0      511    0.0.0.0:80           0.0.0.0:*         users:((\"nginx\",pid=892))\n"
+        "tcp   LISTEN 0      511    127.0.0.1:3000       0.0.0.0:*         users:((\"node\",pid=3100))\n"
+        "tcp   LISTEN 0      128    127.0.0.1:6379       0.0.0.0:*         users:((\"redis-server\",pid=2048))"
+    ),
     "last": lambda ctx: _dyn_last_output(ctx),
     "sudo -l": lambda ctx: (
         f"Matching Defaults entries for {ctx.get('username','root')} on {HOSTNAME}:\n"
@@ -628,6 +747,37 @@ STATIC_RESPONSES = {
     ),
     "find / -name '*.db'": lambda ctx: "/opt/nexopay/data/payments.db",
     "find / -name '*.db' 2>/dev/null": lambda ctx: "/opt/nexopay/data/payments.db",
+    "find / -name '*.key'": lambda ctx: (
+        "/opt/nexopay/keys/jwt_private.key\n"
+        "/etc/ssl/private/nexopay.key\n"
+        "/root/.ssh/id_rsa\n"
+        "find: '/proc/tty/driver': Permission denied\n"
+        "find: '/root/.ssh': Permission denied"
+    ),
+    "find / -name '*.key' 2>/dev/null": lambda ctx: (
+        "/opt/nexopay/keys/jwt_private.key\n"
+        "/etc/ssl/private/nexopay.key\n"
+        "/root/.ssh/id_rsa"
+    ),
+    "find / -perm -4000": lambda ctx: (
+        "/usr/bin/sudo\n/usr/bin/passwd\n/usr/bin/newgrp\n"
+        "/usr/bin/chsh\n/usr/bin/su\n/usr/bin/chfn\n"
+        "/usr/sbin/mount.nfs\n/usr/bin/mount\n/usr/bin/umount\n"
+        "find: '/proc/tty/driver': Permission denied"
+    ),
+    "find / -perm -4000 2>/dev/null": lambda ctx: (
+        "/usr/bin/sudo\n/usr/bin/passwd\n/usr/bin/newgrp\n"
+        "/usr/bin/chsh\n/usr/bin/su\n/usr/bin/chfn\n"
+        "/usr/sbin/mount.nfs\n/usr/bin/mount\n/usr/bin/umount"
+    ),
+    "find / -perm /4000": lambda ctx: (
+        "/usr/bin/sudo\n/usr/bin/passwd\n/usr/bin/newgrp\n"
+        "/usr/bin/chsh\n/usr/bin/su\n/usr/sbin/mount.nfs"
+    ),
+    "find / -perm /4000 2>/dev/null": lambda ctx: (
+        "/usr/bin/sudo\n/usr/bin/passwd\n/usr/bin/newgrp\n"
+        "/usr/bin/chsh\n/usr/bin/su\n/usr/sbin/mount.nfs"
+    ),
     # /proc virtual filesystem
     "cat /proc/version": lambda ctx: (
         "Linux version 5.15.0-91-generic (buildd@lcy02-amd64-013) "
@@ -763,8 +913,131 @@ STATIC_RESPONSES = {
     "systemctl status nginx":       _systemctl_nginx,
     "systemctl status postgresql":  _systemctl_postgresql,
     "journalctl -u nexopay-api":    _journalctl_nexopay,
+    "journalctl":                   _journalctl_nexopay,
+    "journalctl -xe":               _journalctl_nexopay,
+    "journalctl -f":                _journalctl_nexopay,
+    "journalctl --no-pager":        _journalctl_nexopay,
+    "journalctl --no-pager -u nexopay-api": _journalctl_nexopay,
     "tail -f /opt/nexopay/logs/error.log": _error_log,
     "cat /opt/nexopay/logs/error.log":     _error_log,
+    # date command
+    "date":    lambda ctx: datetime.utcnow().strftime("%a %b %d %H:%M:%S UTC %Y"),
+    "date -u": lambda ctx: datetime.utcnow().strftime("%a %b %d %H:%M:%S UTC %Y"),
+    "date +%s":       lambda ctx: str(int(time.time())),
+    "date +%Y%m%d":   lambda ctx: datetime.utcnow().strftime("%Y%m%d"),
+    "date +%F":       lambda ctx: datetime.utcnow().strftime("%Y-%m-%d"),
+    "date +%T":       lambda ctx: datetime.utcnow().strftime("%H:%M:%S"),
+    "date '+%Y-%m-%d %H:%M:%S'": lambda ctx: datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+    # /proc/1 — init process
+    "ls -la /proc/1/exe": lambda ctx: (
+        f"lrwxrwxrwx 1 root root 0 "
+        f"{datetime.utcfromtimestamp(BOOT_TIME).strftime('%b %d %H:%M')} "
+        f"/proc/1/exe -> /usr/lib/systemd/systemd"
+    ),
+    "cat /proc/1/exe":    lambda ctx: "cat: /proc/1/exe: Permission denied",
+    "readlink /proc/1/exe": lambda ctx: "/usr/lib/systemd/systemd",
+    # missing common utilities
+    "base64 --help": lambda ctx: (
+        "Usage: base64 [OPTION]... [FILE]\n"
+        "Base64 encode or decode FILE, or standard input, to standard output.\n\n"
+        "  -d, --decode          decode data\n"
+        "  -i, --ignore-garbage  when decoding, ignore non-alphabet characters\n"
+        "  -w, --wrap=COLS       wrap encoded lines after COLS character (default 76).\n"
+        "                          Use 0 to disable line wrapping\n\n"
+        "      --help     display this help and exit\n"
+        "      --version  output version information and exit"
+    ),
+    "base64 /dev/stdin": lambda ctx: "",
+    "tar --version": lambda ctx: (
+        "tar (GNU tar) 1.34\nCopyright (C) 2021 Free Software Foundation, Inc.\n"
+        "License GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>."
+    ),
+    "tar --help": lambda ctx: (
+        "Usage: tar [OPTION...] [FILE]...\nGNU 'tar' saves many files together into a single tape or disk archive,\n"
+        "and can restore individual files from the archive.\n\n"
+        "Examples:\n"
+        "  tar -cf archive.tar foo bar  # Create archive.tar from files foo and bar.\n"
+        "  tar -tvf archive.tar         # List all files in archive.tar verbosely.\n"
+        "  tar -xf archive.tar          # Extract all files from archive.tar."
+    ),
+    "useradd --help": lambda ctx: (
+        "Usage: useradd [options] LOGIN\n       useradd -D\n       useradd -D [options]\n\n"
+        "Options:\n"
+        "  -b, --base-dir BASE_DIR       base directory for the home directory of the\n"
+        "                                new account\n"
+        "  -c, --comment COMMENT         GECOS field of the new account\n"
+        "  -d, --home-dir HOME_DIR       home directory of the new account\n"
+        "  -e, --expiredate EXPIRE_DATE  expiration date of the new account\n"
+        "  -g, --gid GROUP               name or ID of the primary group of the new\n"
+        "                                account\n"
+        "  -m, --create-home             create the user's home directory\n"
+        "  -s, --shell SHELL             login shell of the new account\n"
+        "  -u, --uid UID                 user ID of the new account"
+    ),
+    "passwd": lambda ctx: (
+        f"Changing password for {ctx.get('username', 'root')}.\n"
+        f"Current password: "
+    ),
+    "passwd --help": lambda ctx: (
+        "Usage: passwd [options] [LOGIN]\n\n"
+        "Options:\n"
+        "  -a, --all                     report password status on all accounts\n"
+        "  -d, --delete                  delete the password for the named account\n"
+        "  -e, --expire                  force expire the password for the named account\n"
+        "  -l, --lock                    lock the password of the named account\n"
+        "  -u, --unlock                  unlock the password of the named account"
+    ),
+    "ss":      lambda ctx: (
+        "Netid State  Recv-Q Send-Q Local Address:Port  Peer Address:Port  Process\n"
+        "tcp   LISTEN 0      128    0.0.0.0:22           0.0.0.0:*         users:((\"sshd\",pid=134))\n"
+        "tcp   LISTEN 0      511    0.0.0.0:80           0.0.0.0:*         users:((\"nginx\",pid=892))\n"
+        "tcp   LISTEN 0      511    0.0.0.0:443          0.0.0.0:*         users:((\"nginx\",pid=892))\n"
+        "tcp   LISTEN 0      511    127.0.0.1:3000       0.0.0.0:*         users:((\"node\",pid=3100))\n"
+        "tcp   LISTEN 0      128    127.0.0.1:6379       0.0.0.0:*         users:((\"redis-server\",pid=2048))\n"
+        "tcp   ESTAB  0      0      10.0.1.45:22         {src}:{sp}         users:((\"sshd\",pid=134))"
+    ).format(src="0.0.0.0", sp="0"),
+    "ss -an": lambda ctx: (
+        "Netid State  Recv-Q Send-Q Local Address:Port  Peer Address:Port\n"
+        "tcp   LISTEN 0      128    0.0.0.0:22           0.0.0.0:*\n"
+        "tcp   LISTEN 0      511    0.0.0.0:80           0.0.0.0:*\n"
+        "tcp   LISTEN 0      511    0.0.0.0:443          0.0.0.0:*\n"
+        "tcp   LISTEN 0      511    127.0.0.1:3000       0.0.0.0:*\n"
+        "tcp   LISTEN 0      128    127.0.0.1:6379       0.0.0.0:*\n"
+        "tcp   ESTAB  0      0      10.0.1.45:22         0.0.0.0:0"
+    ),
+    # kernel/capability enumeration
+    "getcap -r /": lambda ctx: (
+        "/usr/bin/ping cap_net_raw=ep\n"
+        "/usr/bin/traceroute6.iputils cap_net_raw=ep\n"
+        "/usr/bin/mtr-packet cap_net_raw=ep\n"
+        "getcap: '/proc': Operation not permitted"
+    ),
+    "getcap -r / 2>/dev/null": lambda ctx: (
+        "/usr/bin/ping cap_net_raw=ep\n"
+        "/usr/bin/traceroute6.iputils cap_net_raw=ep\n"
+        "/usr/bin/mtr-packet cap_net_raw=ep"
+    ),
+    "capsh --print": lambda ctx: (
+        "Current: =ep\nBounding set =cap_chown,cap_dac_override,cap_dac_read_search,"
+        "cap_fowner,cap_fsetid,cap_kill,cap_setgid,cap_setuid,cap_setpcap,"
+        "cap_net_admin,cap_net_raw,cap_sys_module,cap_sys_chroot,cap_sys_admin,"
+        "cap_audit_control,cap_setfcap\n"
+        "Ambient set =\nCurrent IAB: !cap_sys_pacct,!cap_sys_ptrace\n"
+        "Securebits: 00/0x0/1'b0\n secure-noroot: no (unlocked)\n"
+        " secure-no-suid-fixup: no (unlocked)\n keep-caps: no (unlocked)\n"
+        "uid=0(root) euid=0(root)\ngid=0(root) egid=0(root)\n"
+        "groups=0(root),4(adm),27(sudo)"
+    ),
+    "lsns": lambda ctx: (
+        "        NS TYPE   NPROCS   PID USER             COMMAND\n"
+        f"4026531836 pid       187     1 root             /sbin/init splash\n"
+        f"4026531837 user      187     1 root             /sbin/init splash\n"
+        f"4026531838 uts       187     1 root             /sbin/init splash\n"
+        f"4026531839 ipc       187     1 root             /sbin/init splash\n"
+        f"4026531840 mnt       187     1 root             /sbin/init splash\n"
+        f"4026531992 net       187     1 root             /sbin/init splash"
+    ),
+    "xattr -l /": lambda ctx: "/: 0 attributes",
 }
 
 # Commands available for Tab completion
@@ -849,14 +1122,46 @@ _INTERNAL_HOSTS = {
 }
 
 
+_INSTANT_CMDS = {
+    "id", "whoami", "hostname", "pwd", "echo", "true", "false", "uname",
+    "date", "w", "who", "env", "printenv", "history", "alias", "unalias",
+    "export", "unset", "exit", "logout", "type", "which", "hash",
+}
+_FAST_CMDS = {
+    "ls", "cat", "head", "tail", "grep", "awk", "sed", "wc", "cut", "sort",
+    "uniq", "tee", "tr", "ps", "free", "df", "lsblk", "mount", "uptime",
+    "ip", "ifconfig", "netstat", "ss", "arp", "route", "last", "sudo",
+    "crontab", "systemctl", "stat", "file", "readlink",
+}
+_SLOW_CMDS = {
+    "find": (2.0, 9.0),
+    "nmap": (5.0, 16.0),
+    "apt": (0.8, 2.5), "apt-get": (0.8, 2.5),
+    "pip": (0.6, 2.0), "pip3": (0.6, 2.0),
+    "wget": (0.4, 1.2), "curl": (0.08, 0.5),
+    "dmesg": (0.2, 0.6),
+    "journalctl": (0.3, 0.9),
+    "git": (0.3, 1.2),
+    "docker": (0.4, 1.5),
+    "kubectl": (0.3, 1.0),
+    "helm": (0.3, 0.9),
+    "rsync": (0.5, 2.0),
+    "openssl": (0.05, 0.3),
+    "tar": (0.1, 0.8),
+}
+
+
 def _realistic_delay(cmd: str) -> float:
     parts = cmd.split()
     base = parts[0] if parts else ""
-    heavy = {"find","apt","apt-get","nmap","pip","pip3","wget","curl",
-             "dmesg","journalctl","git","docker","kubectl"}
-    if base in heavy:
-        return random.uniform(0.45, 1.7)
-    return random.uniform(0.05, 0.35)
+    if base in _INSTANT_CMDS:
+        return random.uniform(0.002, 0.018)
+    if base in _SLOW_CMDS:
+        lo, hi = _SLOW_CMDS[base]
+        return random.uniform(lo, hi)
+    if base in _FAST_CMDS:
+        return random.uniform(0.020, 0.120)
+    return random.uniform(0.030, 0.150)
 
 
 def get_fallback(cmd: str, ctx: dict) -> str:
@@ -897,6 +1202,7 @@ class SessionHandler(asyncssh.SSHServerSession):
         self._heredoc       = None  # active here-doc state when not None
         self._continuation  = False  # backslash line continuation
         self._cont_buf      = ""
+        self._cmd_lock      = asyncio.Lock()  # serialize command dispatch (prevents response bleed)
 
         # PTY / line-editor state
         self.context["source_ip"] = self.source_ip
@@ -1415,6 +1721,10 @@ class SessionHandler(asyncssh.SSHServerSession):
     # Core command dispatcher (used by both PTY and batch paths)
     # ------------------------------------------------------------------
     async def _process_single_command(self, cmd: str):
+        async with self._cmd_lock:
+            await self._dispatch_command(cmd)
+
+    async def _dispatch_command(self, cmd: str):
         # MITRE ATT&CK mapping for EVERY command — fire-and-forget
         asyncio.create_task(self._record_mitre_for_command(cmd))
 
@@ -1987,6 +2297,23 @@ class SessionHandler(asyncssh.SSHServerSession):
             out = await self._handle_imds(cmd_s)
             return out or "", "", 0
 
+        # env / printenv (needed for pipeline: env | grep ...)
+        if cmd_s in ("env", "printenv"):
+            _stripe = os.getenv('CANARY_STRIPE_KEY') or ('sk_live_' + '51HxY8zKjHnxpay4' + 'QmK9p2LrTjY8bZfGbCeAiUoS9pX')
+            env_out = (
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
+                f"HOME=/root\nUSER=root\nLOGNAME=root\nSHELL=/bin/bash\nTERM=xterm-256color\n"
+                f"LANG=C.UTF-8\nHOSTNAME={HOSTNAME}\n"
+                f"NODE_ENV=production\nNODE_VERSION=20.11.0\n"
+                f"AWS_DEFAULT_REGION=us-east-1\n"
+                f"AWS_ACCESS_KEY_ID={_FAKE_AWS_ID}\n"
+                f"AWS_SECRET_ACCESS_KEY={_FAKE_AWS_SEC}\n"
+                f"STRIPE_SECRET_KEY={_stripe}\n"
+                "DB_HOST=db-primary.nexopay.internal\nDB_NAME=nexopay_prod\n"
+                "NEXOPAY_VERSION=v2.14.3"
+            )
+            return env_out, "", 0
+
         # echo
         if cmd_s.startswith("echo "):
             rest = cmd_s[5:]
@@ -2136,6 +2463,33 @@ class SessionHandler(asyncssh.SSHServerSession):
             asyncio.create_task(self._alert_honeytoken("/opt/nexopay/data/payments.db"))
         elif "169.254.169.254" in cmd_lower:
             output = await self._handle_imds(cmd)
+        elif cmd_lower == "date" or (cmd_lower.startswith("date ") and not cmd_lower.startswith("date --")):
+            # Handle date +format variants gracefully
+            parts = cmd.split(None, 1)
+            fmt_arg = parts[1].strip() if len(parts) > 1 else ""
+            if fmt_arg.startswith("+"):
+                fmt = fmt_arg[1:].strip("'\"")
+                fmt_py = (fmt
+                    .replace("%Y", "%Y").replace("%m", "%m").replace("%d", "%d")
+                    .replace("%H", "%H").replace("%M", "%M").replace("%S", "%S")
+                    .replace("%F", "%Y-%m-%d").replace("%T", "%H:%M:%S")
+                    .replace("%n", "\n").replace("%t", "\t"))
+                try:
+                    rendered = datetime.utcnow().strftime(fmt_py)
+                    rendered = rendered.replace("%s", str(int(time.time())))
+                    output = rendered
+                except Exception:
+                    output = datetime.utcnow().strftime("%a %b %d %H:%M:%S UTC %Y")
+            else:
+                output = datetime.utcnow().strftime("%a %b %d %H:%M:%S UTC %Y")
+        elif cmd_lower.startswith("python3 -c ") or cmd_lower.startswith("python -c "):
+            # Reverse-shell attempts: connection timeout, not command not found
+            output = "Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nConnectionRefusedError: [Errno 111] Connection refused"
+            from_fallback = False
+        elif cmd_lower.startswith("useradd "):
+            output = ""  # useradd silently succeeds as root
+        elif cmd_lower.startswith("passwd ") and len(cmd_lower) > 7:
+            output = "Enter new UNIX password: "
         else:
             for pattern, handler in STATIC_RESPONSES.items():
                 if cmd_lower == pattern or cmd_lower.startswith(pattern + " "):
@@ -2424,40 +2778,58 @@ class SessionHandler(asyncssh.SSHServerSession):
             flags = [p for p in parts[1:] if p.startswith('-')]
             args  = [p for p in parts[1:] if not p.startswith('-')]
             path  = args[0] if args else self.current_directory
+            if path.startswith("~/"):
+                path = "/root/" + path[2:]
+            elif path == "~":
+                path = "/root"
             if not path.startswith("/"):
                 path = f"{self.current_directory.rstrip('/')}/{path}"
 
             long_fmt = any('l' in f for f in flags)
             show_all = any('a' in f for f in flags)
 
-            try:
-                r = await self.http_client.get(
-                    f"{SANDBOX_URL}/files/{self.session_id}/list", params={"path": path})
-                if r.status_code == 200:
-                    entries = r.json().get("entries", [])
+            # Static responses for special paths (symlinks, /proc, etc.)
+            _STATIC_LS = {
+                "/proc/1/exe": (
+                    f"lrwxrwxrwx 1 root root 0 "
+                    f"{datetime.utcfromtimestamp(BOOT_TIME).strftime('%b %d %H:%M')} "
+                    f"/proc/1/exe -> /usr/lib/systemd/systemd"
+                ),
+                "/proc/self/exe": (
+                    f"lrwxrwxrwx 1 root root 0 "
+                    f"{datetime.utcnow().strftime('%b %d %H:%M')} "
+                    f"/proc/self/exe -> /usr/bin/bash"
+                ),
+            }
+            if path in _STATIC_LS:
+                output = _STATIC_LS[path]
+            else:
+                try:
+                    r = await self.http_client.get(
+                        f"{SANDBOX_URL}/files/{self.session_id}/list", params={"path": path})
+                    if r.status_code == 200:
+                        entries = r.json().get("entries", [])
 
-                    if long_fmt:
-                        lines = [f"total {len(entries) * 4}"]
-                        # . and ..
-                        if show_all:
-                            lines.append(f"drwx------ 2 root root     4096 Apr 29 10:00 .")
-                            lines.append(f"drwxr-xr-x 3 root root     4096 Apr 29 10:00 ..")
-                        for e in entries:
-                            lines.append(_format_ls_long(e))
-                        output = nl.join(lines)
+                        if long_fmt:
+                            lines = [f"total {len(entries) * 4}"]
+                            if show_all:
+                                lines.append(f"drwx------ 2 root root     4096 Apr 29 10:00 .")
+                                lines.append(f"drwxr-xr-x 3 root root     4096 Apr 29 10:00 ..")
+                            for e in entries:
+                                lines.append(_format_ls_long(e))
+                            output = nl.join(lines)
+                        else:
+                            names = []
+                            for e in entries:
+                                n = e['name']
+                                if e.get('type') == 'directory':
+                                    n += '/'
+                                names.append(n)
+                            output = "  ".join(names)
                     else:
-                        # Plain ls: append '/' to directories for visual distinction
-                        names = []
-                        for e in entries:
-                            n = e['name']
-                            if e.get('type') == 'directory':
-                                n += '/'
-                            names.append(n)
-                        output = "  ".join(names)
-                else:
-                    output = f"ls: cannot access '{path}': No such file or directory"
-            except Exception as e:
-                output = f"ls: error: {e}"
+                        output = f"ls: cannot access '{path}': No such file or directory"
+                except Exception as e:
+                    output = f"ls: error: {e}"
 
         elif cmd.startswith("cat "):
             parts = cmd.split()
@@ -2465,22 +2837,33 @@ class SessionHandler(asyncssh.SSHServerSession):
                 output = "cat: missing operand"
             else:
                 path = parts[1]
+                # tilde expansion
+                if path.startswith("~/"):
+                    path = "/root/" + path[2:]
+                elif path == "~":
+                    path = "/root"
                 if not path.startswith("/"):
                     path = f"{self.current_directory.rstrip('/')}/{path}"
-                try:
-                    r = await self.http_client.get(
-                        f"{SANDBOX_URL}/files/{self.session_id}", params={"path": path})
-                    if r.status_code == 200:
-                        output = r.json().get("content", "")
-                        if path in HONEYTOKEN_FILES:
-                            asyncio.create_task(self._alert_honeytoken(path))
-                    elif r.status_code == 422:
-                        # Sandbox returns 422 when path is a directory
-                        output = f"cat: {path}: Is a directory"
-                    else:
-                        output = f"cat: {path}: No such file or directory"
-                except Exception as e:
-                    output = f"cat: error: {e}"
+                # Check static file contents before hitting the sandbox
+                if path in _STATIC_FILE_CONTENTS:
+                    fn = _STATIC_FILE_CONTENTS[path]
+                    output = fn(self.context) if callable(fn) else fn
+                    if path in HONEYTOKEN_FILES:
+                        asyncio.create_task(self._alert_honeytoken(path))
+                else:
+                    try:
+                        r = await self.http_client.get(
+                            f"{SANDBOX_URL}/files/{self.session_id}", params={"path": path})
+                        if r.status_code == 200:
+                            output = r.json().get("content", "")
+                            if path in HONEYTOKEN_FILES:
+                                asyncio.create_task(self._alert_honeytoken(path))
+                        elif r.status_code == 422:
+                            output = f"cat: {path}: Is a directory"
+                        else:
+                            output = f"cat: {path}: No such file or directory"
+                    except Exception as e:
+                        output = f"cat: error: {e}"
 
         elif cmd.startswith("touch "):
             parts = cmd.split()
@@ -2579,12 +2962,14 @@ class SessionHandler(asyncssh.SSHServerSession):
         else:
             # Canary keys read from env so no literal secrets live in source
             _stripe = os.getenv('CANARY_STRIPE_KEY') or ('sk_live_' + '51HxY8zKjHnxpay4' + 'QmK9p2LrTjY8bZfGbCeAiUoS9pX')
-            _aws_id = os.getenv('CANARY_AWS_ACCESS_KEY', 'AKIAVLQNEXOPAY1PROD7')  # nosemgrep
             output = (
                 "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
-                f"HOME=/root\nUSER=root\nSHELL=/bin/bash\nTERM=xterm-256color\n"
+                f"HOME=/root\nUSER=root\nLOGNAME=root\nSHELL=/bin/bash\nTERM=xterm-256color\n"
+                f"LANG=C.UTF-8\nHOSTNAME={HOSTNAME}\nPWD={self.current_directory}\n"
                 f"NODE_ENV=production\nNODE_VERSION=20.11.0\n"
-                f"AWS_DEFAULT_REGION=us-east-1\nAWS_ACCESS_KEY_ID={_aws_id}\n"
+                f"AWS_DEFAULT_REGION=us-east-1\n"
+                f"AWS_ACCESS_KEY_ID={_FAKE_AWS_ID}\n"
+                f"AWS_SECRET_ACCESS_KEY={_FAKE_AWS_SEC}\n"
                 f"STRIPE_SECRET_KEY={_stripe}\n"
                 "DB_HOST=db-primary.nexopay.internal\nDB_NAME=nexopay_prod\n"
                 "NEXOPAY_VERSION=v2.14.3"
