@@ -27,6 +27,17 @@ logger = logging.getLogger("dashboard.threat_intel")
 VT_API_KEY    = os.getenv("VIRUSTOTAL_API_KEY", "")
 ABUSE_API_KEY = os.getenv("ABUSEIPDB_API_KEY", "")
 
+ABUSE_CATEGORY_MAP = {
+    1: "DNS Compromise", 2: "DNS Poisoning", 3: "Fraud Orders",
+    4: "DDoS Attack", 5: "FTP Brute Force", 6: "Ping of Death",
+    7: "Phishing", 8: "Fraud VoIP", 9: "Open Proxy",
+    10: "Web Spam", 11: "Email Spam", 12: "Blog Spam",
+    13: "VPN IP", 14: "Port Scan", 15: "Hacking",
+    16: "SQL Injection", 17: "Spoofing", 18: "Brute Force",
+    19: "Bad Web Bot", 20: "Exploited Host", 21: "Web App Attack",
+    22: "SSH", 23: "IoT Targeted",
+}
+
 _VT_TTL_S    = 86400      # 24 h
 _ABUSE_TTL_S = 86400      # 24 h
 _IPAPI_TTL_S = 86400 * 7  # 7 d
@@ -135,6 +146,15 @@ async def vt_lookup(ip: str, conn: sqlite3.Connection) -> dict:
                 raw = resp.json()
                 attrs = raw.get("data", {}).get("attributes", {})
                 stats = attrs.get("last_analysis_stats", {})
+                analysis_results = attrs.get("last_analysis_results", {})
+                flagged_vendors = sorted(
+                    [
+                        {"name": vendor, "verdict": details.get("category", "")}
+                        for vendor, details in analysis_results.items()
+                        if details.get("category") in ("malicious", "suspicious")
+                    ],
+                    key=lambda x: (0 if x["verdict"] == "malicious" else 1, x["name"].lower()),
+                )
                 result = {
                     "malicious":         stats.get("malicious", 0),
                     "suspicious":        stats.get("suspicious", 0),
@@ -147,6 +167,7 @@ async def vt_lookup(ip: str, conn: sqlite3.Connection) -> dict:
                     "asn":               attrs.get("asn", ""),
                     "as_owner":          attrs.get("as_owner", ""),
                     "reputation":        attrs.get("reputation", 0),
+                    "flagged_vendors":   flagged_vendors,
                 }
     except Exception as e:
         logger.warning(f"VT lookup failed for {ip}: {e}")
@@ -172,7 +193,7 @@ async def abuse_lookup(ip: str, conn: sqlite3.Connection) -> dict:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
                 "https://api.abuseipdb.com/api/v2/check",
-                params={"ipAddress": ip, "maxAgeInDays": 90},
+                params={"ipAddress": ip, "maxAgeInDays": 90, "verbose": True},
                 headers={"Key": ABUSE_API_KEY, "Accept": "application/json"},
             )
             if resp.status_code == 401:
@@ -182,6 +203,13 @@ async def abuse_lookup(ip: str, conn: sqlite3.Connection) -> dict:
             elif resp.status_code != 200:
                 return {"error": f"http_{resp.status_code}"}
             raw = resp.json().get("data", {})
+            seen_cats: set[int] = set()
+            for report in raw.get("reports", []):
+                seen_cats.update(report.get("categories", []))
+            categories = [
+                ABUSE_CATEGORY_MAP.get(c, f"Category {c}")
+                for c in sorted(seen_cats)
+            ]
             result = {
                 "abuse_confidence_score": raw.get("abuseConfidenceScore", 0),
                 "total_reports":          raw.get("totalReports", 0),
@@ -192,6 +220,7 @@ async def abuse_lookup(ip: str, conn: sqlite3.Connection) -> dict:
                 "domain":                 raw.get("domain", ""),
                 "country_code":           raw.get("countryCode", ""),
                 "num_distinct_users":     raw.get("numDistinctUsers", 0),
+                "categories":             categories,
             }
     except Exception as e:
         logger.warning(f"AbuseIPDB lookup failed for {ip}: {e}")

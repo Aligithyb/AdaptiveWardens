@@ -5,9 +5,10 @@ import { api } from '@/lib/api';
 interface LiveSessionsProps {
   selectedSession: string | null;
   setSelectedSession: (id: string) => void;
+  onIPClick?: (ip: string) => void;
 }
 
-export function LiveSessions({ selectedSession, setSelectedSession }: LiveSessionsProps) {
+export function LiveSessions({ selectedSession, setSelectedSession, onIPClick }: LiveSessionsProps) {
   const [sessions, setSessions] = useState<any[]>([]);
 
   useEffect(() => {
@@ -125,7 +126,18 @@ export function LiveSessions({ selectedSession, setSelectedSession }: LiveSessio
                   <td className="px-6 py-4 text-sm font-mono text-cyan-400">
                     {session.session_id?.slice(0, 8)}…
                   </td>
-                  <td className="px-6 py-4 text-sm text-slate-300">{session.source_ip}</td>
+                  <td className="px-6 py-4 text-sm">
+                    {onIPClick ? (
+                      <button
+                        className="font-mono text-slate-300 hover:text-cyan-400 transition-colors cursor-pointer"
+                        onClick={e => { e.stopPropagation(); onIPClick(session.source_ip); }}
+                      >
+                        {session.source_ip}
+                      </button>
+                    ) : (
+                      <span className="text-slate-300">{session.source_ip}</span>
+                    )}
+                  </td>
                   <td className="px-6 py-4 text-sm text-slate-400">{session.country || '—'}</td>
                   <td className="px-6 py-4">
                     <span className="px-2 py-1 text-xs bg-slate-800 text-slate-300 rounded uppercase">

@@ -12,6 +12,7 @@ import { MitreAttackMap } from '@/components/MitreAttackMap';
 import { MetricsStats } from '@/components/MetricsStats';
 import { Reports } from '@/components/Reports';
 import { ThreatIntelligence } from '@/components/ThreatIntelligence';
+import { IPThreatPanel } from '@/components/IPThreatPanel';
 import { Lock } from 'lucide-react';
 import { SessionUser, canAccess, ROLE_LABELS } from '@/lib/auth';
 
@@ -27,6 +28,7 @@ const AttackHeatmap = dynamic(
 export default function DashboardPage() {
   const [activeView, setActiveView] = useState('dashboard');
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
+  const [selectedIP, setSelectedIP] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [user, setUser] = useState<SessionUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -72,6 +74,9 @@ export default function DashboardPage() {
 
   return (
     <div className="flex h-screen bg-slate-950">
+      {selectedIP && (
+        <IPThreatPanel ip={selectedIP} onClose={() => setSelectedIP(null)} />
+      )}
       <Sidebar activeView={activeView} setActiveView={setActiveView} user={user} />
       <div className="flex-1 flex flex-col overflow-hidden">
         <Header
@@ -102,19 +107,19 @@ export default function DashboardPage() {
                 <div className="space-y-6">
                   <MetricsStats />
                   <AttackHeatmap />
-                  <LiveSessions selectedSession={selectedSession} setSelectedSession={setSelectedSession} />
+                  <LiveSessions selectedSession={selectedSession} setSelectedSession={setSelectedSession} onIPClick={setSelectedIP} />
                   <SessionPlayback sessionId={selectedSession} />
-                  <IOCSummary />
+                  <IOCSummary onIPClick={setSelectedIP} />
                   <MitreAttackMap />
                 </div>
               )}
               {activeView === 'live-sessions' && (
                 <div className="space-y-6">
-                  <LiveSessions selectedSession={selectedSession} setSelectedSession={setSelectedSession} />
+                  <LiveSessions selectedSession={selectedSession} setSelectedSession={setSelectedSession} onIPClick={setSelectedIP} />
                   <SessionPlayback sessionId={selectedSession} />
                 </div>
               )}
-              {activeView === 'ioc-summary' && <IOCSummary />}
+              {activeView === 'ioc-summary' && <IOCSummary onIPClick={setSelectedIP} />}
               {activeView === 'attack-map' && <AttackHeatmap />}
               {activeView === 'mitre-attack' && <MitreAttackMap />}
               {activeView === 'metrics' && <MetricsStats />}
