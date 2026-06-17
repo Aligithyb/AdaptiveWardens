@@ -891,45 +891,53 @@ class SandboxDatabase:
     
     # ==================== COMMAND HISTORY ====================
     
-    def add_command(self, session_id: str, command: str, output: str = '', 
-                    exit_code: int = 0, duration_ms: int = 0):
+    def add_command(self, session_id: str, command: str, output: str = '',
+                    exit_code: int = 0, duration_ms: int = 0,
+                    response_source: str = 'static'):
         """Record a command in history."""
         with self.get_connection() as conn:
-            # Get next sequence number
+            # Migrate: add response_source column if absent (safe no-op if already exists)
+            try:
+                conn.execute("ALTER TABLE command_history ADD COLUMN response_source TEXT DEFAULT 'static'")
+                conn.commit()
+            except Exception:
+                pass
+
             seq_result = conn.execute("""
                 SELECT COALESCE(MAX(sequence_number), 0) + 1 as next_seq
-                FROM command_history 
+                FROM command_history
                 WHERE session_id = ?
             """, (session_id,)).fetchone()
-            
+
             next_seq = seq_result['next_seq']
-            
+
             conn.execute("""
-                INSERT INTO command_history 
-                (session_id, sequence_number, command, output, exit_code, duration_ms)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (session_id, next_seq, command, output, exit_code, duration_ms))
-            
-            # Update session command count
+                INSERT INTO command_history
+                (session_id, sequence_number, command, output, exit_code, duration_ms, response_source)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (session_id, next_seq, command, output, exit_code, duration_ms, response_source))
+
             conn.execute("""
-                UPDATE sessions 
+                UPDATE sessions
                 SET command_count = command_count + 1
                 WHERE session_id = ?
             """, (session_id,))
-            
+
             conn.commit()
-    
+
     def get_command_history(self, session_id: str, limit: int = 100) -> List[Dict]:
         """Retrieve command history for a session."""
         with self.get_connection() as conn:
             results = conn.execute("""
-                SELECT sequence_number, timestamp, command, output, exit_code, duration_ms
-                FROM command_history 
+                SELECT sequence_number, timestamp, command, output,
+                       exit_code, duration_ms,
+                       COALESCE(response_source, 'static') as response_source
+                FROM command_history
                 WHERE session_id = ?
                 ORDER BY sequence_number DESC
                 LIMIT ?
             """, (session_id, limit)).fetchall()
-            
+
             return [dict(row) for row in results]
     
     # ==================== LOGS ====================

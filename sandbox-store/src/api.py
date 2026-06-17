@@ -40,6 +40,7 @@ class CommandRecord(BaseModel):
     output: Optional[str] = ''
     exit_code: Optional[int] = 0
     duration_ms: Optional[int] = 0
+    response_source: Optional[str] = 'static'
 
 class LogEntry(BaseModel):
     log_source: str
@@ -286,7 +287,8 @@ async def add_command(session_id: str, cmd: CommandRecord):
         cmd.command,
         cmd.output,
         cmd.exit_code,
-        cmd.duration_ms
+        cmd.duration_ms,
+        cmd.response_source,
     )
     return {"status": "recorded"}
 

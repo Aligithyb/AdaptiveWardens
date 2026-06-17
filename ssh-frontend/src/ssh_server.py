@@ -2508,6 +2508,8 @@ class SessionHandler(asyncssh.SSHServerSession):
         cmd_lower = cmd.lower().strip()
         output = None
         from_fallback = False
+        from_ai = False
+        from_malware = False
 
         if cmd_lower.startswith("sqlite3"):
             output = self._handle_sqlite3(cmd)
@@ -2542,7 +2544,7 @@ class SessionHandler(asyncssh.SSHServerSession):
                     output = _fake_wget_output(url, filename, file_size)
                 else:
                     output = _fake_curl_output(url, filename, file_size)
-                # Record URL as IOC and fire async malware tracking
+                from_malware = True
                 asyncio.create_task(self._record_ioc({
                     "ioc_type": "url",
                     "value": url,
@@ -2569,6 +2571,8 @@ class SessionHandler(asyncssh.SSHServerSession):
                     break
             if output is None and AI_ENGINE_URL:
                 output = await self._get_ai_response(cmd)
+                if output is not None:
+                    from_ai = True
             if output is None:
                 output = get_fallback(cmd, self.context)
                 from_fallback = True
@@ -2593,8 +2597,15 @@ class SessionHandler(asyncssh.SSHServerSession):
         else:
             self._set_exit(0)
 
+        response_source = (
+            "malware"  if from_malware  else
+            "ai"       if from_ai       else
+            "fallback" if from_fallback else
+            "static"
+        )
         self.command_history.append({"command": cmd, "output": output})
-        asyncio.create_task(self._record(cmd, output, int((time.monotonic() - t0) * 1000)))
+        asyncio.create_task(self._record(cmd, output, int((time.monotonic() - t0) * 1000),
+                                         response_source=response_source))
         self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
 
     def _handle_sqlite3(self, cmd: str) -> str:
@@ -3070,13 +3081,13 @@ class SessionHandler(asyncssh.SSHServerSession):
             pass
 
     async def _record(self, cmd: str, out: str, duration_ms: int = 0,
-                      exit_code: Optional[int] = None):
+                      exit_code: Optional[int] = None, response_source: str = "static"):
         if exit_code is None:
             exit_code = self._last_exit
         try:
             await self.http_client.post(f"{SANDBOX_URL}/commands/{self.session_id}",
                 json={"command": cmd, "output": out, "exit_code": exit_code,
-                      "duration_ms": duration_ms})
+                      "duration_ms": duration_ms, "response_source": response_source})
         except: pass
 
     async def _record_ioc(self, ioc: dict):
