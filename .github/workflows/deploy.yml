@@ -25,6 +25,8 @@ jobs:
             SLACK_WEBHOOK_URL=${{ secrets.SLACK_WEBHOOK_URL }}
             SLACK_BOT_TOKEN=${{ secrets.SLACK_BOT_TOKEN }}
             SLACK_CHANNEL=${{ secrets.SLACK_CHANNEL }}
+            VIRUSTOTAL_API_KEY=${{ secrets.VIRUSTOTAL_API_KEY }}
+            ABUSEIPDB_API_KEY=${{ secrets.ABUSEIPDB_API_KEY }}
             SSH_PORT=2222
             HTTP_PORT=8080
             DASHBOARD_PORT=3000
