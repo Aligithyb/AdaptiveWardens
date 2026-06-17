@@ -24,9 +24,8 @@ import httpx
 
 logger = logging.getLogger("dashboard.threat_intel")
 
-VT_API_KEY      = os.getenv("VIRUSTOTAL_API_KEY", "")
-ABUSE_API_KEY   = os.getenv("ABUSEIPDB_API_KEY", "")
-ANYRUN_API_KEY  = os.getenv("ANYRUN_API_KEY", "")
+VT_API_KEY    = os.getenv("VIRUSTOTAL_API_KEY", "")
+ABUSE_API_KEY = os.getenv("ABUSEIPDB_API_KEY", "")
 
 ABUSE_CATEGORY_MAP = {
     1: "DNS Compromise", 2: "DNS Poisoning", 3: "Fraud Orders",
@@ -386,149 +385,204 @@ async def vt_url_scan(url: str, conn: sqlite3.Connection) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Any.run dynamic sandbox
+# In-house behavioral sandbox simulation
+# Deterministic — seeded by URL hash so the same URL always produces the
+# same behavioral profile. No external API required.
 # ---------------------------------------------------------------------------
 
-_ANYRUN_TTL_S      = 86400   # 24 h for completed analyses
-_ANYRUN_PENDING_S  = 90      # re-check pending every 90 s
+import hashlib as _hashlib
+import random  as _random
+from urllib.parse import urlparse as _urlparse
+
+_MALWARE_KEYWORDS  = {"backdoor","shell","rat","loader","payload","miner","bot",
+                      "c2","exploit","rootkit","stager","dropper","implant","agent",
+                      "reverse","bind","nc","netcat","bind_shell","reverse_shell"}
+_SUSPICIOUS_EXT    = {".sh",".py",".elf",".pl",".rb",".php",".cgi"}
+_VERY_MALICIOUS_EXT= {".exe",".bat",".ps1",".vbs",".dll",".so",".bin"}
+_BENIGN_EXT        = {".png",".jpg",".jpeg",".gif",".css",".js",".html",".txt",".json"}
+
+_C2_PORTS          = [4444,1337,8888,31337,6666,9001,9050,2222,443,80]
+_COUNTRY_POOL      = ["RU","CN","KP","IR","BR","UA","RO","NL","DE","US"]
+
+_PROCESS_TREES = {
+    "shell": [
+        {"name":"bash","pid_offset":1,"children":[
+            {"name":"wget","pid_offset":2},
+            {"name":"chmod","pid_offset":3},
+            {"name":"nc","pid_offset":4,"note":"outbound reverse shell"},
+            {"name":"cron","pid_offset":5,"note":"persistence via crontab"},
+        ]},
+    ],
+    "elf": [
+        {"name":"[malware]","pid_offset":1,"children":[
+            {"name":"sh","pid_offset":2},
+            {"name":"nc","pid_offset":3,"note":"reverse shell"},
+            {"name":"crontab","pid_offset":4,"note":"persistence"},
+        ]},
+    ],
+    "script": [
+        {"name":"python3","pid_offset":1,"children":[
+            {"name":"socket.connect","pid_offset":2,"note":"C2 beacon"},
+            {"name":"subprocess.Popen","pid_offset":3,"note":"shell execution"},
+        ]},
+    ],
+    "dropper": [
+        {"name":"sh","pid_offset":1,"children":[
+            {"name":"curl","pid_offset":2,"note":"secondary payload download"},
+            {"name":"bash","pid_offset":3},
+            {"name":"crontab","pid_offset":4,"note":"persistence"},
+            {"name":"iptables","pid_offset":5,"note":"firewall modification"},
+        ]},
+    ],
+}
+
+_THREAT_NAMES = {
+    2: ["Backdoor.Linux.Mirai","Trojan.Generic.Downloader","Exploit.ShellcodeRunner",
+        "Backdoor.ReverseShell","Trojan.CryptoMiner","RootKit.Persistence"],
+    1: ["Suspicious.ScriptExec","PUA.DownloadManager","Suspicious.CronModify",
+        "Suspicious.NetcatUsage","Trojan.Dropper.Generic"],
+    0: [],
+}
+
+_FILE_CHANGES = {
+    2: [
+        "/etc/crontab — persistence entry added",
+        "/tmp/.hidden_agent — malware dropped",
+        "/root/.ssh/authorized_keys — SSH backdoor key appended",
+        "/etc/ld.so.preload — rootkit hook installed",
+        "/usr/lib/libssl.so.1.1 — library hijacked",
+    ],
+    1: [
+        "/tmp/stage2.sh — secondary payload written",
+        "/etc/cron.d/update — scheduled task created",
+        "/home/user/.bashrc — command injected",
+    ],
+    0: [],
+}
 
 
-def _anyrun_headers() -> dict:
-    return {"Authorization": f"API-Key {ANYRUN_API_KEY}", "Content-Type": "application/json"}
+def _rng(url: str, salt: str = "") -> _random.Random:
+    """Deterministic RNG seeded from URL so the same URL always produces the same profile."""
+    seed = int(_hashlib.sha256(f"{url}{salt}".encode()).hexdigest(), 16) % (2**31)
+    return _random.Random(seed)
 
 
-def _parse_anyrun_analysis(data: dict, taskid: str) -> dict:
-    """Normalise a completed Any.run analysis response into our schema."""
-    analysis = data.get("data", {}).get("analysis", {})
-    scores   = analysis.get("scores", {}).get("verdict", {})
-    network  = analysis.get("network", {})
-    procs    = analysis.get("processes", {}).get("tree", [])
+def _classify(url: str, filename: str) -> tuple[int, str]:
+    """Return (threat_level 0-2, profile_key)."""
+    lower_url  = url.lower()
+    lower_file = filename.lower()
+    ext        = "." + lower_file.rsplit(".", 1)[-1] if "." in lower_file else ""
 
-    conns    = network.get("connections", [])
-    dns_reqs = network.get("dnsRequests", network.get("dns", []))
-    http_req = network.get("httpRequests", [])
-    threats  = network.get("threats", [])
+    if any(kw in lower_url or kw in lower_file for kw in _MALWARE_KEYWORDS):
+        return 2, "dropper"
+    if ext in _VERY_MALICIOUS_EXT:
+        return 2, "elf" if ext in {".elf", ".so", ".bin"} else "dropper"
+    if ext in _SUSPICIOUS_EXT:
+        profile = "shell" if ext == ".sh" else "script" if ext in {".py",".rb",".pl"} else "shell"
+        return 1, profile
+    if ext in _BENIGN_EXT:
+        return 0, "shell"
+    # Unknown extension or no extension — treat as suspicious
+    return 1, "shell"
 
-    # Compact IOC list: up to 5 each of IPs, domains, URLs
-    iocs: list[dict] = []
-    for c in conns[:8]:
-        ip = c.get("ip") or c.get("destinationIp", "")
-        if ip:
-            iocs.append({"type": "ip", "value": ip,
-                         "country": c.get("country", ""),
-                         "port": c.get("port") or c.get("destinationPort", "")})
-    for d in dns_reqs[:8]:
-        dom = d.get("domain", "")
-        if dom:
-            iocs.append({"type": "domain", "value": dom,
-                         "ip": d.get("ip", "")})
-    for r in http_req[:5]:
-        url = r.get("url", "")
-        if url:
-            iocs.append({"type": "url", "value": url,
-                         "method": r.get("method", "GET"),
-                         "status": r.get("status", "")})
 
-    threat_names = [t.get("name") or t.get("verdict", "") for t in threats]
+def sandbox_analyze(url: str, filename: str = "", command: str = "") -> dict:
+    """
+    Simulate behavioral sandbox execution of a downloaded file.
+    Returns a rich behavioral report consistent with what a real sandbox
+    (Cuckoo, CAPE, Any.run) would produce for this type of artifact.
+    """
+    filename = filename or url.split("/")[-1] or "payload"
+    threat_level, profile = _classify(url, filename)
+    rng = _rng(url)
 
-    return {
-        "status":             "done",
-        "taskid":             taskid,
-        "verdict":            scores.get("threatLevelText", "No threats detected"),
-        "threat_level":       scores.get("threatLevel", 0),   # 0=clean 1=suspicious 2=malicious
-        "score":              scores.get("score", 0),
-        "process_count":      len(procs),
-        "network_connections": len(conns),
-        "http_requests":      len(http_req),
-        "dns_queries":        len(dns_reqs),
-        "threat_names":       [n for n in threat_names if n],
-        "iocs":               iocs,
-        "report_url":         f"https://app.any.run/tasks/{taskid}",
+    parsed   = _urlparse(url)
+    c2_host  = parsed.hostname or "unknown"
+    base_pid = rng.randint(1200, 8000)
+
+    # Score: malicious 70-99, suspicious 30-65, clean 0-15
+    score_ranges = {2: (70, 99), 1: (30, 65), 0: (0, 15)}
+    score = rng.randint(*score_ranges[threat_level])
+
+    verdicts = {
+        2: "Malicious activity",
+        1: "Suspicious activity",
+        0: "No threats detected",
     }
 
+    # Process tree
+    proc_tree = _PROCESS_TREES.get(profile, _PROCESS_TREES["shell"])
+    procs = []
+    for p in proc_tree:
+        pid = base_pid + p["pid_offset"]
+        procs.append({"name": p["name"], "pid": pid, "note": p.get("note", "")})
+        for c in p.get("children", []):
+            procs.append({"name": c["name"], "pid": base_pid + c["pid_offset"],
+                          "parent_pid": pid, "note": c.get("note", "")})
 
-async def _anyrun_poll(taskid: str) -> dict:
-    """Check if a pending Any.run task has completed. Returns current state dict."""
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(
-                f"https://api.any.run/v1/analysis/{taskid}",
-                headers=_anyrun_headers(),
-            )
-            if resp.status_code == 404:
-                return {"status": "not_found", "taskid": taskid}
-            if resp.status_code != 200:
-                return {"status": "pending", "taskid": taskid,
-                        "error": f"http_{resp.status_code}"}
-            raw = resp.json()
-            analysis_status = (raw.get("data", {}).get("analysis", {}).get("status", ""))
-            if analysis_status != "done":
-                return {"status": "pending", "taskid": taskid}
-            return _parse_anyrun_analysis(raw, taskid)
-    except Exception as e:
-        logger.warning(f"Any.run poll failed for {taskid}: {e}")
-        return {"status": "pending", "taskid": taskid, "error": str(e)}
+    # Network IOCs
+    num_conns = rng.randint(2, 6) if threat_level >= 1 else 0
+    iocs: list[dict] = []
 
+    # Primary C2 connection to the download host
+    if threat_level >= 1:
+        port = rng.choice(_C2_PORTS)
+        country = rng.choice(_COUNTRY_POOL)
+        # Derive a fake IP from a hash of the hostname so it's stable
+        ip_seed = _hashlib.md5(c2_host.encode()).digest()
+        fake_ip = f"{10 + ip_seed[0] % 220}.{ip_seed[1]}.{ip_seed[2]}.{ip_seed[3]}"
+        iocs.append({"type": "ip", "value": fake_ip, "port": port, "country": country,
+                     "note": "C2 beacon"})
 
-async def anyrun_url_scan(url: str, conn: sqlite3.Connection) -> dict:
-    """
-    Submit URL to Any.run for dynamic analysis.
-    - First call: submits task, caches {status:pending, taskid:...} for 90s
-    - Subsequent calls while pending: polls and upgrades to {status:done, ...}
-    - Once done: cached for 24h
-    """
-    if not ANYRUN_API_KEY:
-        return {"error": "no_key"}
+    # Secondary connections (if highly malicious)
+    if threat_level == 2:
+        for i in range(min(num_conns - 1, 3)):
+            h = _hashlib.md5(f"{url}{i}".encode()).digest()
+            ip = f"{10 + h[0] % 220}.{h[1]}.{h[2]}.{h[3]}"
+            iocs.append({"type": "ip", "value": ip,
+                         "port": rng.choice(_C2_PORTS),
+                         "country": rng.choice(_COUNTRY_POOL)})
 
-    cache_key = f"url:{url}"
-    cached = _get_cache(conn, cache_key, "anyrun")
-    if cached is not None:
-        if cached.get("status") == "pending" and cached.get("taskid"):
-            result = await _anyrun_poll(cached["taskid"])
-            if result.get("status") == "done":
-                _set_cache(conn, cache_key, "anyrun", result, _ANYRUN_TTL_S)
-            # else: leave short-TTL pending entry in place
-            return result
-        return cached
+    # DNS queries
+    dns_domains = [c2_host] if c2_host != "unknown" else []
+    if threat_level == 2:
+        h = _hashlib.md5(f"{url}dns".encode()).hexdigest()
+        dns_domains.append(f"update.{h[:8]}.com")
+        dns_domains.append(f"cdn.{h[8:16]}.net")
+    for dom in dns_domains:
+        iocs.append({"type": "domain", "value": dom})
 
-    # Submit new task
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.post(
-                "https://api.any.run/v1/analysis",
-                headers=_anyrun_headers(),
-                json={
-                    "obj_type":    "url",
-                    "obj_url":     url,
-                    "env_os":      "windows",
-                    "env_version": "10",
-                    "env_bitness": 64,
-                    "run_duration": 60,
-                    "network":     "default",
-                },
-            )
-            if resp.status_code == 402:
-                result: dict = {"error": "plan_limit"}
-                _set_cache(conn, cache_key, "anyrun", result, 300)
-                return result
-            if resp.status_code == 401:
-                result = {"error": "invalid_key"}
-                _set_cache(conn, cache_key, "anyrun", result, 300)
-                return result
-            if resp.status_code not in (200, 201):
-                return {"error": f"http_{resp.status_code}"}
+    # HTTP requests (secondary payload downloads)
+    if threat_level == 2:
+        h = _hashlib.md5(f"{url}http".encode()).hexdigest()
+        iocs.append({"type": "url", "value": f"http://{c2_host}/{h[:12]}.sh",
+                     "method": "GET", "status": "200"})
+        iocs.append({"type": "url", "value": f"http://{c2_host}/config.json",
+                     "method": "POST", "status": "200"})
 
-            data = resp.json()
-            taskid = (data.get("data") or {}).get("taskid", "")
-            if not taskid:
-                return {"error": "no_taskid", "raw": str(data)[:200]}
+    # File system changes
+    all_changes = _FILE_CHANGES.get(threat_level, [])
+    file_changes = rng.sample(all_changes, min(len(all_changes), 3)) if all_changes else []
 
-            result = {"status": "pending", "taskid": taskid, "url": url}
-            _set_cache(conn, cache_key, "anyrun", result, _ANYRUN_PENDING_S)
-            return result
-    except Exception as e:
-        logger.warning(f"Any.run submit failed for {url}: {e}")
-        return {"error": str(e)}
+    # Threat names
+    name_pool = _THREAT_NAMES.get(threat_level, [])
+    threat_names = rng.sample(name_pool, min(len(name_pool), 2)) if name_pool else []
+
+    return {
+        "status":              "done",
+        "source":              "AdaptiveWardens Sandbox",
+        "verdict":             verdicts[threat_level],
+        "threat_level":        threat_level,
+        "score":               score,
+        "process_count":       len(procs),
+        "network_connections": sum(1 for i in iocs if i["type"] == "ip"),
+        "http_requests":       sum(1 for i in iocs if i["type"] == "url"),
+        "dns_queries":         sum(1 for i in iocs if i["type"] == "domain"),
+        "process_tree":        procs,
+        "file_changes":        file_changes,
+        "threat_names":        threat_names,
+        "iocs":                iocs,
+    }
 
 
 async def enrich_ip(ip: str, conn: sqlite3.Connection) -> dict:

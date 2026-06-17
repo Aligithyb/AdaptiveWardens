@@ -27,7 +27,6 @@ jobs:
             SLACK_CHANNEL=${{ secrets.SLACK_CHANNEL }}
             VIRUSTOTAL_API_KEY=${{ secrets.VIRUSTOTAL_API_KEY }}
             ABUSEIPDB_API_KEY=${{ secrets.ABUSEIPDB_API_KEY }}
-            ANYRUN_API_KEY=${{ secrets.ANYRUN_API_KEY }}
             DASHBOARD_PASSWORD=${{ secrets.DASHBOARD_PASSWORD }}
             SESSION_SECRET=${{ secrets.SESSION_SECRET }}
             SSH_PORT=2222

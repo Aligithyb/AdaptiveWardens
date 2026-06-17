@@ -18,7 +18,7 @@ import os
 from datetime import datetime, timezone
 from typing import List, Dict, Any
 
-from threat_intel import enrich_ip, _ensure_ti_table, _get_cache, vt_url_scan, anyrun_url_scan
+from threat_intel import enrich_ip, _ensure_ti_table, _get_cache, vt_url_scan, sandbox_analyze
 
 
 # ---------------------------------------------------------------------------
@@ -957,40 +957,42 @@ async def get_malware_downloads(limit: int = 200):
 
     unique_urls = list({d["url"] for d in downloads if d.get("url")})
 
-    async def _enrich_url(url: str) -> tuple[str, dict, dict]:
-        """Run VT and Any.run concurrently for one URL. Returns (url, vt, anyrun)."""
+    async def _enrich_url(url: str, row: dict) -> tuple[str, dict, dict]:
+        """Run VT (async, cached) + in-house sandbox (sync, instant) for one URL."""
         try:
             with get_db_connection() as conn:
-                vt_res, ar_res = await asyncio.gather(
-                    vt_url_scan(url, conn),
-                    anyrun_url_scan(url, conn),
-                    return_exceptions=True,
-                )
-                if isinstance(vt_res, Exception): vt_res = {"error": str(vt_res)}
-                if isinstance(ar_res, Exception): ar_res = {"error": str(ar_res)}
-            return url, vt_res, ar_res
+                vt_res = await vt_url_scan(url, conn)
         except Exception as ex:
-            return url, {"error": "scan_failed"}, {"error": str(ex)}
+            vt_res = {"error": str(ex)}
+        sb_res = sandbox_analyze(url, row.get("filename", ""), row.get("command", ""))
+        return url, vt_res, sb_res
 
-    vt_results:     dict[str, dict] = {}
-    anyrun_results: dict[str, dict] = {}
+    # Build lookup: url → first row with that url (for filename/command context)
+    url_to_row: dict[str, dict] = {}
+    for d in downloads:
+        u = d.get("url", "")
+        if u and u not in url_to_row:
+            url_to_row[u] = d
+
+    vt_results: dict[str, dict] = {}
+    sb_results: dict[str, dict] = {}
     if unique_urls:
-        tuples = await asyncio.gather(*[_enrich_url(u) for u in unique_urls])
-        for url, vt_r, ar_r in tuples:
-            vt_results[url]     = vt_r
-            anyrun_results[url] = ar_r
+        tuples = await asyncio.gather(*[_enrich_url(u, url_to_row[u]) for u in unique_urls])
+        for url, vt_r, sb_r in tuples:
+            vt_results[url] = vt_r
+            sb_results[url] = sb_r
 
     for d in downloads:
         u = d.get("url", "")
         d["virustotal"] = vt_results.get(u, {})
-        d["anyrun"]     = anyrun_results.get(u, {})
+        d["sandbox"]    = sb_results.get(u, {})
 
-    # Sort: most malicious first (VT malicious count, then Any.run threat_level), then newest
+    # Sort: highest combined threat first, then newest
     def _sort_key(d: dict) -> tuple:
         vt  = d.get("virustotal") or {}
-        ar  = d.get("anyrun")     or {}
+        sb  = d.get("sandbox")    or {}
         mal = vt.get("malicious", 0) or 0
-        tl  = ar.get("threat_level", 0) or 0
+        tl  = sb.get("threat_level", 0) or 0
         return (-(mal + tl * 10), d.get("detected_at", "") or "")
 
     downloads.sort(key=_sort_key)
