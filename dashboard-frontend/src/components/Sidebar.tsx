@@ -1,4 +1,4 @@
-import { Activity, Shield, Map, BarChart3, FileText, Layers, Globe2, ShieldAlert, Lock, ShieldCheck } from 'lucide-react';
+import { Activity, Shield, Map, BarChart3, FileText, Layers, Globe2, ShieldAlert, Lock, ShieldCheck, Bug } from 'lucide-react';
 import { SessionUser, canAccess } from '@/lib/auth';
 
 interface SidebarProps {
@@ -17,6 +17,7 @@ export function Sidebar({ activeView, setActiveView, user }: SidebarProps) {
     { id: 'metrics', label: 'Session Metrics', icon: BarChart3 },
     { id: 'reports', label: 'Reports', icon: FileText },
     { id: 'threat-intelligence', label: 'Threat Intel', icon: ShieldAlert },
+    { id: 'malware-analysis', label: 'Malware Analysis', icon: Bug },
     { id: 'effectiveness', label: 'Effectiveness', icon: ShieldCheck },
   ];
 

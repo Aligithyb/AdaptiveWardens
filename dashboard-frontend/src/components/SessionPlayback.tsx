@@ -1,6 +1,87 @@
-import { Terminal, AlertTriangle, Play } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { Terminal, AlertTriangle, Play, ChevronDown, ChevronRight } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
 import { api } from '@/lib/api';
+
+const SUSPICIOUS_PATTERNS = [
+  'wget ', 'curl ', 'chmod +x', 'base64', ' nc ', 'nmap', 'aws ', 'kubectl',
+  'docker', '.ssh', '/etc/shadow', '/etc/passwd', 'python3 -c', 'python -c',
+  '/bin/sh', '/bin/bash', 'exec(', 'eval(', 'reverse', 'backdoor',
+];
+
+function isSuspiciousCmd(cmd: string): boolean {
+  const lower = cmd.toLowerCase();
+  return SUSPICIOUS_PATTERNS.some(p => lower.includes(p));
+}
+
+function CommandLine({ cmd, index, isNew }: { cmd: any; index: number; isNew: boolean }) {
+  const [expanded, setExpanded] = useState(true);
+  const suspicious = isSuspiciousCmd(cmd.command);
+  const hasOutput = cmd.output && cmd.output.trim().length > 0;
+  const outputLines = hasOutput ? (cmd.output as string).split('\n') : [];
+  const isLong = outputLines.length > 12;
+  const [showAll, setShowAll] = useState(false);
+  const displayedLines = isLong && !showAll ? outputLines.slice(0, 12) : outputLines;
+
+  return (
+    <div
+      className={`rounded border transition-all ${
+        suspicious
+          ? 'border-red-500/30 bg-red-500/5'
+          : 'border-transparent'
+      } ${isNew ? 'animate-in fade-in' : ''}`}
+    >
+      {/* Command row */}
+      <div
+        className={`flex items-start gap-2 px-2 py-1 rounded-t cursor-pointer select-text group ${
+          suspicious ? 'hover:bg-red-500/8' : 'hover:bg-slate-800/40'
+        }`}
+        onClick={() => hasOutput && setExpanded(o => !o)}
+      >
+        <span className="text-slate-600 text-xs shrink-0 pt-0.5 w-14 text-right font-mono">
+          {new Date(cmd.timestamp).toLocaleTimeString('en-GB', { hour12: false })}
+        </span>
+        <span className="text-slate-500 shrink-0 pt-0.5">#</span>
+        {suspicious && <AlertTriangle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />}
+        <span className={`flex-1 font-mono text-sm break-all ${
+          suspicious ? 'text-red-300' : 'text-emerald-400'
+        }`}>
+          {cmd.command}
+        </span>
+        {hasOutput && (
+          <span className="text-slate-600 group-hover:text-slate-400 shrink-0 mt-0.5 transition-colors">
+            {expanded
+              ? <ChevronDown className="w-3.5 h-3.5" />
+              : <ChevronRight className="w-3.5 h-3.5" />}
+          </span>
+        )}
+      </div>
+
+      {/* Output block */}
+      {hasOutput && expanded && (
+        <div className="ml-16 pl-2 border-l border-slate-700/50 mb-1 mr-2">
+          <pre className="text-xs font-mono text-slate-400 whitespace-pre-wrap break-all leading-5">
+            {displayedLines.join('\n')}
+          </pre>
+          {isLong && (
+            <button
+              onClick={e => { e.stopPropagation(); setShowAll(v => !v); }}
+              className="text-xs text-cyan-500 hover:text-cyan-400 mt-1"
+            >
+              {showAll ? '▲ show less' : `▼ ${outputLines.length - 12} more lines`}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Exit-code badge for non-zero */}
+      {cmd.exit_code !== undefined && cmd.exit_code !== 0 && cmd.exit_code !== null && (
+        <div className="ml-16 mb-1">
+          <span className="text-xs text-red-400/70 font-mono">exit {cmd.exit_code}</span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface SessionPlaybackProps {
   sessionId: string | null;
@@ -8,23 +89,32 @@ interface SessionPlaybackProps {
 
 export function SessionPlayback({ sessionId }: SessionPlaybackProps) {
   const [commands, setCommands] = useState<any[]>([]);
+  const [prevCount, setPrevCount] = useState(0);
   const [isReplaying, setIsReplaying] = useState(false);
   const [replayIndex, setReplayIndex] = useState(0);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!sessionId) return;
     const fetchCommands = async () => {
       try {
         const res = await api.get(`/api/sessions/${sessionId}/commands`);
-        setCommands(res.data.commands || []);
+        const fetched = res.data.commands || [];
+        setPrevCount(c => { setPrevCount(fetched.length); return c; });
+        setCommands(fetched);
       } catch (err) {
-        console.error("Failed to fetch session commands", err);
+        console.error('Failed to fetch session commands', err);
       }
     };
     fetchCommands();
-    const interval = setInterval(fetchCommands, 5000); // refresh every 5s
+    const interval = setInterval(fetchCommands, 5000);
     return () => clearInterval(interval);
   }, [sessionId]);
+
+  // Auto-scroll to bottom when new commands arrive (live session)
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [commands.length]);
 
   const handleReplay = () => {
     if (commands.length === 0) return;
@@ -33,81 +123,80 @@ export function SessionPlayback({ sessionId }: SessionPlaybackProps) {
   };
 
   useEffect(() => {
-    if (isReplaying && replayIndex < commands.length) {
-      const timer = setTimeout(() => {
-        setReplayIndex(prev => prev + 1);
-      }, 1000); // 1 second delay between commands
+    if (!isReplaying) return;
+    if (replayIndex < commands.length) {
+      const timer = setTimeout(() => setReplayIndex(p => p + 1), 800);
       return () => clearTimeout(timer);
-    } else if (replayIndex >= commands.length) {
-      setTimeout(() => setIsReplaying(false), 2000); // stay on final state briefly
+    } else {
+      const timer = setTimeout(() => setIsReplaying(false), 1500);
+      return () => clearTimeout(timer);
     }
   }, [isReplaying, replayIndex, commands.length]);
 
   const displayedCommands = isReplaying ? commands.slice(0, replayIndex) : commands;
+  const suspiciousCount = commands.filter(c => isSuspiciousCmd(c.command)).length;
 
   return (
     <div className="bg-slate-900 rounded-lg border border-slate-800 overflow-hidden flex flex-col">
-      <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
+      <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between gap-4 flex-wrap shrink-0">
         <div className="flex items-center gap-3">
-          <Terminal className="w-5 h-5 text-green-400" />
-          <h2 className="text-slate-100">Session Playback</h2>
-          <span className="text-sm text-slate-500">({sessionId || 'No session selected'})</span>
+          <Terminal className="w-5 h-5 text-emerald-400" />
+          <h2 className="text-slate-100">Terminal Replay</h2>
+          <span className="text-xs text-slate-500 font-mono">{sessionId?.slice(0, 8) ?? 'No session'}</span>
+          {suspiciousCount > 0 && (
+            <span className="flex items-center gap-1 px-2 py-0.5 text-xs bg-red-500/10 border border-red-500/20 text-red-400 rounded">
+              <AlertTriangle className="w-3 h-3" />
+              {suspiciousCount} suspicious
+            </span>
+          )}
         </div>
-        <button
-          onClick={handleReplay}
-          disabled={isReplaying || commands.length === 0}
-          className={`flex items-center gap-2 px-3 py-1.5 rounded text-xs transition-colors ${isReplaying || commands.length === 0
-              ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
-              : 'bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-750'
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-slate-500">{commands.length} commands</span>
+          <button
+            onClick={handleReplay}
+            disabled={isReplaying || commands.length === 0}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded text-xs transition-colors border ${
+              isReplaying || commands.length === 0
+                ? 'bg-slate-800 border-slate-700 text-slate-500 cursor-not-allowed'
+                : 'bg-slate-800 border-slate-700 text-slate-300 hover:border-emerald-500/40 hover:text-emerald-400'
             }`}
-        >
-          <Play className={`w-3 h-3 ${isReplaying ? 'animate-pulse text-green-400' : ''}`} />
-          {isReplaying ? 'Replaying...' : 'Replay'}
-        </button>
-      </div>
-
-      <div className="flex-1 overflow-auto p-6 bg-slate-950 font-mono text-sm min-h-[300px]">
-        <div className="space-y-2">
-          {displayedCommands.map((cmd, idx) => {
-            const isSuspicious =
-              cmd.command.includes('wget') ||
-              cmd.command.includes('cat /etc/') ||
-              cmd.command.includes('curl') ||
-              cmd.command.includes('chmod') ||
-              cmd.command.includes('nmap');
-            return (
-              <div
-                key={idx}
-                className={`flex gap-4 p-2 rounded ${isSuspicious ? 'bg-red-500/10 border-l-2 border-red-500' : ''
-                  }`}
-              >
-                <span className="text-slate-500 text-xs shrink-0 pt-1">{new Date(cmd.timestamp).toLocaleTimeString()}</span>
-                <div className="flex-1">
-                  <div className="flex items-start gap-2">
-                    {isSuspicious && (
-                      <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-                    )}
-                    <span className={isSuspicious ? 'text-red-300' : 'text-green-400'}>
-                      $ {cmd.command}
-                    </span>
-                  </div>
-                  {isSuspicious && (
-                    <div className="mt-1 ml-6 text-xs text-red-400/80">
-                      ⚠ Potentially malicious command execution
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+          >
+            <Play className={`w-3 h-3 ${isReplaying ? 'animate-pulse text-emerald-400' : ''}`} />
+            {isReplaying ? 'Replaying…' : 'Replay'}
+          </button>
         </div>
       </div>
 
-      <div className="px-6 py-3 border-t border-slate-800 bg-slate-900 flex items-center justify-between text-xs">
-        <span className="text-slate-400">
-          <span className="text-white">{commands.length}</span> commands extracted
+      {/* Terminal body */}
+      <div className="flex-1 overflow-auto p-4 bg-slate-950 min-h-[320px] max-h-[520px] font-mono text-sm">
+        {!sessionId ? (
+          <div className="flex h-full items-center justify-center text-slate-600 text-sm">
+            Select a session to view the terminal replay
+          </div>
+        ) : commands.length === 0 ? (
+          <div className="flex h-full items-center justify-center text-slate-600 text-sm">
+            No commands recorded for this session
+          </div>
+        ) : (
+          <div className="space-y-0.5">
+            {displayedCommands.map((cmd, idx) => (
+              <CommandLine
+                key={cmd.sequence_number ?? idx}
+                cmd={cmd}
+                index={idx}
+                isNew={idx >= prevCount - 1}
+              />
+            ))}
+            <div ref={bottomRef} />
+          </div>
+        )}
+      </div>
+
+      <div className="px-6 py-2.5 border-t border-slate-800 bg-slate-900 flex items-center justify-between text-xs">
+        <span className="text-slate-500">
+          <span className="text-slate-300">{commands.length}</span> commands · click any row to toggle output
         </span>
-        <span className="text-slate-500">-</span>
+        <span className="text-slate-600">auto-refreshes every 5s</span>
       </div>
     </div>
   );

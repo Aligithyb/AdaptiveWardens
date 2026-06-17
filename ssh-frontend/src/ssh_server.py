@@ -1172,6 +1172,57 @@ def get_fallback(cmd: str, ctx: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Malware download simulation helpers
+# ---------------------------------------------------------------------------
+
+_URL_RE = re.compile(r'https?://[^\s\'"]+')
+_OUTPUT_FLAG_RE = re.compile(r'(?:-O\s*|--output[= ])([^\s]+)')
+
+def _extract_download_url(cmd: str) -> Optional[tuple]:
+    """Return (url, filename) from a wget/curl command, or None."""
+    m = _URL_RE.search(cmd)
+    if not m:
+        return None
+    url = m.group(0).rstrip('/')
+    # Determine output filename
+    om = _OUTPUT_FLAG_RE.search(cmd)
+    if om:
+        filename = om.group(1)
+    else:
+        parts = url.split('/')
+        filename = parts[-1] if parts[-1] else 'index.html'
+    return url, filename
+
+
+def _fake_wget_output(url: str, filename: str, file_size: int) -> str:
+    """Realistic wget download output."""
+    host = url.split('/')[2]
+    return (
+        f"--{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}--  {url}\n"
+        f"Resolving {host}... {random.randint(1,254)}.{random.randint(1,254)}.{random.randint(1,254)}.{random.randint(1,254)}\n"
+        f"Connecting to {host}|...|:80... connected.\n"
+        f"HTTP request sent, awaiting response... 200 OK\n"
+        f"Length: {file_size} ({file_size // 1024}K) [application/octet-stream]\n"
+        f"Saving to: '{filename}'\n\n"
+        f"{filename}         100%[===================>] {file_size // 1024:>5}K  "
+        f"{random.randint(200,900)}KB/s    in 0.{random.randint(1,9)}s\n\n"
+        f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} ({random.randint(200,900)} KB/s) "
+        f"- '{filename}' saved [{file_size}/{file_size}]"
+    )
+
+
+def _fake_curl_output(url: str, filename: str, file_size: int) -> str:
+    """Realistic curl download output (stderr-style progress)."""
+    return (
+        f"  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\n"
+        f"                                 Dload  Upload   Total   Spent    Left  Speed\n"
+        f"100 {file_size // 1024:>5}  100 {file_size // 1024:>5}    0     0  "
+        f"{random.randint(100,900)}k      0 --:--:-- --:--:-- --:--:-- "
+        f"{random.randint(100,900)}k"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Sticky probabilistic authentication
 # ---------------------------------------------------------------------------
 _AUTH_STATE: dict = {}
@@ -2482,6 +2533,27 @@ class SessionHandler(asyncssh.SSHServerSession):
                     output = datetime.utcnow().strftime("%a %b %d %H:%M:%S UTC %Y")
             else:
                 output = datetime.utcnow().strftime("%a %b %d %H:%M:%S UTC %Y")
+        elif cmd_lower.startswith("wget ") or (cmd_lower.startswith("curl ") and "://" in cmd_lower):
+            dl = _extract_download_url(cmd)
+            if dl:
+                url, filename = dl
+                file_size = random.randint(4096, 1 << 19)  # 4 KB – 512 KB fake size
+                if cmd_lower.startswith("wget"):
+                    output = _fake_wget_output(url, filename, file_size)
+                else:
+                    output = _fake_curl_output(url, filename, file_size)
+                # Record URL as IOC and fire async malware tracking
+                asyncio.create_task(self._record_ioc({
+                    "ioc_type": "url",
+                    "value": url,
+                    "confidence": 0.9,
+                }))
+                asyncio.create_task(self._record_malware_download(
+                    url=url, filename=filename, file_size=file_size, command=cmd
+                ))
+            else:
+                output = get_fallback(cmd, self.context)
+                from_fallback = True
         elif cmd_lower.startswith("python3 -c ") or cmd_lower.startswith("python -c "):
             # Reverse-shell attempts: connection timeout, not command not found
             output = "Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nConnectionRefusedError: [Errno 111] Connection refused"
@@ -3015,6 +3087,23 @@ class SessionHandler(asyncssh.SSHServerSession):
                       "context": "AI extracted from command/response"})
         except Exception as e:
             logger.error(f"Failed to report IOC: {e}")
+
+    async def _record_malware_download(self, url: str, filename: str,
+                                       file_size: int, command: str):
+        """Tell sandbox-store about a wget/curl download event."""
+        try:
+            await self.http_client.post(
+                f"{SANDBOX_URL}/malware/downloads/{self.session_id}",
+                json={
+                    "source_ip": self.source_ip,
+                    "url": url,
+                    "filename": filename,
+                    "file_size": file_size,
+                    "command": command,
+                },
+            )
+        except Exception as e:
+            logger.debug(f"malware download record failed: {e}")
 
     async def _record_mitre_for_command(self, cmd: str):
         """Fire-and-forget: call AI Engine's MITRE matcher for ANY command."""

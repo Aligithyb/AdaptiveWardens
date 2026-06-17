@@ -295,6 +295,95 @@ def _hosting_label(ipapi: dict, abuse: dict) -> str:
     return "Unknown"
 
 
+# ---------------------------------------------------------------------------
+# VirusTotal URL scanning
+# ---------------------------------------------------------------------------
+
+import base64 as _base64
+
+_VT_URL_TTL_S = 86400  # 24 h cache for URL scans
+
+
+def _vt_url_id(url: str) -> str:
+    """Encode a URL to the VT URL identifier (base64url, no padding)."""
+    return _base64.urlsafe_b64encode(url.encode()).rstrip(b"=").decode()
+
+
+async def vt_url_scan(url: str, conn: sqlite3.Connection) -> dict:
+    """
+    Look up a URL on VirusTotal. Uses cache; falls back gracefully.
+    First tries a GET (existing report); if 404, submits for scan and
+    returns the queued state so the caller can re-check later.
+    """
+    if not VT_API_KEY:
+        return {"error": "no_key"}
+
+    cache_key = f"url:{url}"
+    cached = _get_cache(conn, cache_key, "virustotal")
+    if cached is not None:
+        return cached
+
+    await _vt_rate_gate()
+    url_id = _vt_url_id(url)
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(
+                f"https://www.virustotal.com/api/v3/urls/{url_id}",
+                headers={"x-apikey": VT_API_KEY},
+            )
+            if resp.status_code == 404:
+                # URL not seen — submit for scanning
+                await _vt_rate_gate()
+                sub = await client.post(
+                    "https://www.virustotal.com/api/v3/urls",
+                    headers={"x-apikey": VT_API_KEY},
+                    data={"url": url},
+                )
+                if sub.status_code in (200, 201):
+                    result = {"status": "submitted", "url": url}
+                else:
+                    result = {"error": f"submit_http_{sub.status_code}"}
+                _set_cache(conn, cache_key, "virustotal", result, 300)  # short cache for queued
+                return result
+            elif resp.status_code == 401:
+                return {"error": "invalid_key"}
+            elif resp.status_code != 200:
+                return {"error": f"http_{resp.status_code}"}
+
+            raw = resp.json()
+            attrs = raw.get("data", {}).get("attributes", {})
+            stats = attrs.get("last_analysis_stats", {})
+            analysis_results = attrs.get("last_analysis_results", {})
+            flagged_vendors = sorted(
+                [
+                    {"name": v, "verdict": d.get("category", "")}
+                    for v, d in analysis_results.items()
+                    if d.get("category") in ("malicious", "suspicious")
+                ],
+                key=lambda x: (0 if x["verdict"] == "malicious" else 1, x["name"].lower()),
+            )
+            result = {
+                "status": "found",
+                "url": url,
+                "malicious":          stats.get("malicious", 0),
+                "suspicious":         stats.get("suspicious", 0),
+                "harmless":           stats.get("harmless", 0),
+                "undetected":         stats.get("undetected", 0),
+                "total_engines":      sum(stats.values()),
+                "last_analysis_date": attrs.get("last_analysis_date"),
+                "categories":         attrs.get("categories", {}),
+                "tags":               attrs.get("tags", []),
+                "reputation":         attrs.get("reputation", 0),
+                "flagged_vendors":    flagged_vendors,
+            }
+    except Exception as e:
+        logger.warning(f"VT URL scan failed for {url}: {e}")
+        return {"error": str(e)}
+
+    _set_cache(conn, cache_key, "virustotal", result, _VT_URL_TTL_S)
+    return result
+
+
 async def enrich_ip(ip: str, conn: sqlite3.Connection) -> dict:
     """Enrich a single IP with all three sources. Always returns a dict."""
     _ensure_ti_table(conn)

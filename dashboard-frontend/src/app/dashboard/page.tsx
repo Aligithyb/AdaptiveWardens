@@ -14,6 +14,7 @@ import { Reports } from '@/components/Reports';
 import { ThreatIntelligence } from '@/components/ThreatIntelligence';
 import { IPThreatPanel } from '@/components/IPThreatPanel';
 import { DeceptionStats } from '@/components/DeceptionStats';
+import { MalwarePanel } from '@/components/MalwarePanel';
 import { Lock } from 'lucide-react';
 import { SessionUser, canAccess, ROLE_LABELS } from '@/lib/auth';
 
@@ -127,6 +128,7 @@ export default function DashboardPage() {
               {activeView === 'metrics' && <MetricsStats />}
               {activeView === 'reports' && <Reports />}
               {activeView === 'threat-intelligence' && <ThreatIntelligence />}
+              {activeView === 'malware-analysis' && <MalwarePanel />}
               {activeView === 'effectiveness' && <DeceptionStats />}
             </>
           )}

@@ -22,9 +22,9 @@ export const ROLE_COLORS: Record<UserRole, { text: string; bg: string; border: s
 };
 
 export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
-  admin:       ['dashboard', 'live-sessions', 'attack-map', 'ioc-summary', 'mitre-attack', 'metrics', 'reports', 'threat-intelligence', 'effectiveness'],
-  soc_analyst: ['dashboard', 'live-sessions', 'ioc-summary', 'mitre-attack', 'attack-map', 'reports', 'effectiveness'],
-  it_staff:    ['dashboard', 'live-sessions', 'metrics', 'effectiveness'],
+  admin:       ['dashboard', 'live-sessions', 'attack-map', 'ioc-summary', 'mitre-attack', 'metrics', 'reports', 'threat-intelligence', 'malware-analysis', 'effectiveness'],
+  soc_analyst: ['dashboard', 'live-sessions', 'ioc-summary', 'mitre-attack', 'attack-map', 'reports', 'malware-analysis', 'effectiveness'],
+  it_staff:    ['dashboard', 'live-sessions', 'metrics', 'malware-analysis', 'effectiveness'],
   read_only:   ['dashboard', 'attack-map'],
 };
 

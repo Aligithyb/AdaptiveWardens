@@ -389,6 +389,43 @@ async def set_cwd(source_ip: str, body: StateValue):
     db.set_persistent_state(source_ip, 'cwd', 'cwd', body.value)
     return {"status": "ok"}
 
+
+# ==================== MALWARE DOWNLOAD TRACKING ====================
+
+class MalwareDownloadRecord(BaseModel):
+    source_ip: Optional[str] = ''
+    url: str
+    filename: Optional[str] = ''
+    file_size: Optional[int] = 0
+    command: Optional[str] = ''
+
+
+@app.post("/malware/downloads/{session_id}")
+async def record_malware_download(session_id: str, body: MalwareDownloadRecord):
+    """Record a wget/curl download detected in the honeypot session."""
+    row_id = db.record_malware_download(
+        session_id=session_id,
+        source_ip=body.source_ip or '',
+        url=body.url,
+        filename=body.filename or '',
+        file_size=body.file_size or 0,
+        command=body.command or '',
+    )
+    return {"status": "recorded", "id": row_id}
+
+
+@app.get("/malware/downloads")
+async def list_malware_downloads(limit: int = 200):
+    """Return all recorded malware download events."""
+    return {"downloads": db.get_malware_downloads(limit)}
+
+
+@app.get("/malware/downloads/{session_id}")
+async def list_malware_downloads_for_session(session_id: str):
+    """Return malware download events for a specific session."""
+    return {"downloads": db.get_malware_downloads_by_session(session_id)}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8001)

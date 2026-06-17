@@ -72,6 +72,24 @@ class SandboxDatabase:
             """)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_persistent_ip ON persistent_state(source_ip)")
+
+            # Malware download tracking (wget/curl events detected by honeypot)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS malware_downloads (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id  TEXT    NOT NULL,
+                    source_ip   TEXT,
+                    url         TEXT    NOT NULL,
+                    filename    TEXT,
+                    file_size   INTEGER,
+                    command     TEXT,
+                    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_malware_session ON malware_downloads(session_id)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_malware_url ON malware_downloads(url)")
             conn.commit()
 
             # Fix iocs.ioc_type CHECK constraint: try inserting a custom type.
@@ -1084,6 +1102,41 @@ class SandboxDatabase:
                 (source_ip, kind, name)
             )
             conn.commit()
+
+    # ==================== MALWARE DOWNLOAD TRACKING ====================
+
+    def record_malware_download(self, session_id: str, source_ip: str,
+                                url: str, filename: str = '',
+                                file_size: int = 0, command: str = '') -> int:
+        """Record a wget/curl download detected in the honeypot."""
+        with self.get_connection() as conn:
+            cur = conn.execute("""
+                INSERT INTO malware_downloads
+                    (session_id, source_ip, url, filename, file_size, command)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (session_id, source_ip, url, filename, file_size, command))
+            conn.commit()
+            return cur.lastrowid
+
+    def get_malware_downloads(self, limit: int = 200) -> List[Dict]:
+        """Return all recorded malware downloads, newest first."""
+        with self.get_connection() as conn:
+            rows = conn.execute("""
+                SELECT md.*, s.country, s.protocol
+                FROM malware_downloads md
+                LEFT JOIN sessions s ON s.session_id = md.session_id
+                ORDER BY md.detected_at DESC
+                LIMIT ?
+            """, (limit,)).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_malware_downloads_by_session(self, session_id: str) -> List[Dict]:
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM malware_downloads WHERE session_id = ? ORDER BY detected_at DESC",
+                (session_id,)
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     def get_session_state(self, session_id: str) -> Dict:
         """Get complete current state for a session (for AI context)."""
