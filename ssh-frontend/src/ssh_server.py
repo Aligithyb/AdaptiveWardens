@@ -839,6 +839,49 @@ STATIC_RESPONSES = {
     "lspci":       _lspci,
     "uname -a": lambda ctx: f"Linux {HOSTNAME} 5.15.0-91-generic #101-Ubuntu SMP Tue Nov 14 13:30:08 UTC 2023 x86_64 x86_64 x86_64 GNU/Linux",
     "uname":    lambda ctx: "Linux",
+    # Tool version fingerprinting — common attacker recon steps
+    "openssl version":   lambda ctx: "OpenSSL 3.0.2 15 Mar 2022 (Library: OpenSSL 3.0.2 15 Mar 2022)",
+    "openssl version -a": lambda ctx: (
+        "OpenSSL 3.0.2 15 Mar 2022 (Library: OpenSSL 3.0.2 15 Mar 2022)\n"
+        "built on: Mon May 23 23:26:40 2022 UTC\n"
+        "platform: debian-amd64\n"
+        "options:  bn(64,64)\n"
+        "compiler: gcc -fPIC -pthread -m64 -Wa,--noexecstack -Wall -Wa,--noexecstack -g -O2 "
+        "-ffile-prefix-map=/build/openssl-eNNW5U/openssl-3.0.2=. -flto=auto -ffat-lto-objects "
+        "-flto=auto -ffat-lto-objects -fstack-protector-strong -Wformat -Werror=format-security "
+        "-DOPENSSL_TLS_SECURITY_LEVEL=2 -DNDEBUG -Wl,-Bsymbolic-functions -flto=auto "
+        "-ffat-lto-objects -flto=auto -Wl,-z,relro -Wl,-z,now\n"
+        "OPENSSLDIR: \"/usr/lib/ssl\"\n"
+        "ENGINESDIR: \"/usr/lib/x86_64-linux-gnu/engines-3\"\n"
+        "MODULESDIR: \"/usr/lib/x86_64-linux-gnu/ossl-modules\"\n"
+        "Seeding source: os-specific"
+    ),
+    "which openssl": lambda ctx: "/usr/bin/openssl",
+    "which curl":    lambda ctx: "/usr/bin/curl",
+    "which wget":    lambda ctx: "/usr/bin/wget",
+    "which python3": lambda ctx: "/usr/bin/python3",
+    "which python":  lambda ctx: "/usr/bin/python3",
+    "which node":    lambda ctx: "/usr/bin/node",
+    "which npm":     lambda ctx: "/usr/bin/npm",
+    "which git":     lambda ctx: "/usr/bin/git",
+    "which ssh":     lambda ctx: "/usr/bin/ssh",
+    "which nc":      lambda ctx: "/usr/bin/nc",
+    "which ncat":    lambda ctx: "/usr/bin/ncat",
+    "python3 --version": lambda ctx: "Python 3.10.12",
+    "python --version":  lambda ctx: "Python 3.10.12",
+    "node --version":    lambda ctx: "v20.11.0",
+    "npm --version":     lambda ctx: "10.2.4",
+    "git --version":     lambda ctx: "git version 2.34.1",
+    "curl --version": lambda ctx: (
+        "curl 7.81.0 (x86_64-pc-linux-gnu) libcurl/7.81.0 OpenSSL/3.0.2 zlib/1.2.11 "
+        "brotli/1.0.9 zstd/1.4.8 libidn2/2.3.2 libpsl/0.21.0 (+libidn2/2.3.2) "
+        "libssh/0.9.6/openssl/zlib nghttp2/1.43.0 librtmp/2.3 OpenLDAP/2.5.13\n"
+        "Release-Date: 2022-01-05, security patched: 2023-07-19\n"
+        "Protocols: dict file ftp ftps gopher gophers http https imap imaps ldap ldaps mqtt "
+        "pop3 pop3s rtmp rtsp scp sftp smb smbs smtp smtps telnet tftp\n"
+        "Features: alt-svc AsynchDNS brotli GSS-API HSTS HTTP2 HTTPS-proxy IDN IPv6 Kerberos "
+        "Largefile libz NTLM NTLM_WB PSL SPNEGO SSL TLS-SRP UnixSockets zstd"
+    ),
     "ifconfig": lambda ctx: (
         "eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500\n"
         "        inet 10.0.1.45  netmask 255.255.255.0  broadcast 10.0.1.255\n"
