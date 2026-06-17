@@ -1,6 +1,6 @@
 "use client"
 
-import { FileText, Download, Printer, Search, Filter, Sparkles, X, ChevronDown, ChevronRight, ShieldAlert } from 'lucide-react';
+import { FileText, Download, Printer, Search, Filter, Sparkles, X, ChevronDown, ChevronRight, ShieldAlert, Terminal, AlertCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 
@@ -397,6 +397,7 @@ export function Reports() {
   const [search, setSearch] = useState('');
   const [riskFilter, setRiskFilter] = useState('All');
   const [exporting, setExporting] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   // AI report modal state
   const [aiModal, setAiModal] = useState<{
@@ -431,10 +432,28 @@ export function Reports() {
     return matchSearch && matchRisk;
   });
 
+  const downloadBlob = async (url: string, filename: string, mime: string) => {
+    const res = await api.get(url, { responseType: 'blob' });
+    const blob = new Blob([res.data], { type: mime });
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(href);
+  };
+
   const exportJSON = async (sessionId: string) => {
     setExporting(sessionId + '-json');
+    setExportError(null);
     try {
-      window.open(`/api/reports/${sessionId}/json`, '_blank');
+      await downloadBlob(
+        `/api/reports/${sessionId}/json`,
+        `session-${sessionId.slice(0, 8)}.json`,
+        'application/json'
+      );
+    } catch {
+      setExportError('JSON download failed. Check your connection.');
     } finally {
       setExporting(null);
     }
@@ -442,8 +461,31 @@ export function Reports() {
 
   const exportCSV = async (sessionId: string) => {
     setExporting(sessionId + '-csv');
+    setExportError(null);
     try {
-      window.open(`/api/reports/${sessionId}/csv`, '_blank');
+      await downloadBlob(
+        `/api/reports/${sessionId}/csv`,
+        `commands-${sessionId.slice(0, 8)}.csv`,
+        'text/csv'
+      );
+    } catch {
+      setExportError('CSV download failed. Check your connection.');
+    } finally {
+      setExporting(null);
+    }
+  };
+
+  const exportCEF = async (sessionId: string) => {
+    setExporting(sessionId + '-cef');
+    setExportError(null);
+    try {
+      await downloadBlob(
+        `/api/integrations/siem/cef/${sessionId}`,
+        `cef-${sessionId.slice(0, 8)}.txt`,
+        'text/plain'
+      );
+    } catch {
+      setExportError('CEF export failed.');
     } finally {
       setExporting(null);
     }
@@ -469,8 +511,8 @@ export function Reports() {
 
   const openAIReport = async (session: any) => {
     setExporting(session.session_id + '-ai');
+    setExportError(null);
     try {
-      // Fetch session detail and AI summary in parallel
       const [detailRes, aiRes] = await Promise.all([
         api.get(`/api/sessions/${session.session_id}`),
         api.get(`/api/reports/${session.session_id}/ai-summary`, { timeout: 35000 }),
@@ -480,8 +522,9 @@ export function Reports() {
         detail: detailRes.data,
         aiData: aiRes.data,
       });
-    } catch (err) {
-      console.error('AI report failed', err);
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || err?.message || 'Unknown error';
+      setExportError(`AI report failed: ${detail}`);
     } finally {
       setExporting(null);
     }
@@ -508,6 +551,17 @@ export function Reports() {
       )}
 
       <div className="space-y-6">
+        {/* Error banner */}
+        {exportError && (
+          <div className="flex items-center gap-3 px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-400">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>{exportError}</span>
+            <button onClick={() => setExportError(null)} className="ml-auto text-red-400 hover:text-red-300">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
         {/* Summary cards */}
         <div className="grid grid-cols-4 gap-4">
           {[
@@ -577,7 +631,7 @@ export function Reports() {
                   <th className="px-6 py-3 text-left text-xs text-slate-400">Status</th>
                   <th className="px-6 py-3 text-left text-xs text-slate-400">Risk</th>
                   <th className="px-6 py-3 text-left text-xs text-slate-400">Score</th>
-                  <th className="px-6 py-3 text-left text-xs text-slate-400">Export</th>
+                  <th className="px-6 py-3 text-left text-xs text-slate-400">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
@@ -674,6 +728,14 @@ export function Reports() {
                             ) : (
                               <Sparkles className="w-4 h-4" />
                             )}
+                          </button>
+                          <button
+                            onClick={() => exportCEF(session.session_id)}
+                            disabled={exporting === session.session_id + '-cef'}
+                            title="Export CEF (SIEM)"
+                            className="p-1.5 rounded text-slate-400 hover:text-purple-400 hover:bg-slate-800 transition-colors disabled:opacity-50 text-xs font-mono"
+                          >
+                            CEF
                           </button>
                         </div>
                       </td>

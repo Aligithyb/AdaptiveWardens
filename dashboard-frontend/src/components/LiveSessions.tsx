@@ -15,7 +15,7 @@ function ThreatScore({ score }: { score: number }) {
   return (
     <div className="flex items-center gap-1.5">
       <svg width="36" height="36" viewBox="0 0 36 36" style={{ transform: 'rotate(-90deg)' }}>
-        <circle cx={cx} cy={cy} r={r} fill="none" stroke="#1e293b" strokeWidth="3" />
+        <circle cx={cx} cy={cy} r={r} fill="none" className="threat-score-track" strokeWidth="3" />
         <circle
           cx={cx} cy={cy} r={r}
           fill="none"

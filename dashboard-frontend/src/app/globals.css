@@ -330,6 +330,6 @@ html:not(.dark) .ring-slate-900 { --tw-ring-color: #ffffff !important; }
 html:not(.dark) .bg-black\/70 { background-color: rgba(15, 23, 42, 0.55) !important; }
 html:not(.dark) .bg-black\/40 { background-color: rgba(15, 23, 42, 0.3) !important; }
 
-/* ── Map background in light mode ───────────────────────────── */
-html:not(.dark) .bg-slate-950 rect[fill="#020617"],
-html:not(.dark) .bg-slate-950 .map-bg { fill: #dde8f5 !important; }
+/* ── Threat score SVG track ring ─────────────────────────────── */
+.threat-score-track { stroke: #1e293b; }
+html:not(.dark) .threat-score-track { stroke: #e2e8f0 !important; }

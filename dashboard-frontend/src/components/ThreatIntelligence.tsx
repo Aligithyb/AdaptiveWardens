@@ -1,8 +1,8 @@
 "use client"
 
 import {
-  ShieldAlert, Globe, Server, Wifi, Eye, Copy, Download,
-  AlertTriangle, CheckCircle, Clock, ChevronRight, X, Loader2,
+  ShieldAlert, Globe, Copy, Download,
+  AlertTriangle, Clock, ChevronRight, X, Loader2, Terminal,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
@@ -303,13 +303,37 @@ export function ThreatIntelligence() {
   const [selectedIP, setSelectedIP] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [downloading, setDownloading] = useState(false);
+  const [exportingCEF, setExportingCEF] = useState(false);
+
+  const exportBulkCEF = async () => {
+    setExportingCEF(true);
+    try {
+      const res = await api.get('/api/integrations/siem/cef', { responseType: 'blob' });
+      const blob = new Blob([res.data], { type: 'text/plain' });
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = href;
+      a.download = `siem-cef-${new Date().toISOString().slice(0, 10)}.txt`;
+      a.click();
+      URL.revokeObjectURL(href);
+    } catch {
+      console.error('CEF export failed');
+    } finally {
+      setExportingCEF(false);
+    }
+  };
 
   useEffect(() => {
-    setLoading(true);
-    api.get('/api/threat-intel/ips', { timeout: 60000 })
-      .then(r => setIps(r.data.ips || []))
-      .catch(e => console.error('TI list failed', e))
-      .finally(() => setLoading(false));
+    const load = () => {
+      setLoading(true);
+      api.get('/api/threat-intel/ips', { timeout: 60000 })
+        .then(r => setIps(r.data.ips || []))
+        .catch(e => console.error('TI list failed', e))
+        .finally(() => setLoading(false));
+    };
+    load();
+    const interval = setInterval(load, 120_000);
+    return () => clearInterval(interval);
   }, []);
 
   const filtered = ips.filter(row => {
@@ -333,7 +357,16 @@ export function ThreatIntelligence() {
   const downloadBlocklist = async () => {
     setDownloading(true);
     try {
-      window.open(`/api/threat-intel/blocklist`, '_blank');
+      const res = await api.get('/api/threat-intel/blocklist', { responseType: 'blob' });
+      const blob = new Blob([res.data], { type: 'text/plain' });
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = href;
+      a.download = `blocklist-${new Date().toISOString().slice(0, 10)}.txt`;
+      a.click();
+      URL.revokeObjectURL(href);
+    } catch {
+      console.error('Blocklist download failed');
     } finally {
       setDownloading(false);
     }
@@ -392,6 +425,15 @@ export function ThreatIntelligence() {
               >
                 <Download className="w-3.5 h-3.5" />
                 Blocklist
+              </button>
+              <button
+                onClick={exportBulkCEF}
+                disabled={exportingCEF}
+                title="Export all sessions as CEF for SIEM ingestion"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-slate-800 border border-slate-700 text-slate-300 hover:text-purple-400 hover:border-purple-500/30 rounded-lg transition-colors disabled:opacity-50"
+              >
+                <Terminal className="w-3.5 h-3.5" />
+                SIEM Export
               </button>
             </div>
           </div>

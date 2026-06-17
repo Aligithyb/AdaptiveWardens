@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
+import { useTheme } from "next-themes";
 import { geoNaturalEarth1, geoPath } from "d3-geo";
 import { select } from "d3-selection";
 import { zoom, ZoomBehavior, zoomIdentity } from "d3-zoom";
@@ -168,17 +169,28 @@ function normalize(name: string): string {
   return COUNTRY_NAME_MAP[name] ?? name;
 }
 
-function getColor(count: number, max: number): string {
-  if (count === 0) return "#1e293b";
+function getColor(count: number, max: number, isDark: boolean): string {
+  if (count === 0) return isDark ? "#1e293b" : "#dce6f0";
   const ratio = count / max;
-  if (ratio < 0.2) return "#7f1d1d";
-  if (ratio < 0.4) return "#991b1b";
-  if (ratio < 0.6) return "#b91c1c";
-  if (ratio < 0.8) return "#dc2626";
-  return "#ef4444";
+  if (isDark) {
+    if (ratio < 0.2) return "#7f1d1d";
+    if (ratio < 0.4) return "#991b1b";
+    if (ratio < 0.6) return "#b91c1c";
+    if (ratio < 0.8) return "#dc2626";
+    return "#ef4444";
+  } else {
+    if (ratio < 0.2) return "#fca5a5";
+    if (ratio < 0.4) return "#f87171";
+    if (ratio < 0.6) return "#ef4444";
+    if (ratio < 0.8) return "#dc2626";
+    return "#b91c1c";
+  }
 }
 
 export function AttackHeatmap() {
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme !== "light";
+
   const [data, setData] = useState<HeatmapEntry[]>([]);
   const [livePins, setLivePins] = useState<LivePin[]>([]);
   const [loading, setLoading] = useState(true);
@@ -241,42 +253,48 @@ export function AttackHeatmap() {
           (topo as any).objects.countries
         ) as unknown as FeatureCollection<Geometry>;
         geoDataRef.current = countries;
-        renderMap(countries, data, livePins, showPins);
+        renderMap(countries, data, livePins, showPins, isDark);
       })
       .catch(() => {/* geo load error — silent */});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Re-render map whenever data or pins change ─────────────────────
+  // ── Re-render map whenever data, pins, or theme change ────────────
   useEffect(() => {
-    if (geoDataRef.current) renderMap(geoDataRef.current, data, livePins, showPins);
+    if (geoDataRef.current) renderMap(geoDataRef.current, data, livePins, showPins, isDark);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, livePins, showPins]);
+  }, [data, livePins, showPins, isDark]);
 
   // ── ResizeObserver – re-render on container resize ─────────────────
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const observer = new ResizeObserver(() => {
-      if (geoDataRef.current) renderMap(geoDataRef.current, data, livePins, showPins);
+      if (geoDataRef.current) renderMap(geoDataRef.current, data, livePins, showPins, isDark);
     });
     observer.observe(el);
     return () => observer.disconnect();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, livePins, showPins]);
+  }, [data, livePins, showPins, isDark]);
 
   // ── D3 render function ─────────────────────────────────────────────
   function renderMap(
     countries: FeatureCollection<Geometry>,
     heatmapData: HeatmapEntry[],
     pins: LivePin[] = [],
-    drawPins: boolean = true
+    drawPins: boolean = true,
+    dark: boolean = true
   ) {
     const svg = svgRef.current;
     if (!svg) return;
 
     const width = svg.clientWidth || 900;
     const height = svg.clientHeight || 520;
+
+    const bgColor    = dark ? "#020617" : "#dde8f5";
+    const strokeColor = dark ? "#0f172a" : "#b8cfe0";
+    const hoverEmpty  = dark ? "#334155" : "#c0d8ec";
+    const hoverActive = "#f87171";
 
     // Build lookup
     const countryMap: Record<string, number> = {};
@@ -311,7 +329,7 @@ export function AttackHeatmap() {
     svgEl.append("rect")
       .attr("width", width)
       .attr("height", height)
-      .attr("fill", "#020617");
+      .attr("fill", bgColor);
 
     const g = svgEl.append("g");
 
@@ -321,21 +339,21 @@ export function AttackHeatmap() {
     for (const feat of countries.features) {
       const name: string = (feat.properties as any)?.name ?? "";
       const count = countryMap[name] ?? 0;
-      const fill = getColor(count, maxCount);
+      const fill = getColor(count, maxCount, dark);
       const d = pathGen(feat);
       if (!d) continue;
 
       const path = g.append("path")
         .attr("d", d)
         .attr("fill", fill)
-        .attr("stroke", "#0f172a")
+        .attr("stroke", strokeColor)
         .attr("stroke-width", "0.5")
         .style("transition", "fill 0.2s")
         .style("cursor", count > 0 ? "pointer" : "default");
 
       if (count > 0) {
         path.on("mouseenter", (e) => {
-          path.attr("fill", "#f87171");
+          path.attr("fill", hoverActive);
           setTooltip({ name, count, x: e.clientX, y: e.clientY });
         });
         path.on("mousemove", (e) => {
@@ -347,7 +365,7 @@ export function AttackHeatmap() {
         });
       } else {
         path.on("mouseenter", () => {
-          path.attr("fill", "#334155");
+          path.attr("fill", hoverEmpty);
         });
         path.on("mouseleave", () => {
           path.attr("fill", fill);
@@ -366,7 +384,7 @@ export function AttackHeatmap() {
         }
       }
 
-      for (const [country, pin] of byCountry) {
+      for (const [country, pin] of Array.from(byCountry.entries())) {
         const normalized = COUNTRY_NAME_MAP[country] ?? country;
         let centroid = COUNTRY_CENTROIDS[normalized] ?? COUNTRY_CENTROIDS[country];
         if (!centroid) continue;
@@ -454,7 +472,7 @@ export function AttackHeatmap() {
             </button>
           )}
           <button
-            onClick={() => { fetchData(); fetchPins(); }}
+            onClick={() => { void fetchData(); void fetchPins(); }}
             className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
             title="Refresh"
           >
@@ -466,8 +484,8 @@ export function AttackHeatmap() {
       {/* Map */}
       <div
         ref={containerRef}
-        className="relative bg-slate-950 flex-1"
-        style={{ minHeight: "520px" }}
+        className="relative flex-1"
+        style={{ minHeight: "520px", background: isDark ? "#020617" : "#dde8f5" }}
       >
         {error && !loading && (
           <div className="absolute inset-0 flex items-center justify-center z-10">
@@ -486,10 +504,15 @@ export function AttackHeatmap() {
         {/* Tooltip */}
         {tooltip && (
           <div
-            className="fixed z-50 pointer-events-none px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg shadow-xl text-xs"
-            style={{ left: tooltip.x + 12, top: tooltip.y - 40 }}
+            className="fixed z-50 pointer-events-none px-3 py-2 rounded-lg shadow-xl text-xs border"
+            style={{
+              left: tooltip.x + 12,
+              top: tooltip.y - 40,
+              background: isDark ? "#1e293b" : "#ffffff",
+              borderColor: isDark ? "#334155" : "#cbd5e1",
+            }}
           >
-            <p className="font-semibold text-slate-100">{tooltip.name}</p>
+            <p className="font-semibold" style={{ color: isDark ? "#f1f5f9" : "#0f172a" }}>{tooltip.name}</p>
             <p className="text-red-400">
               {tooltip.count} attack{tooltip.count !== 1 ? "s" : ""}
             </p>
@@ -498,18 +521,16 @@ export function AttackHeatmap() {
 
         {/* Legend */}
         <div className="absolute bottom-4 left-4 flex items-center gap-2 pointer-events-none">
-          <span className="text-xs text-slate-500">Low</span>
+          <span className="text-xs" style={{ color: isDark ? "#64748b" : "#334155" }}>Low</span>
           <div className="flex rounded overflow-hidden">
-            {["#7f1d1d", "#991b1b", "#b91c1c", "#dc2626", "#ef4444"].map(
-              (c) => (
-                <div
-                  key={c}
-                  style={{ background: c, width: 22, height: 10 }}
-                />
-              )
-            )}
+            {(isDark
+              ? ["#7f1d1d", "#991b1b", "#b91c1c", "#dc2626", "#ef4444"]
+              : ["#fca5a5", "#f87171", "#ef4444", "#dc2626", "#b91c1c"]
+            ).map((c) => (
+              <div key={c} style={{ background: c, width: 22, height: 10 }} />
+            ))}
           </div>
-          <span className="text-xs text-slate-500">High</span>
+          <span className="text-xs" style={{ color: isDark ? "#64748b" : "#334155" }}>High</span>
         </div>
 
         {/* Zoom + Reset Controls */}
