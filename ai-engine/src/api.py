@@ -120,7 +120,27 @@ async def summarize_session(req: SessionSummaryRequest):
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy"}
+    """Deep health: report whether the LLM brain is actually usable, not just
+    that the process is up. The SOC needs to know if the honeypot has silently
+    degraded to static-only responses (the #1 failure mode)."""
+    llm_active = getattr(llm, "client", None) is not None
+    try:
+        budget_ok = llm.budget.can_call()
+    except Exception:
+        budget_ok = None
+    if not llm_active:
+        mode, status = "static-only", "degraded"
+    elif budget_ok is False:
+        mode, status = "fallback (budget exhausted)", "degraded"
+    else:
+        mode, status = "ai-enhanced", "healthy"
+    return {
+        "status": status,
+        "llm_client_active": llm_active,
+        "llm_model": getattr(llm, "model_name", None),
+        "budget_available": budget_ok,
+        "response_mode": mode,
+    }
 
 
 @app.get("/cache/stats")

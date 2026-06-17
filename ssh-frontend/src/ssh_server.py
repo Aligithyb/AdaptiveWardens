@@ -554,8 +554,14 @@ def _proc_cpuinfo(ctx: dict) -> str:
             f"pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx rdtscp lm "
             f"constant_tsc arch_perfmon rep_good nopl xtopology nonstop_tsc cpuid "
             f"pni pclmulqdq ssse3 fma cx16 sse4_1 sse4_2 x2apic movbe popcnt aes "
-            f"xsave avx f16c rdrand hypervisor lahf_lm avx2 avx512f avx512dq avx512cd "
-            f"avx512bw avx512vl ibrs ibpb stibp md_clear\n"
+            f"xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault "
+            f"epb cat_l3 cdp_l3 invpcid_single intel_ppin ssbd mba ibrs ibpb stibp "
+            f"tpr_shadow vnmi flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 "
+            f"avx2 smep bmi2 erms invpcid cqm mpx rdt_a avx512f avx512dq rdseed adx "
+            f"smap clflushopt clwb intel_pt avx512cd avx512bw avx512vl xsaveopt "
+            f"xsavec xgetbv1 cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local "
+            f"dtherm ida arat pln pts pku ospke avx512_vnni md_clear flush_l1d "
+            f"arch_capabilities\n"
             f"bugs\t\t: spectre_v1 spectre_v2 spec_store_bypass mds swapgs\n"
             f"bogomips\t: 4800.00\nclflush size\t: 64\ncache_alignment\t: 64\n"
             f"address sizes\t: 46 bits physical, 48 bits virtual\npower management:\n"
@@ -598,6 +604,90 @@ def _meminfo_kb(ctx: dict) -> str:
     return ("               total        used        free      shared  buff/cache   available\n"
             f"Mem:        {total:>8}     {used:>8}     {free:>8}      102344     {buff:>8}     {avail:>8}\n"
             "Swap:        2097148           0     2097148")
+
+
+def _lscpu(ctx: dict) -> str:
+    # Bare-metal Xeon Silver 4214R, consistent with /proc/cpuinfo. NO
+    # "Hypervisor vendor" / "Virtualization type: full" lines — only the
+    # hardware VT-x capability a real bare-metal CPU reports.
+    return (
+        "Architecture:                    x86_64\n"
+        "CPU op-mode(s):                  32-bit, 64-bit\n"
+        "Byte Order:                      Little Endian\n"
+        "Address sizes:                   46 bits physical, 48 bits virtual\n"
+        "CPU(s):                          4\n"
+        "On-line CPU(s) list:             0-3\n"
+        "Vendor ID:                       GenuineIntel\n"
+        "Model name:                      Intel(R) Xeon(R) Silver 4214R CPU @ 2.40GHz\n"
+        "CPU family:                      6\n"
+        "Model:                           85\n"
+        "Thread(s) per core:              2\n"
+        "Core(s) per socket:              2\n"
+        "Socket(s):                       1\n"
+        "Stepping:                        7\n"
+        "BogoMIPS:                        4800.00\n"
+        "Virtualization:                  VT-x\n"
+        "L1d cache:                       64 KiB (2 instances)\n"
+        "L1i cache:                       64 KiB (2 instances)\n"
+        "L2 cache:                        2 MiB (2 instances)\n"
+        "L3 cache:                        16.5 MiB (1 instance)\n"
+        "NUMA node(s):                    1\n"
+        "NUMA node0 CPU(s):               0-3"
+    )
+
+
+def _hostnamectl(ctx: dict) -> str:
+    # No "Virtualization:" line — that field only appears when virtualized.
+    boot = datetime.utcfromtimestamp(BOOT_TIME).strftime("%a %Y-%m-%d %H:%M:%S UTC")
+    return (
+        f"   Static hostname: {HOSTNAME}\n"
+        f"         Icon name: computer-server\n"
+        f"           Chassis: server\n"
+        f"        Machine ID: {_MACHINE_ID}\n"
+        f"           Boot ID: 4f9c2a1b6d3e4f8a9c0b1d2e3f4a5b6c\n"
+        f"  Operating System: Ubuntu 22.04.3 LTS\n"
+        f"            Kernel: Linux 5.15.0-91-generic\n"
+        f"      Architecture: x86-64\n"
+        f"   Hardware Vendor: HPE\n"
+        f"    Hardware Model: ProLiant DL380 Gen10"
+    )
+
+
+def _dmesg(ctx: dict) -> str:
+    # Bare-metal HPE boot log. Deliberately contains NO 'KVM', 'QEMU',
+    # 'hypervisor', or 'paravirt' so `dmesg | grep -i virtual` returns empty.
+    return (
+        "[    0.000000] Linux version 5.15.0-91-generic (buildd@lcy02-amd64-045) (gcc-11) #101-Ubuntu SMP Tue Nov 14 13:30:08 UTC 2023\n"
+        "[    0.000000] Command line: BOOT_IMAGE=/vmlinuz-5.15.0-91-generic root=/dev/mapper/ubuntu--vg-ubuntu--lv ro\n"
+        "[    0.000000] BIOS-provided physical RAM map:\n"
+        "[    0.000000] DMI: HPE ProLiant DL380 Gen10/ProLiant DL380 Gen10, BIOS U30 v2.50 12/03/2023\n"
+        "[    0.000000] tsc: Detected 2400.000 MHz processor\n"
+        "[    0.004000] CPU0: Intel(R) Xeon(R) Silver 4214R CPU @ 2.40GHz\n"
+        "[    0.008000] Memory: 16384000K/16777216K available\n"
+        "[    0.012000] smpboot: Allowing 4 CPUs, 0 hotplug CPUs\n"
+        "[    0.220000] ACPI: Enabled 4 GPEs in block 00 to 3F\n"
+        "[    0.450000] pci 0000:00:00.0: [8086:2020] type 00 class 0x060000\n"
+        "[    0.880000] hpsa 0000:03:00.0: Smart Array P408i-a SR Gen10 found\n"
+        "[    1.020000] scsi host0: hpsa\n"
+        "[    1.340000] tg3 0000:04:00.0 eth0: Tigon3 [partno(BCM5719) rev 5719001]\n"
+        "[    1.560000] EXT4-fs (dm-0): mounted filesystem with ordered data mode\n"
+        "[    2.010000] systemd[1]: systemd 249.11-0ubuntu3.11 running in system mode\n"
+        "[    2.140000] systemd[1]: Detected architecture x86-64."
+    )
+
+
+def _lspci(ctx: dict) -> str:
+    # Bare-metal devices: HPE Smart Array, Broadcom NIC, Matrox iLO video.
+    # No 'Red Hat Virtio' / 'QEMU' devices that betray virtualization.
+    return (
+        "00:00.0 Host bridge: Intel Corporation Sky Lake-E DMI3 Registers (rev 04)\n"
+        "00:11.5 SATA controller: Intel Corporation C620 Series Chipset SATA Controller [AHCI mode] (rev 09)\n"
+        "00:1f.0 ISA bridge: Intel Corporation C621 Series Chipset LPC/eSPI Controller (rev 09)\n"
+        "03:00.0 RAID bus controller: Hewlett-Packard Company Smart Array Gen10 Controllers (rev 01)\n"
+        "04:00.0 Ethernet controller: Broadcom Inc. NetXtreme BCM5719 Gigabit Ethernet PCIe (rev 01)\n"
+        "04:00.1 Ethernet controller: Broadcom Inc. NetXtreme BCM5719 Gigabit Ethernet PCIe (rev 01)\n"
+        "08:00.0 VGA compatible controller: Matrox Electronics Systems Ltd. Integrated Matrox G200eH3 (rev 02)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -652,21 +742,90 @@ _PROC1_CGROUP = (
     "0::/system.slice/nexopay-api.service"
 )
 
+# Deterministic, mutually-consistent hardware identity. CRITICAL: every value
+# below must agree with the bare-metal HPE ProLiant DL380 Gen10 fiction. These
+# MUST be served statically (never via the LLM) because the model hallucinates
+# KVM/QEMU virtualization artifacts and non-deterministic / invalid-hex UUIDs,
+# which contradict `systemd-detect-virt: none` and instantly burn the honeypot.
+_HW_UUID    = "a8f5c2e1-9b3d-4e6f-8a1c-2d4e6f8a0b1c"   # fixed, valid hex
+_HW_SERIAL  = "CZ3206H1K9"                              # HPE ProLiant-style serial
+_HW_BOARD   = "PWUDA0ARH9C04R"
+_MACHINE_ID = "b0a7c5d3e8f14a2b9c6d7e8f90123456"
+
 CONTAINER_ESCAPE_PROBES = {
     "cat /proc/1/cgroup":                  _PROC1_CGROUP,
     "cat /proc/self/cgroup":               "0::/user.slice/user-1000.slice/session-3.scope\n1:name=systemd:/user.slice/user-0.slice/session-3.scope",
     "cat /.dockerenv":                     "",
     "ls /.dockerenv":                      "ls: cannot access '/.dockerenv': No such file or directory",
     "ls -la /.dockerenv":                  "ls: cannot access '/.dockerenv': No such file or directory",
+    "cat /proc/1/comm":                    "systemd",
+    "cat /proc/1/sched":                   "systemd (1, #threads: 1)",
+    "readlink /proc/1/exe":                "/usr/lib/systemd/systemd",
+    "ls -la /proc/1/exe":                  "lrwxrwxrwx 1 root root 0 " + datetime.utcfromtimestamp(BOOT_TIME).strftime("%b %d %H:%M") + " /proc/1/exe -> /usr/lib/systemd/systemd",
+    "ls -l /proc/1/exe":                   "lrwxrwxrwx 1 root root 0 " + datetime.utcfromtimestamp(BOOT_TIME).strftime("%b %d %H:%M") + " /proc/1/exe -> /usr/lib/systemd/systemd",
     "systemd-detect-virt":                 "none",
     "systemd-detect-virt -c":             "none",
+    "systemd-detect-virt -v":             "none",
+    "virt-what":                           "",
     "dmidecode -s system-product-name":    "ProLiant DL380 Gen10",
     "dmidecode -s system-manufacturer":    "HPE",
+    "dmidecode -s system-serial-number":   _HW_SERIAL,
+    "dmidecode -s system-uuid":            _HW_UUID.upper(),
     "dmidecode -s baseboard-product-name": "ProLiant DL380 Gen10",
+    "dmidecode -s baseboard-serial-number": _HW_BOARD,
+    "dmidecode -s bios-vendor":            "HPE",
+    "dmidecode -s bios-version":           "U30",
     "cat /sys/class/dmi/id/product_name":  "ProLiant DL380 Gen10",
+    "cat /sys/class/dmi/id/product_uuid":  _HW_UUID,
+    "cat /sys/class/dmi/id/product_serial": _HW_SERIAL,
+    "cat /sys/class/dmi/id/board_serial":  _HW_BOARD,
+    "cat /sys/class/dmi/id/chassis_serial": _HW_SERIAL,
     "cat /sys/class/dmi/id/sys_vendor":    "HPE",
     "cat /sys/class/dmi/id/board_vendor":  "HPE",
     "cat /sys/class/dmi/id/chassis_vendor":"HPE",
+    "cat /sys/class/dmi/id/bios_vendor":   "HPE",
+    "cat /sys/class/dmi/id/bios_version":  "U30 v2.50 (12/03/2023)",
+    "cat /sys/class/dmi/id/chassis_type":  "23",
+    "cat /etc/machine-id":                 _MACHINE_ID,
+    "cat /var/lib/dbus/machine-id":        _MACHINE_ID,
+    "hostid":                              "007f0101",
+    # Privilege / namespace recon — on bare metal root holds the full cap set
+    # and processes live in the kernel's default namespaces (inodes 4026531xxx).
+    # Inside a container these differ, so static bare-metal answers are key.
+    "capsh --print": (
+        "Current: =ep\n"
+        "Bounding set =cap_chown,cap_dac_override,cap_dac_read_search,cap_fowner,"
+        "cap_fsetid,cap_kill,cap_setgid,cap_setuid,cap_setpcap,cap_linux_immutable,"
+        "cap_net_bind_service,cap_net_broadcast,cap_net_admin,cap_net_raw,cap_ipc_lock,"
+        "cap_ipc_owner,cap_sys_module,cap_sys_rawio,cap_sys_chroot,cap_sys_ptrace,"
+        "cap_sys_pacct,cap_sys_admin,cap_sys_boot,cap_sys_nice,cap_sys_resource,"
+        "cap_sys_time,cap_sys_tty_config,cap_mknod,cap_lease,cap_audit_write,"
+        "cap_audit_control,cap_setfcap,cap_mac_override,cap_mac_admin,cap_syslog,"
+        "cap_wake_alarm,cap_block_suspend,cap_audit_read,cap_perfmon,cap_bpf,"
+        "cap_checkpoint_restore\n"
+        "Ambient set =\n"
+        "Current IAB: \n"
+        "Securebits: 00/0x0/1'b0\n"
+        " secure-noroot: no (unlocked)\n"
+        " secure-no-suid-fixup: no (unlocked)\n"
+        " secure-keep-caps: no (unlocked)\n"
+        " secure-no-ambient-raise: no (unlocked)\n"
+        "uid=0(root) euid=0(root)\n"
+        "gid=0(root)\n"
+        "groups=0(root),4(adm),27(sudo)\n"
+        "Guessed mode: UNCERTAIN (0)"
+    ),
+    "lsns": (
+        "        NS TYPE   NPROCS PID USER COMMAND\n"
+        "4026531834 time      152   1 root /sbin/init splash\n"
+        "4026531835 cgroup    152   1 root /sbin/init splash\n"
+        "4026531836 pid       152   1 root /sbin/init splash\n"
+        "4026531837 user      152   1 root /sbin/init splash\n"
+        "4026531838 uts       152   1 root /sbin/init splash\n"
+        "4026531839 ipc       152   1 root /sbin/init splash\n"
+        "4026531840 net       152   1 root /sbin/init splash\n"
+        "4026531841 mnt       149   1 root /sbin/init splash"
+    ),
 }
 
 # Static responses for common commands
@@ -674,6 +833,10 @@ STATIC_RESPONSES = {
     "whoami":   lambda ctx: ctx.get("username", "root"),
     "id":       lambda ctx: "uid=0(root) gid=0(root) groups=0(root),4(adm),27(sudo)",
     "hostname": lambda ctx: HOSTNAME,
+    "lscpu":       _lscpu,
+    "hostnamectl": _hostnamectl,
+    "dmesg":       _dmesg,
+    "lspci":       _lspci,
     "uname -a": lambda ctx: f"Linux {HOSTNAME} 5.15.0-91-generic #101-Ubuntu SMP Tue Nov 14 13:30:08 UTC 2023 x86_64 x86_64 x86_64 GNU/Linux",
     "uname":    lambda ctx: "Linux",
     "ifconfig": lambda ctx: (

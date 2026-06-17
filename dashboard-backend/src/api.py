@@ -1008,6 +1008,41 @@ def health():
     return {"status": "healthy"}
 
 
+@app.get("/api/ai-status")
+async def ai_status():
+    """Surface the AI engine's real health to the SOC dashboard so analysts can
+    see if the honeypot has silently degraded to static-only responses, plus
+    LLM budget spend and cache hit-rate. Never raises — returns offline state."""
+    result = {
+        "status": "offline",
+        "response_mode": "unknown",
+        "llm_model": None,
+        "budget_available": None,
+        "cache": None,
+        "budget": None,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            h = await client.get(f"{AI_ENGINE_URL}/health")
+            if h.status_code == 200:
+                result.update(h.json())
+            try:
+                cs = await client.get(f"{AI_ENGINE_URL}/cache/stats")
+                if cs.status_code == 200:
+                    result["cache"] = cs.json()
+            except Exception:
+                pass
+            try:
+                bs = await client.get(f"{AI_ENGINE_URL}/budget/stats")
+                if bs.status_code == 200:
+                    result["budget"] = bs.json()
+            except Exception:
+                pass
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8003)

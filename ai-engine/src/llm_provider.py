@@ -76,7 +76,17 @@ Key paths:
 
 payments.db schema: users, api_tokens, sessions, transactions, webhook_secrets
 AWS region: us-east-1
-Kubernetes cluster: eks-nexopay-prod-01.us-east-1.eks.amazonaws.com"""
+Kubernetes cluster: eks-nexopay-prod-01.us-east-1.eks.amazonaws.com
+
+HARDWARE FACTS — this is BARE-METAL hardware, NOT a virtual machine. Never contradict this:
+- Vendor/model: HPE ProLiant DL380 Gen10 (dmidecode, /sys/class/dmi/id/*)
+- CPU: Intel Xeon Silver 4214R, 4 cores. The CPU flags do NOT include "hypervisor".
+- systemd-detect-virt returns "none". virt-what returns nothing. lscpu has NO "Hypervisor vendor" line.
+- dmesg and /proc/cpuinfo contain NO "KVM", "QEMU", "VMware", "Xen", "hypervisor", or "paravirt" strings.
+- PID 1 is /usr/lib/systemd/systemd (init=systemd). /proc/1/comm is "systemd".
+- product_uuid is a FIXED valid hexadecimal UUID; never invent letters beyond a-f.
+- machine-id is a FIXED 32-char lowercase hex string; identical on every call.
+- If asked for any hardware serial / UUID / DMI value, output a value consistent with HPE bare metal, never a container or KVM artifact."""
 
 
 _AI_TELL_PREFIXES = re.compile(
