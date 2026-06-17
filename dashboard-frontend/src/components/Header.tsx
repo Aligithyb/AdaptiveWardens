@@ -1,10 +1,20 @@
 "use client"
 
-import { Search, Bell, LogOut, Sun, Moon, ShieldAlert, AlertTriangle, X } from 'lucide-react';
+import { Search, Bell, LogOut, Sun, Moon, ShieldAlert, AlertTriangle, X, Brain, Zap, WifiOff } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { useEffect, useState, useRef } from 'react';
 import { api } from '@/lib/api';
 import { SessionUser, ROLE_LABELS, ROLE_COLORS } from '@/lib/auth';
+
+interface AIStatus {
+  status: 'healthy' | 'degraded' | 'offline' | string;
+  response_mode: string;
+  llm_client_active: boolean;
+  budget_available: boolean | null;
+  llm_model: string | null;
+  cache?: { hit_rate?: number; size?: number } | null;
+  budget?: { daily_tokens_used?: number; daily_limit?: number } | null;
+}
 
 interface AlertSession {
   session_id: string;
@@ -30,10 +40,26 @@ export function Header({ searchQuery = '', onSearchChange, user, onLogout }: Hea
   const [mounted, setMounted] = useState(false);
   const [showAlerts, setShowAlerts] = useState(false);
   const [alerts, setAlerts] = useState<AlertSession[]>([]);
+  const [aiStatus, setAIStatus] = useState<AIStatus | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
   // Avoid hydration mismatch — only render theme icon after mount
   useEffect(() => setMounted(true), []);
+
+  // Poll AI engine health every 30s so SOC immediately sees if brain degrades
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const res = await api.get('/api/ai-status');
+        setAIStatus(res.data as AIStatus);
+      } catch {
+        setAIStatus({ status: 'offline', response_mode: 'unknown', llm_client_active: false, budget_available: null, llm_model: null });
+      }
+    };
+    load();
+    const id = setInterval(load, 30_000);
+    return () => clearInterval(id);
+  }, []);
 
   // Fetch high-risk sessions for the notification panel
   useEffect(() => {
@@ -85,6 +111,37 @@ export function Header({ searchQuery = '', onSearchChange, user, onLogout }: Hea
         </div>
 
         <div className="flex items-center gap-2 ml-6">
+          {/* AI Engine status badge */}
+          {mounted && aiStatus && (() => {
+            const healthy = aiStatus.status === 'healthy';
+            const degraded = aiStatus.status === 'degraded';
+            const label = healthy ? 'AI-Enhanced' : degraded ? 'AI Degraded' : 'AI Offline';
+            const Icon = healthy ? Brain : degraded ? Zap : WifiOff;
+            const colorClass = healthy
+              ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30'
+              : degraded
+              ? 'text-amber-400 bg-amber-500/10 border-amber-500/30'
+              : 'text-slate-500 bg-slate-800/50 border-slate-700';
+            const dotClass = healthy ? 'bg-emerald-400 animate-pulse' : degraded ? 'bg-amber-400' : 'bg-slate-600';
+            const parts = [aiStatus.response_mode];
+            if (aiStatus.llm_model) parts.push(aiStatus.llm_model);
+            if (aiStatus.cache?.hit_rate != null)
+              parts.push(`cache ${Math.round(aiStatus.cache.hit_rate * 100)}%`);
+            if (aiStatus.budget?.daily_tokens_used != null)
+              parts.push(`${aiStatus.budget.daily_tokens_used.toLocaleString()} tokens today`);
+            const tooltip = parts.join(' · ');
+            return (
+              <div
+                title={tooltip}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-medium ${colorClass} cursor-default`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${dotClass}`} />
+                <Icon className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">{label}</span>
+              </div>
+            );
+          })()}
+
           {/* Theme toggle */}
           {mounted && (
             <button
