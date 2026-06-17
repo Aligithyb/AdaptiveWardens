@@ -24,8 +24,9 @@ import httpx
 
 logger = logging.getLogger("dashboard.threat_intel")
 
-VT_API_KEY    = os.getenv("VIRUSTOTAL_API_KEY", "")
-ABUSE_API_KEY = os.getenv("ABUSEIPDB_API_KEY", "")
+VT_API_KEY      = os.getenv("VIRUSTOTAL_API_KEY", "")
+ABUSE_API_KEY   = os.getenv("ABUSEIPDB_API_KEY", "")
+ANYRUN_API_KEY  = os.getenv("ANYRUN_API_KEY", "")
 
 ABUSE_CATEGORY_MAP = {
     1: "DNS Compromise", 2: "DNS Poisoning", 3: "Fraud Orders",
@@ -382,6 +383,152 @@ async def vt_url_scan(url: str, conn: sqlite3.Connection) -> dict:
 
     _set_cache(conn, cache_key, "virustotal", result, _VT_URL_TTL_S)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Any.run dynamic sandbox
+# ---------------------------------------------------------------------------
+
+_ANYRUN_TTL_S      = 86400   # 24 h for completed analyses
+_ANYRUN_PENDING_S  = 90      # re-check pending every 90 s
+
+
+def _anyrun_headers() -> dict:
+    return {"Authorization": f"API-Key {ANYRUN_API_KEY}", "Content-Type": "application/json"}
+
+
+def _parse_anyrun_analysis(data: dict, taskid: str) -> dict:
+    """Normalise a completed Any.run analysis response into our schema."""
+    analysis = data.get("data", {}).get("analysis", {})
+    scores   = analysis.get("scores", {}).get("verdict", {})
+    network  = analysis.get("network", {})
+    procs    = analysis.get("processes", {}).get("tree", [])
+
+    conns    = network.get("connections", [])
+    dns_reqs = network.get("dnsRequests", network.get("dns", []))
+    http_req = network.get("httpRequests", [])
+    threats  = network.get("threats", [])
+
+    # Compact IOC list: up to 5 each of IPs, domains, URLs
+    iocs: list[dict] = []
+    for c in conns[:8]:
+        ip = c.get("ip") or c.get("destinationIp", "")
+        if ip:
+            iocs.append({"type": "ip", "value": ip,
+                         "country": c.get("country", ""),
+                         "port": c.get("port") or c.get("destinationPort", "")})
+    for d in dns_reqs[:8]:
+        dom = d.get("domain", "")
+        if dom:
+            iocs.append({"type": "domain", "value": dom,
+                         "ip": d.get("ip", "")})
+    for r in http_req[:5]:
+        url = r.get("url", "")
+        if url:
+            iocs.append({"type": "url", "value": url,
+                         "method": r.get("method", "GET"),
+                         "status": r.get("status", "")})
+
+    threat_names = [t.get("name") or t.get("verdict", "") for t in threats]
+
+    return {
+        "status":             "done",
+        "taskid":             taskid,
+        "verdict":            scores.get("threatLevelText", "No threats detected"),
+        "threat_level":       scores.get("threatLevel", 0),   # 0=clean 1=suspicious 2=malicious
+        "score":              scores.get("score", 0),
+        "process_count":      len(procs),
+        "network_connections": len(conns),
+        "http_requests":      len(http_req),
+        "dns_queries":        len(dns_reqs),
+        "threat_names":       [n for n in threat_names if n],
+        "iocs":               iocs,
+        "report_url":         f"https://app.any.run/tasks/{taskid}",
+    }
+
+
+async def _anyrun_poll(taskid: str) -> dict:
+    """Check if a pending Any.run task has completed. Returns current state dict."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"https://api.any.run/v1/analysis/{taskid}",
+                headers=_anyrun_headers(),
+            )
+            if resp.status_code == 404:
+                return {"status": "not_found", "taskid": taskid}
+            if resp.status_code != 200:
+                return {"status": "pending", "taskid": taskid,
+                        "error": f"http_{resp.status_code}"}
+            raw = resp.json()
+            analysis_status = (raw.get("data", {}).get("analysis", {}).get("status", ""))
+            if analysis_status != "done":
+                return {"status": "pending", "taskid": taskid}
+            return _parse_anyrun_analysis(raw, taskid)
+    except Exception as e:
+        logger.warning(f"Any.run poll failed for {taskid}: {e}")
+        return {"status": "pending", "taskid": taskid, "error": str(e)}
+
+
+async def anyrun_url_scan(url: str, conn: sqlite3.Connection) -> dict:
+    """
+    Submit URL to Any.run for dynamic analysis.
+    - First call: submits task, caches {status:pending, taskid:...} for 90s
+    - Subsequent calls while pending: polls and upgrades to {status:done, ...}
+    - Once done: cached for 24h
+    """
+    if not ANYRUN_API_KEY:
+        return {"error": "no_key"}
+
+    cache_key = f"url:{url}"
+    cached = _get_cache(conn, cache_key, "anyrun")
+    if cached is not None:
+        if cached.get("status") == "pending" and cached.get("taskid"):
+            result = await _anyrun_poll(cached["taskid"])
+            if result.get("status") == "done":
+                _set_cache(conn, cache_key, "anyrun", result, _ANYRUN_TTL_S)
+            # else: leave short-TTL pending entry in place
+            return result
+        return cached
+
+    # Submit new task
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                "https://api.any.run/v1/analysis",
+                headers=_anyrun_headers(),
+                json={
+                    "obj_type":    "url",
+                    "obj_url":     url,
+                    "env_os":      "windows",
+                    "env_version": "10",
+                    "env_bitness": 64,
+                    "run_duration": 60,
+                    "network":     "default",
+                },
+            )
+            if resp.status_code == 402:
+                result: dict = {"error": "plan_limit"}
+                _set_cache(conn, cache_key, "anyrun", result, 300)
+                return result
+            if resp.status_code == 401:
+                result = {"error": "invalid_key"}
+                _set_cache(conn, cache_key, "anyrun", result, 300)
+                return result
+            if resp.status_code not in (200, 201):
+                return {"error": f"http_{resp.status_code}"}
+
+            data = resp.json()
+            taskid = (data.get("data") or {}).get("taskid", "")
+            if not taskid:
+                return {"error": "no_taskid", "raw": str(data)[:200]}
+
+            result = {"status": "pending", "taskid": taskid, "url": url}
+            _set_cache(conn, cache_key, "anyrun", result, _ANYRUN_PENDING_S)
+            return result
+    except Exception as e:
+        logger.warning(f"Any.run submit failed for {url}: {e}")
+        return {"error": str(e)}
 
 
 async def enrich_ip(ip: str, conn: sqlite3.Connection) -> dict:
