@@ -1,11 +1,13 @@
-import { Activity, Shield, Map, BarChart3, FileText, Layers, Globe2, ShieldAlert } from 'lucide-react';
+import { Activity, Shield, Map, BarChart3, FileText, Layers, Globe2, ShieldAlert, Lock } from 'lucide-react';
+import { SessionUser, canAccess } from '@/lib/auth';
 
 interface SidebarProps {
   activeView: string;
   setActiveView: (view: string) => void;
+  user?: SessionUser | null;
 }
 
-export function Sidebar({ activeView, setActiveView }: SidebarProps) {
+export function Sidebar({ activeView, setActiveView, user }: SidebarProps) {
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: Layers },
     { id: 'live-sessions', label: 'Live Sessions', icon: Activity },
@@ -35,6 +37,7 @@ export function Sidebar({ activeView, setActiveView }: SidebarProps) {
         <ul className="space-y-2">
           {navItems.map((item) => {
             const Icon = item.icon;
+            const locked = user ? !canAccess(user.role, item.id) : false;
             return (
               <li key={item.id}>
                 <button
@@ -46,7 +49,8 @@ export function Sidebar({ activeView, setActiveView }: SidebarProps) {
                   }`}
                 >
                   <Icon className="w-5 h-5" />
-                  <span>{item.label}</span>
+                  <span className="flex-1 text-left">{item.label}</span>
+                  {locked && <Lock className="w-3.5 h-3.5 text-slate-600 flex-shrink-0" />}
                 </button>
               </li>
             );
