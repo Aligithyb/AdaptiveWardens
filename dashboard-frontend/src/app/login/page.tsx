@@ -150,37 +150,6 @@ export default function LoginPage() {
               </button>
             </form>
 
-            {/* Role legend */}
-            <div className="px-8 pb-6">
-              <details className="group">
-                <summary className="text-xs text-slate-600 cursor-pointer hover:text-slate-500 transition-colors list-none flex items-center gap-1">
-                  <span className="group-open:rotate-90 transition-transform inline-block">›</span>
-                  Demo access credentials
-                </summary>
-                <div className="mt-3 space-y-2">
-                  {[
-                    { user: 'admin',      pass: 'Admin@SOC2025!',   role: 'Administrator', color: 'text-red-400'   },
-                    { user: 'j.smith',    pass: 'Analyst@SOC2025!', role: 'SOC Analyst',   color: 'text-cyan-400'  },
-                    { user: 'it.support', pass: 'Support@SOC2025!', role: 'IT Staff',       color: 'text-green-400' },
-                    { user: 'auditor',    pass: 'Viewer@SOC2025!',  role: 'Read Only',      color: 'text-slate-400' },
-                  ].map(({ user, pass, role, color }) => (
-                    <button
-                      key={user}
-                      type="button"
-                      onClick={() => { setUsername(user); setPassword(pass); setError(''); }}
-                      className="w-full flex items-center justify-between px-3 py-2 bg-slate-800/50 hover:bg-slate-800 border border-slate-700/50 rounded-lg transition-colors cursor-pointer group/row"
-                    >
-                      <div className="text-left">
-                        <span className="text-xs text-slate-300 font-mono group-hover/row:text-white transition-colors">{user}</span>
-                        <span className="text-xs text-slate-600 ml-2">/ {pass}</span>
-                      </div>
-                      <span className={`text-xs font-medium ${color}`}>{role}</span>
-                    </button>
-                  ))}
-                  <p className="text-xs text-slate-700 mt-1 text-center">Click a row to autofill credentials</p>
-                </div>
-              </details>
-            </div>
           </div>
 
           {/* Footer */}
