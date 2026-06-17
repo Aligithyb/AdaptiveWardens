@@ -1,13 +1,2 @@
-/** @type {import('next').NextConfig} */
-const nextConfig = {
-  async rewrites() {
-    return [
-      {
-        source: '/api/:path*',
-        destination: 'http://dashboard-backend:8003/api/:path*',
-      },
-    ]
-  },
-}
-
-export default nextConfig
+// Intentionally empty — config lives in next.config.mjs (ES module takes priority).
+// This file is kept to avoid stale-cache issues with some bundlers.

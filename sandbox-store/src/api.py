@@ -164,6 +164,31 @@ def geolocate_and_notify(ip: str, protocol: str, session_id: str):
     except Exception as e:
         logger.error(f"[Slack] Error sending alert: {e}")
 
+    # Fire generic SOAR webhook (platform-agnostic JSON)
+    soar_url = os.getenv("SOAR_WEBHOOK_URL")
+    if soar_url:
+        try:
+            import time
+            payload = {
+                "event": "honeypot.session.new",
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "session_id": session_id,
+                "source_ip": ip,
+                "country": country,
+                "protocol": protocol,
+                "severity": "medium",
+                "source": "AdaptiveWardens",
+            }
+            soar_resp = requests.post(
+                soar_url,
+                json=payload,
+                headers={"Content-Type": "application/json", "X-Source": "AdaptiveWardens"},
+                timeout=5,
+            )
+            logger.info(f"[SOAR] Webhook response: {soar_resp.status_code}")
+        except Exception as e:
+            logger.error(f"[SOAR] Error sending webhook: {e}")
+
 # ==================== API ENDPOINTS ====================
 
 @app.post("/sessions/")

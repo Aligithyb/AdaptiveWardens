@@ -9,8 +9,6 @@ services:
     networks:
       - prod-internal
       - dmz
-    ports:
-      - "8001:8001"
     environment:
       - PYTHONUNBUFFERED=1
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
@@ -34,8 +32,6 @@ services:
     networks:
       - prod-internal
       - dmz
-    ports:
-      - "8002:8002"
     volumes:
       - ./ai-engine/src:/app
       - sandbox-data:/data
@@ -159,11 +155,11 @@ services:
       - ./dashboard-frontend:/app
       - /app/node_modules # Don't overwrite node_modules with host ones
     environment:
-      - NODE_ENV=development
-      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:-gradproject2025}
-      - NEXT_PUBLIC_API_URL=http://18.207.156.94:8003
+      - NODE_ENV=production
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:?Set DASHBOARD_PASSWORD in .env}
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8003}
       - BACKEND_URL=http://dashboard-backend:8003
-      - SESSION_SECRET=${SESSION_SECRET:-adaptive-wardens-session-secret-change-me}
+      - SESSION_SECRET=${SESSION_SECRET:?Set SESSION_SECRET in .env}
     restart: unless-stopped
     depends_on:
       - dashboard-backend

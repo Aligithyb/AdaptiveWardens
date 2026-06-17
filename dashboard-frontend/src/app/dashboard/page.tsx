@@ -13,6 +13,7 @@ import { MetricsStats } from '@/components/MetricsStats';
 import { Reports } from '@/components/Reports';
 import { ThreatIntelligence } from '@/components/ThreatIntelligence';
 import { IPThreatPanel } from '@/components/IPThreatPanel';
+import { DeceptionStats } from '@/components/DeceptionStats';
 import { Lock } from 'lucide-react';
 import { SessionUser, canAccess, ROLE_LABELS } from '@/lib/auth';
 
@@ -107,6 +108,7 @@ export default function DashboardPage() {
                 <div className="space-y-6">
                   <MetricsStats />
                   <AttackHeatmap />
+                  <DeceptionStats />
                   <LiveSessions selectedSession={selectedSession} setSelectedSession={setSelectedSession} onIPClick={setSelectedIP} />
                   <SessionPlayback sessionId={selectedSession} />
                   <IOCSummary onIPClick={setSelectedIP} />
@@ -125,6 +127,7 @@ export default function DashboardPage() {
               {activeView === 'metrics' && <MetricsStats />}
               {activeView === 'reports' && <Reports />}
               {activeView === 'threat-intelligence' && <ThreatIntelligence />}
+              {activeView === 'effectiveness' && <DeceptionStats />}
             </>
           )}
         </main>

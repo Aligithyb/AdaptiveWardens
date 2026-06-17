@@ -22,6 +22,59 @@ interface HeatmapEntry {
   count: number;
 }
 
+interface LivePin {
+  session_id: string;
+  country: string;
+  risk_level: string;
+  threat_score: number;
+  start_time: string;
+  protocol: string;
+}
+
+// Approximate [lon, lat] centroids for common attacker origins
+const COUNTRY_CENTROIDS: Record<string, [number, number]> = {
+  "United States of America": [-98, 38], "China": [104, 35], "Russia": [100, 60],
+  "Germany": [10, 51], "United Kingdom": [-2, 54], "France": [2, 46],
+  "Brazil": [-53, -10], "India": [78, 20], "Netherlands": [5, 52],
+  "Canada": [-95, 60], "Australia": [135, -25], "Japan": [138, 36],
+  "South Korea": [128, 36], "Italy": [12, 42], "Sweden": [15, 62],
+  "Ukraine": [32, 49], "Poland": [20, 52], "Spain": [-3, 40],
+  "Turkey": [35, 39], "Iran": [53, 32], "Romania": [25, 46],
+  "Vietnam": [108, 16], "Indonesia": [120, -5], "Mexico": [-102, 23],
+  "Thailand": [101, 15], "Pakistan": [69, 30], "Egypt": [30, 26],
+  "Nigeria": [8, 10], "South Africa": [25, -29], "Argentina": [-64, -34],
+  "Singapore": [104, 1], "Malaysia": [110, 3], "Taiwan": [121, 24],
+  "Hong Kong": [114, 22], "Bangladesh": [90, 24], "Bulgaria": [25, 43],
+  "Czech Republic": [16, 50], "Czechia": [16, 50], "Hungary": [19, 47],
+  "Austria": [14, 47], "Switzerland": [8, 47], "Belgium": [4, 50],
+  "Portugal": [-8, 39], "Greece": [22, 38], "Denmark": [10, 56],
+  "Norway": [10, 62], "Finland": [26, 64], "Lithuania": [24, 56],
+  "Latvia": [25, 57], "Estonia": [25, 59], "Belarus": [28, 53],
+  "Moldova": [29, 47], "Kazakhstan": [68, 48], "Uzbekistan": [63, 41],
+  "Azerbaijan": [47, 40], "Georgia": [44, 42], "Armenia": [45, 40],
+  "Iraq": [44, 33], "Saudi Arabia": [45, 24], "United Arab Emirates": [54, 24],
+  "Israel": [35, 31], "Lebanon": [36, 34], "Jordan": [37, 31],
+  "Ethiopia": [40, 9], "Kenya": [38, 1], "Tanzania": [35, -6],
+  "Ghana": [-2, 8], "Senegal": [-14, 14], "Morocco": [-5, 32],
+  "Algeria": [3, 28], "Tunisia": [9, 34], "Libya": [17, 27],
+  "Sudan": [30, 15], "Somalia": [46, 6], "Venezuela": [-66, 8],
+  "Colombia": [-74, 4], "Chile": [-71, -30], "Peru": [-76, -10],
+  "Bolivia": [-64, -17], "Paraguay": [-58, -23], "Uruguay": [-56, -33],
+  "Philippines": [122, 13], "Myanmar": [96, 17], "Cambodia": [105, 12],
+  "Laos": [103, 18], "New Zealand": [172, -41], "Nepal": [84, 28],
+  "Sri Lanka": [81, 7], "Afghanistan": [67, 33], "Mongolia": [105, 46],
+  "Unknown": [0, 0],
+};
+
+function pinColor(riskLevel: string): string {
+  switch (riskLevel) {
+    case 'Critical': return '#ef4444';
+    case 'High':     return '#f97316';
+    case 'Medium':   return '#eab308';
+    default:         return '#3b82f6';
+  }
+}
+
 const ISO_TO_NAME: Record<string, string> = {
   AF: "Afghanistan", AL: "Albania", DZ: "Algeria", AO: "Angola",
   AR: "Argentina", AM: "Armenia", AU: "Australia", AT: "Austria",
@@ -127,9 +180,11 @@ function getColor(count: number, max: number): string {
 
 export function AttackHeatmap() {
   const [data, setData] = useState<HeatmapEntry[]>([]);
+  const [livePins, setLivePins] = useState<LivePin[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [showPins, setShowPins] = useState(true);
   const [tooltip, setTooltip] = useState<{
     name: string;
     count: number;
@@ -142,7 +197,7 @@ export function AttackHeatmap() {
   const geoDataRef = useRef<FeatureCollection<Geometry> | null>(null);
   const zoomBehaviorRef = useRef<ZoomBehavior<SVGSVGElement, unknown> | null>(null);
 
-  // ── Fetch API data ──────────────────────────────────────────────────
+  // ── Fetch heatmap data ──────────────────────────────────────────────
   const fetchData = useCallback(async () => {
     try {
       const res = await fetch(`${API_URL}/api/geo-heatmap`);
@@ -158,11 +213,23 @@ export function AttackHeatmap() {
     }
   }, []);
 
+  // ── Fetch live session pins ─────────────────────────────────────────
+  const fetchPins = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/map/live-sessions`);
+      if (!res.ok) return;
+      const json = await res.json();
+      setLivePins(json.sessions ?? []);
+    } catch { /* non-fatal */ }
+  }, []);
+
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 30_000);
-    return () => clearInterval(interval);
-  }, [fetchData]);
+    fetchPins();
+    const i1 = setInterval(fetchData, 30_000);
+    const i2 = setInterval(fetchPins, 10_000);
+    return () => { clearInterval(i1); clearInterval(i2); };
+  }, [fetchData, fetchPins]);
 
   // ── Fetch world geography once ─────────────────────────────────────
   useEffect(() => {
@@ -174,36 +241,36 @@ export function AttackHeatmap() {
           (topo as any).objects.countries
         ) as unknown as FeatureCollection<Geometry>;
         geoDataRef.current = countries;
-        renderMap(countries, data);
+        renderMap(countries, data, livePins, showPins);
       })
       .catch(() => {/* geo load error — silent */});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Re-render map whenever data changes ────────────────────────────
+  // ── Re-render map whenever data or pins change ─────────────────────
   useEffect(() => {
-    if (geoDataRef.current) {
-      renderMap(geoDataRef.current, data);
-    }
+    if (geoDataRef.current) renderMap(geoDataRef.current, data, livePins, showPins);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data]);
+  }, [data, livePins, showPins]);
 
   // ── ResizeObserver – re-render on container resize ─────────────────
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const observer = new ResizeObserver(() => {
-      if (geoDataRef.current) renderMap(geoDataRef.current, data);
+      if (geoDataRef.current) renderMap(geoDataRef.current, data, livePins, showPins);
     });
     observer.observe(el);
     return () => observer.disconnect();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data]);
+  }, [data, livePins, showPins]);
 
   // ── D3 render function ─────────────────────────────────────────────
   function renderMap(
     countries: FeatureCollection<Geometry>,
-    heatmapData: HeatmapEntry[]
+    heatmapData: HeatmapEntry[],
+    pins: LivePin[] = [],
+    drawPins: boolean = true
   ) {
     const svg = svgRef.current;
     if (!svg) return;
@@ -287,6 +354,46 @@ export function AttackHeatmap() {
         });
       }
     }
+
+    // ── Live session pins ──────────────────────────────────────────
+    if (drawPins && pins.length > 0) {
+      // Dedupe by country, keeping the highest-risk entry
+      const byCountry = new Map<string, LivePin>();
+      for (const pin of pins) {
+        const existing = byCountry.get(pin.country);
+        if (!existing || pin.threat_score > (existing.threat_score ?? 0)) {
+          byCountry.set(pin.country, pin);
+        }
+      }
+
+      for (const [country, pin] of byCountry) {
+        const normalized = COUNTRY_NAME_MAP[country] ?? country;
+        let centroid = COUNTRY_CENTROIDS[normalized] ?? COUNTRY_CENTROIDS[country];
+        if (!centroid) continue;
+
+        const projected = projection(centroid);
+        if (!projected) continue;
+        const [px, py] = projected;
+        const col = pinColor(pin.risk_level);
+
+        // Outer pulse ring
+        g.append("circle")
+          .attr("cx", px).attr("cy", py)
+          .attr("r", 7)
+          .attr("fill", col)
+          .attr("opacity", 0.25)
+          .style("pointer-events", "none");
+
+        // Inner dot
+        g.append("circle")
+          .attr("cx", px).attr("cy", py)
+          .attr("r", 3.5)
+          .attr("fill", col)
+          .attr("stroke", "#0f172a")
+          .attr("stroke-width", 1)
+          .style("pointer-events", "none");
+      }
+    }
   }
 
   const handleZoomIn = () => {
@@ -332,8 +439,22 @@ export function AttackHeatmap() {
               {data.length} countr{data.length !== 1 ? "ies" : "y"} with attacks
             </span>
           )}
+          {livePins.length > 0 && (
+            <button
+              onClick={() => setShowPins(p => !p)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs transition-colors border ${
+                showPins
+                  ? 'bg-red-500/10 border-red-500/30 text-red-400'
+                  : 'bg-slate-800 border-slate-700 text-slate-500'
+              }`}
+              title="Toggle live session pins"
+            >
+              <span className={`w-2 h-2 rounded-full ${showPins ? 'bg-red-400 animate-pulse' : 'bg-slate-600'}`} />
+              {livePins.length} live
+            </button>
+          )}
           <button
-            onClick={fetchData}
+            onClick={() => { fetchData(); fetchPins(); }}
             className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
             title="Refresh"
           >

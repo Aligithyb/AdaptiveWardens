@@ -1,6 +1,34 @@
-import { AlertTriangle, Clock, Activity, Wifi, WifiOff, XCircle } from 'lucide-react';
+import { Clock, Activity, WifiOff, XCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
+
+function ThreatScore({ score }: { score: number }) {
+  const s = Math.max(0, Math.min(100, score || 0));
+  const color =
+    s >= 80 ? '#f87171' :  // red-400
+    s >= 60 ? '#fb923c' :  // orange-400
+    s >= 35 ? '#facc15' :  // yellow-400
+    '#34d399';             // emerald-400
+  const r = 14, cx = 18, cy = 18;
+  const circ = 2 * Math.PI * r;
+  const dash = (s / 100) * circ;
+  return (
+    <div className="flex items-center gap-1.5">
+      <svg width="36" height="36" viewBox="0 0 36 36" style={{ transform: 'rotate(-90deg)' }}>
+        <circle cx={cx} cy={cy} r={r} fill="none" stroke="#1e293b" strokeWidth="3" />
+        <circle
+          cx={cx} cy={cy} r={r}
+          fill="none"
+          stroke={color}
+          strokeWidth="3"
+          strokeDasharray={`${dash} ${circ - dash}`}
+          strokeLinecap="round"
+        />
+      </svg>
+      <span className="text-xs font-bold tabular-nums" style={{ color }}>{s}</span>
+    </div>
+  );
+}
 
 interface LiveSessionsProps {
   selectedSession: string | null;
@@ -103,12 +131,13 @@ export function LiveSessions({ selectedSession, setSelectedSession, onIPClick }:
               <th className="px-6 py-3 text-left text-xs text-slate-400">Commands</th>
               <th className="px-6 py-3 text-left text-xs text-slate-400">Status</th>
               <th className="px-6 py-3 text-left text-xs text-slate-400">Risk</th>
+              <th className="px-6 py-3 text-left text-xs text-slate-400">Score</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800">
             {sessions.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-6 py-10 text-center text-slate-500 text-sm">
+                <td colSpan={9} className="px-6 py-10 text-center text-slate-500 text-sm">
                   No sessions recorded yet. Waiting for connections…
                 </td>
               </tr>
@@ -158,6 +187,9 @@ export function LiveSessions({ selectedSession, setSelectedSession, onIPClick }:
                     <span className={`px-2 py-1 text-xs rounded border ${getRiskStyle(session.risk_level)}`}>
                       {session.risk_level || 'Low'}
                     </span>
+                  </td>
+                  <td className="px-4 py-4">
+                    <ThreatScore score={session.threat_score ?? session.risk_score ?? 0} />
                   </td>
                 </tr>
               ))

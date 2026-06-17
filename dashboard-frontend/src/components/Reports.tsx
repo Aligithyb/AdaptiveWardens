@@ -1,10 +1,25 @@
 "use client"
 
-import { FileText, Download, Printer, Search, Filter, Sparkles, X, ChevronDown, ChevronRight } from 'lucide-react';
+import { FileText, Download, Printer, Search, Filter, Sparkles, X, ChevronDown, ChevronRight, ShieldAlert } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8003';
+
+function ThreatScoreBadge({ score }: { score: number }) {
+  const s = Math.max(0, Math.min(100, score || 0));
+  const color =
+    s >= 80 ? 'text-red-400 border-red-500/30 bg-red-500/10' :
+    s >= 60 ? 'text-orange-400 border-orange-500/30 bg-orange-500/10' :
+    s >= 35 ? 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10' :
+              'text-emerald-400 border-emerald-500/30 bg-emerald-500/10';
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs font-bold tabular-nums ${color}`}>
+      <ShieldAlert className="w-3 h-3" />
+      {s}
+    </span>
+  );
+}
 
 function getRiskStyle(level: string) {
   switch (level) {
@@ -147,6 +162,8 @@ function generatePrintHTML(session: any, detail: any, aiReport?: any): string {
         <th>End Time</th><td>${session.end_time ?? 'Still active'}</td></tr>
     <tr><th>Commands Run</th><td>${commands.length}</td>
         <th>MITRE Techniques</th><td>${techniques.length}</td></tr>
+    <tr><th>Threat Score</th><td><strong style="font-size:16px">${session.threat_score ?? session.risk_score ?? 0}/100</strong></td>
+        <th>IOCs Extracted</th><td>${iocs.length}</td></tr>
   </table>
 
   <h2>Command History (${commands.length})</h2>
@@ -417,7 +434,7 @@ export function Reports() {
   const exportJSON = async (sessionId: string) => {
     setExporting(sessionId + '-json');
     try {
-      window.open(`${API_BASE}/api/reports/${sessionId}/json`, '_blank');
+      window.open(`/api/reports/${sessionId}/json`, '_blank');
     } finally {
       setExporting(null);
     }
@@ -426,7 +443,7 @@ export function Reports() {
   const exportCSV = async (sessionId: string) => {
     setExporting(sessionId + '-csv');
     try {
-      window.open(`${API_BASE}/api/reports/${sessionId}/csv`, '_blank');
+      window.open(`/api/reports/${sessionId}/csv`, '_blank');
     } finally {
       setExporting(null);
     }
@@ -559,19 +576,20 @@ export function Reports() {
                   <th className="px-6 py-3 text-left text-xs text-slate-400">Techniques</th>
                   <th className="px-6 py-3 text-left text-xs text-slate-400">Status</th>
                   <th className="px-6 py-3 text-left text-xs text-slate-400">Risk</th>
+                  <th className="px-6 py-3 text-left text-xs text-slate-400">Score</th>
                   <th className="px-6 py-3 text-left text-xs text-slate-400">Export</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
                 {loading ? (
                   <tr>
-                    <td colSpan={10} className="px-6 py-10 text-center text-slate-500 text-sm">
+                    <td colSpan={11} className="px-6 py-10 text-center text-slate-500 text-sm">
                       Loading sessions…
                     </td>
                   </tr>
                 ) : filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="px-6 py-10 text-center text-slate-500 text-sm">
+                    <td colSpan={11} className="px-6 py-10 text-center text-slate-500 text-sm">
                       No sessions match your filters.
                     </td>
                   </tr>
@@ -615,6 +633,9 @@ export function Reports() {
                         <span className={`px-2 py-1 text-xs rounded border ${getRiskStyle(session.risk_level)}`}>
                           {session.risk_level ?? 'Low'}
                         </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <ThreatScoreBadge score={session.threat_score ?? session.risk_score ?? 0} />
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-2">

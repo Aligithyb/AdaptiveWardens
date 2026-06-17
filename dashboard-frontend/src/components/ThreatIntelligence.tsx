@@ -333,7 +333,7 @@ export function ThreatIntelligence() {
   const downloadBlocklist = async () => {
     setDownloading(true);
     try {
-      window.open(`${API_BASE}/api/threat-intel/blocklist`, '_blank');
+      window.open(`/api/threat-intel/blocklist`, '_blank');
     } finally {
       setDownloading(false);
     }

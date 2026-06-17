@@ -26,6 +26,7 @@ class SessionSummaryRequest(BaseModel):
     commands: List[Dict] = []
     techniques: List[Dict] = []
     iocs: List[Dict] = []
+    threat_intel: Optional[Dict] = None
 
 
 def _resolve_mitre(command: str) -> list:
@@ -111,6 +112,7 @@ async def summarize_session(req: SessionSummaryRequest):
         "commands": req.commands,
         "techniques": req.techniques,
         "iocs": req.iocs,
+        "threat_intel": req.threat_intel or {},
     }
     report = generate_session_report(payload, llm)
     return {"report": report}

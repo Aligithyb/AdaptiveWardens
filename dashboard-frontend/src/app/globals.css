@@ -192,3 +192,144 @@
 html {
   font-size: var(--font-size);
 }
+
+/* ── Theme transition ───────────────────────────────────────── */
+*, *::before, *::after {
+  transition-property: background-color, border-color, color, fill, stroke, box-shadow;
+  transition-duration: 200ms;
+  transition-timing-function: ease;
+}
+/* Don't transition things that shouldn't animate */
+svg *, [class*="animate-"] {
+  transition: none !important;
+}
+
+/* ── Custom scrollbar ───────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+.dark ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+.dark ::-webkit-scrollbar-thumb:hover { background: #475569; }
+html:not(.dark) ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+html:not(.dark) ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* ── Light mode surface overrides ───────────────────────────── */
+/* Remap hardcoded dark Tailwind slate classes when NOT in dark mode */
+
+html:not(.dark) .bg-slate-950 { background-color: #eef2f8 !important; }
+html:not(.dark) .bg-slate-900 { background-color: #ffffff !important; }
+html:not(.dark) .bg-slate-800 { background-color: #f1f5f9 !important; }
+html:not(.dark) .bg-slate-700 { background-color: #e2e8f0 !important; }
+
+/* Semi-transparent variants */
+html:not(.dark) .bg-slate-800\/50 { background-color: rgba(226, 232, 240, 0.6) !important; }
+html:not(.dark) .bg-slate-800\/30 { background-color: rgba(226, 232, 240, 0.35) !important; }
+html:not(.dark) .bg-slate-900\/80 { background-color: rgba(255, 255, 255, 0.85) !important; }
+html:not(.dark) .bg-slate-900\/95 { background-color: rgba(255, 255, 255, 0.97) !important; }
+html:not(.dark) .bg-slate-950\/80 { background-color: rgba(238, 242, 248, 0.85) !important; }
+html:not(.dark) .bg-slate-950\/50 { background-color: rgba(238, 242, 248, 0.55) !important; }
+html:not(.dark) .bg-slate-900\/60 { background-color: rgba(255, 255, 255, 0.65) !important; }
+
+/* Border colors */
+html:not(.dark) .border-slate-800 { border-color: #e2e8f0 !important; }
+html:not(.dark) .border-slate-700 { border-color: #d1d9e0 !important; }
+html:not(.dark) .border-slate-600 { border-color: #b8c4ce !important; }
+
+/* Text colors */
+html:not(.dark) .text-slate-100 { color: #0f172a !important; }
+html:not(.dark) .text-slate-200 { color: #1e293b !important; }
+html:not(.dark) .text-slate-300 { color: #374151 !important; }
+html:not(.dark) .text-slate-400 { color: #6b7280 !important; }
+html:not(.dark) .text-slate-500 { color: #9ca3af !important; }
+html:not(.dark) .text-slate-600 { color: #b5bcc5 !important; }
+
+/* Placeholder text */
+html:not(.dark) .placeholder-slate-500::placeholder { color: #9ca3af !important; }
+html:not(.dark) .placeholder-slate-600::placeholder { color: #b5bcc5 !important; }
+
+/* Divide (table row dividers) */
+html:not(.dark) .divide-slate-800 > * + * { border-color: #e2e8f0 !important; }
+html:not(.dark) .divide-slate-700 > * + * { border-color: #d1d9e0 !important; }
+
+/* Hover states */
+html:not(.dark) .hover\:bg-slate-800:hover { background-color: #f1f5f9 !important; }
+html:not(.dark) .hover\:bg-slate-700:hover { background-color: #e2e8f0 !important; }
+html:not(.dark) .hover\:bg-slate-800\/50:hover { background-color: rgba(226, 232, 240, 0.6) !important; }
+html:not(.dark) .hover\:bg-slate-800\/30:hover { background-color: rgba(226, 232, 240, 0.35) !important; }
+html:not(.dark) .hover\:text-slate-200:hover { color: #1e293b !important; }
+
+/* Focus borders for inputs */
+html:not(.dark) .focus\:border-cyan-500:focus { border-color: #0891b2 !important; }
+
+/* Active/selected row highlight */
+html:not(.dark) .bg-cyan-500\/5 { background-color: rgba(8, 145, 178, 0.06) !important; }
+html:not(.dark) .border-l-cyan-500 { border-left-color: #0891b2 !important; }
+
+/* ── Professional shadow utilities ──────────────────────────── */
+.dark .shadow-card { box-shadow: 0 1px 3px rgba(0,0,0,0.5), 0 1px 2px rgba(0,0,0,0.4); }
+html:not(.dark) .shadow-card { box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04); }
+
+/* Card subtle box-shadow in light mode for depth */
+html:not(.dark) .rounded-lg.border,
+html:not(.dark) .rounded-xl.border {
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06), 0 0 0 1px rgba(0,0,0,0.04);
+}
+
+/* ── Glass morphism utility ─────────────────────────────────── */
+.glass {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.dark .glass { background: rgba(15, 23, 42, 0.7) !important; border-color: rgba(30,41,59,0.8) !important; }
+html:not(.dark) .glass { background: rgba(255,255,255,0.75) !important; border-color: rgba(226,232,240,0.9) !important; }
+
+/* ── Button press effect ─────────────────────────────────────── */
+button:not(:disabled):active { transform: scale(0.97); }
+
+/* ── Card hover lift ─────────────────────────────────────────── */
+.dark .card-hover:hover {
+  box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  transform: translateY(-1px);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+html:not(.dark) .card-hover:hover {
+  box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+  transform: translateY(-1px);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+/* ── Login page gradient background in light mode ────────────── */
+html:not(.dark) .login-bg {
+  background: linear-gradient(135deg, #dbeafe 0%, #e0f2fe 40%, #f0f9ff 100%) !important;
+}
+
+/* ── Sidebar in light mode gets a subtle border shadow ─────────── */
+html:not(.dark) .w-64.bg-slate-900 {
+  box-shadow: 1px 0 0 #e2e8f0;
+}
+
+/* ── Table improvements ──────────────────────────────────────── */
+html:not(.dark) thead.bg-slate-800\/50,
+html:not(.dark) .bg-slate-800\/50 {
+  background-color: rgba(241, 245, 249, 0.8) !important;
+}
+
+/* ── Input focus glow ────────────────────────────────────────── */
+html:not(.dark) input:focus,
+html:not(.dark) textarea:focus {
+  box-shadow: 0 0 0 3px rgba(8, 145, 178, 0.12);
+}
+.dark input:focus,
+.dark textarea:focus {
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.1);
+}
+
+/* ── Notification dot ring fix for light mode ────────────────── */
+html:not(.dark) .ring-slate-900 { --tw-ring-color: #ffffff !important; }
+
+/* ── Backdrop/modal overlay in light mode ───────────────────── */
+html:not(.dark) .bg-black\/70 { background-color: rgba(15, 23, 42, 0.55) !important; }
+html:not(.dark) .bg-black\/40 { background-color: rgba(15, 23, 42, 0.3) !important; }
+
+/* ── Map background in light mode ───────────────────────────── */
+html:not(.dark) .bg-slate-950 rect[fill="#020617"],
+html:not(.dark) .bg-slate-950 .map-bg { fill: #dde8f5 !important; }

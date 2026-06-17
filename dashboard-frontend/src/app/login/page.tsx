@@ -44,7 +44,7 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 flex flex-col">
+    <div className="min-h-screen bg-slate-950 login-bg flex flex-col">
       {/* Top security bar */}
       <div className="bg-red-950/60 border-b border-red-900/40 px-6 py-1.5 flex items-center justify-center gap-2">
         <AlertTriangle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
@@ -62,7 +62,7 @@ export default function LoginPage() {
               <div className="w-20 h-20 bg-gradient-to-br from-cyan-500 to-blue-700 rounded-2xl flex items-center justify-center shadow-lg shadow-cyan-500/20">
                 <Shield className="w-10 h-10 text-white" />
               </div>
-              <span className="absolute -bottom-1 -right-1 w-5 h-5 bg-green-500 rounded-full border-2 border-slate-950 flex items-center justify-center">
+              <span className="absolute -bottom-1 -right-1 w-5 h-5 bg-green-500 rounded-full border-2 border-white dark:border-slate-950 flex items-center justify-center">
                 <span className="w-1.5 h-1.5 bg-white rounded-full" />
               </span>
             </div>

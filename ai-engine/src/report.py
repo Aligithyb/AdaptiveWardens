@@ -18,16 +18,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger("ai-engine.report")
 
 _REPORT_SYSTEM_PROMPT = """You are a senior SOC analyst writing an incident report for a honeypot session.
-Given structured JSON data about an attacker session (metadata, commands executed, MITRE techniques, IOCs),
-produce a concise but complete incident report as a JSON object.
+Given structured JSON data about an attacker session (metadata, commands executed, MITRE techniques, IOCs, and
+external threat intelligence from VirusTotal and AbuseIPDB), produce a concise but complete incident report as a JSON object.
 
 The JSON object MUST have exactly these keys:
 - executive_summary: 2-3 sentence plain-English summary for management. What happened, how bad, is it contained.
+  If threat intelligence is present, mention the attacker IP's reputation (e.g. flagged by N vendors, abuse score X/100).
 - attacker_objective: 1-2 sentences on what the attacker was trying to achieve (reconnaissance, data theft, persistence, etc.).
 - kill_chain: array of objects {tactic, techniques: [string], summary: string} — one entry per observed tactic, in kill-chain order.
 - notable_iocs: array of objects {type, value, significance} — the most meaningful indicators to block/monitor.
+  Include the source IP as an IOC if threat intel shows it is known-malicious.
 - severity_justification: 2-3 sentences explaining why this session has the given risk level, citing specific evidence.
+  Reference VirusTotal / AbuseIPDB data if available (e.g. "VirusTotal flagged this IP as malicious by 12 vendors").
 - recommended_actions: array of strings — concrete defensive actions (block IP, rotate credentials, patch CVE, etc.).
+  If the IP has a high AbuseIPDB confidence score (≥80) or multiple VT detections, prioritise firewall block as action #1.
 
 Return ONLY the JSON object. No markdown, no code fences, no prose outside the JSON."""
 
@@ -50,6 +54,7 @@ def _deterministic_report(payload: dict) -> dict:
     commands = payload.get("commands", [])
     techniques = payload.get("techniques", [])
     iocs = payload.get("iocs", [])
+    ti = payload.get("threat_intel") or {}
 
     risk = session.get("risk_level", "Unknown")
     src_ip = session.get("source_ip", "unknown")
@@ -60,6 +65,20 @@ def _deterministic_report(payload: dict) -> dict:
         tactic_counts[tac] = tactic_counts.get(tac, 0) + 1
     top_tactics = sorted(tactic_counts.items(), key=lambda x: -x[1])
     tactic_str = ", ".join(t for t, _ in top_tactics[:3]) if top_tactics else "no specific tactics"
+
+    # Extract TI highlights
+    vt = ti.get("virustotal") or {}
+    abuse = ti.get("abuseipdb") or {}
+    vt_malicious = vt.get("malicious", 0) or 0
+    abuse_score = abuse.get("abuseConfidenceScore", 0) or 0
+    ti_summary = ""
+    if vt_malicious or abuse_score:
+        parts = []
+        if vt_malicious:
+            parts.append(f"flagged malicious by {vt_malicious} VirusTotal vendor(s)")
+        if abuse_score:
+            parts.append(f"AbuseIPDB confidence score {abuse_score}/100")
+        ti_summary = " The source IP is a known threat actor: " + "; ".join(parts) + "."
 
     kill_chain = []
     for tac, count in top_tactics:
@@ -77,19 +96,40 @@ def _deterministic_report(payload: dict) -> dict:
             "value": ioc.get("value", ""),
             "significance": f"Confidence {round((ioc.get('confidence', 0)) * 100)}%",
         })
+    if vt_malicious or abuse_score >= 50:
+        notable.insert(0, {
+            "type": "ip",
+            "value": src_ip,
+            "significance": f"Known malicious IP — VT: {vt_malicious} detections, AbuseIPDB: {abuse_score}/100",
+        })
 
-    actions = [f"Block source IP {src_ip} at perimeter firewall."]
+    # Build recommended actions, prioritising firewall block when TI confirms known-bad
+    actions = []
+    if vt_malicious >= 3 or abuse_score >= 80:
+        actions.append(f"PRIORITY: Block source IP {src_ip} at perimeter firewall — confirmed known-malicious by threat intelligence.")
+    else:
+        actions.append(f"Block source IP {src_ip} at perimeter firewall.")
     if any("shadow" in (c.get("command", "")) for c in commands):
         actions.append("Rotate all system credentials — attacker attempted to read /etc/shadow.")
     if any("wget" in (c.get("command", "")) or "curl" in (c.get("command", "")) for c in commands):
         actions.append("Review outbound HTTP/S connections for exfiltration from this host.")
     if any("crontab" in (c.get("command", "")) or "bashrc" in (c.get("command", "")) for c in commands):
         actions.append("Audit cron jobs and shell startup files for persistence mechanisms.")
+    if abuse.get("isp"):
+        actions.append(f"Submit abuse report to ISP '{abuse['isp']}' with session evidence.")
     actions.append("Review this session in full via SessionPlayback and export for forensic records.")
+
+    # Severity justification includes TI
+    sev_ti = ""
+    if vt_malicious:
+        sev_ti += f" VirusTotal flagged this IP as malicious by {vt_malicious} vendor(s)."
+    if abuse_score:
+        sev_ti += f" AbuseIPDB reports a confidence score of {abuse_score}/100."
 
     return {
         "executive_summary": (
-            f"A {risk.lower()}-risk SSH session was recorded from {src_ip} ({country}). "
+            f"A {risk.lower()}-risk SSH session was recorded from {src_ip} ({country})."
+            f"{ti_summary} "
             f"The attacker executed {len(commands)} command(s) and triggered {len(techniques)} MITRE technique(s) "
             f"across {len(tactic_counts)} tactic(s) ({tactic_str}). "
             f"This report was generated from structured data (AI narrative unavailable)."
@@ -101,7 +141,8 @@ def _deterministic_report(payload: dict) -> dict:
         "kill_chain": kill_chain,
         "notable_iocs": notable,
         "severity_justification": (
-            f"Risk assessed as {risk}. "
+            f"Risk assessed as {risk}."
+            f"{sev_ti} "
             f"{len(techniques)} MITRE technique(s) detected; "
             f"{len(iocs)} IOC(s) extracted. "
             "See full session commands for detailed evidence."
@@ -116,6 +157,7 @@ def _build_user_message(payload: dict) -> str:
     commands = payload.get("commands", [])
     techniques = payload.get("techniques", [])
     iocs = payload.get("iocs", [])
+    ti = payload.get("threat_intel") or {}
 
     # Trim to keep tokens manageable — last 40 commands is plenty for a report
     cmd_summary = [
@@ -132,6 +174,33 @@ def _build_user_message(payload: dict) -> str:
         for i in iocs[:20]
     ]
 
+    # Distil threat intelligence to key fields to avoid token bloat
+    ti_summary: dict = {}
+    vt = ti.get("virustotal") or {}
+    if vt:
+        ti_summary["virustotal"] = {
+            "malicious": vt.get("malicious", 0),
+            "suspicious": vt.get("suspicious", 0),
+            "harmless": vt.get("harmless", 0),
+            "flagged_vendors": (vt.get("flagged_vendors") or [])[:10],
+        }
+    abuse = ti.get("abuseipdb") or {}
+    if abuse:
+        ti_summary["abuseipdb"] = {
+            "abuseConfidenceScore": abuse.get("abuseConfidenceScore"),
+            "totalReports": abuse.get("totalReports"),
+            "isp": abuse.get("isp"),
+            "usageType": abuse.get("usageType"),
+            "categories": (abuse.get("categories") or [])[:8],
+        }
+    geo = ti.get("ipapi") or {}
+    if geo:
+        ti_summary["geolocation"] = {
+            "country": geo.get("country"),
+            "org": geo.get("org"),
+            "hosting": geo.get("hosting"),
+        }
+
     data = {
         "session": {
             "source_ip": session.get("source_ip"),
@@ -145,6 +214,7 @@ def _build_user_message(payload: dict) -> str:
         "commands": cmd_summary,
         "mitre_techniques": tech_summary,
         "iocs": ioc_summary,
+        "threat_intelligence": ti_summary or None,
     }
     return json.dumps(data, default=str)
 

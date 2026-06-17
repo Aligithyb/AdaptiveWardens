@@ -1,4 +1,8 @@
-import { Search, Bell, LogOut } from 'lucide-react';
+"use client"
+
+import { Search, Bell, LogOut, Sun, Moon } from 'lucide-react';
+import { useTheme } from 'next-themes';
+import { useEffect, useState } from 'react';
 import { SessionUser, ROLE_LABELS, ROLE_COLORS } from '@/lib/auth';
 
 interface HeaderProps {
@@ -11,6 +15,11 @@ interface HeaderProps {
 export function Header({ searchQuery = '', onSearchChange, user, onLogout }: HeaderProps) {
   const role = user?.role;
   const colors = role ? ROLE_COLORS[role] : null;
+  const { theme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+
+  // Avoid hydration mismatch — only render theme icon after mount
+  useEffect(() => setMounted(true), []);
 
   return (
     <header className="bg-slate-900 border-b border-slate-800 px-6 py-4">
@@ -23,23 +32,39 @@ export function Header({ searchQuery = '', onSearchChange, user, onLogout }: Hea
               value={searchQuery}
               onChange={e => onSearchChange?.(e.target.value)}
               placeholder="Search sessions, IPs, IOCs..."
-              className="w-full pl-10 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+              className="w-full pl-10 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500 transition-colors"
             />
           </div>
         </div>
 
-        <div className="flex items-center gap-4 ml-6">
-          <button className="relative p-2 text-slate-400 hover:text-slate-200 transition-colors">
+        <div className="flex items-center gap-2 ml-6">
+          {/* Theme toggle */}
+          {mounted && (
+            <button
+              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+              title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              className="p-2 rounded-lg text-slate-400 hover:text-yellow-400 hover:bg-yellow-500/10 transition-colors"
+            >
+              {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+            </button>
+          )}
+
+          {/* Notification bell */}
+          <button
+            className="relative p-2 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors"
+            title="Notifications"
+          >
             <Bell className="w-5 h-5" />
-            <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></span>
+            <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full ring-2 ring-slate-900" />
           </button>
 
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-gradient-to-br from-purple-500 to-pink-600 rounded-full flex items-center justify-center text-xs font-bold text-white">
+          {/* User info */}
+          <div className="flex items-center gap-3 pl-2 border-l border-slate-800">
+            <div className="w-8 h-8 bg-gradient-to-br from-purple-500 to-pink-600 rounded-full flex items-center justify-center text-xs font-bold text-white shadow-sm">
               {user ? user.fullName.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() : 'U'}
             </div>
             <div className="text-sm">
-              <div className="text-slate-200">{user?.fullName ?? 'Loading...'}</div>
+              <div className="text-slate-200 font-medium leading-tight">{user?.fullName ?? 'Loading...'}</div>
               {role && colors ? (
                 <span className={`text-xs font-medium ${colors.text}`}>
                   {ROLE_LABELS[role]}
@@ -50,6 +75,7 @@ export function Header({ searchQuery = '', onSearchChange, user, onLogout }: Hea
             </div>
           </div>
 
+          {/* Logout */}
           {onLogout && (
             <button
               onClick={onLogout}

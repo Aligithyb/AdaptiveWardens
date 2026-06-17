@@ -174,7 +174,8 @@ def _compute_lifecycle_status(session_id: str, db_status: str, conn) -> str:
 def _enrich_session(session: sqlite3.Row, conn) -> dict:
     s = dict(session)
     score, level = _compute_risk(s['session_id'], conn)
-    s['risk_score'] = score
+    s['risk_score'] = min(score, 100)
+    s['threat_score'] = min(score, 100)
     s['risk_level'] = level
     s['lifecycle_status'] = _compute_lifecycle_status(s['session_id'], s.get('status', 'active'), conn)
     return s
@@ -332,6 +333,101 @@ def get_analytics():
 
 
 # ---------------------------------------------------------------------------
+# Live session map pins
+# ---------------------------------------------------------------------------
+
+@app.get("/api/map/live-sessions")
+def get_map_live_sessions():
+    """Return sessions from the last 24 h with country + risk for live map pins."""
+    try:
+        with get_db_connection() as conn:
+            rows = conn.execute("""
+                SELECT session_id, source_ip, country, protocol, start_time
+                FROM sessions
+                WHERE start_time > datetime('now', '-24 hours')
+                ORDER BY start_time DESC
+                LIMIT 300
+            """).fetchall()
+            result = []
+            for s in rows:
+                score, level = _compute_risk(s['session_id'], conn)
+                result.append({
+                    "session_id": s['session_id'],
+                    "source_ip": s['source_ip'],
+                    "country": s['country'] or 'Unknown',
+                    "protocol": s['protocol'],
+                    "start_time": s['start_time'],
+                    "risk_level": level,
+                    "threat_score": min(score, 100),
+                })
+            return {"sessions": result}
+    except sqlite3.OperationalError:
+        return {"sessions": []}
+
+
+# ---------------------------------------------------------------------------
+# Deception effectiveness analytics
+# ---------------------------------------------------------------------------
+
+@app.get("/api/analytics/effectiveness")
+def get_effectiveness():
+    """Honeypot deception effectiveness metrics."""
+    try:
+        with get_db_connection() as conn:
+            total = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+
+            # Engaged = attacker ran ≥ 5 commands (fooled long enough to keep going)
+            engaged_rows = conn.execute("""
+                SELECT COUNT(*) FROM (
+                    SELECT session_id FROM command_history
+                    GROUP BY session_id HAVING COUNT(*) >= 5
+                )
+            """).fetchone()[0]
+
+            avg_cmds = conn.execute("""
+                SELECT AVG(c) FROM (
+                    SELECT COUNT(*) AS c FROM command_history GROUP BY session_id
+                )
+            """).fetchone()[0] or 0
+
+            avg_dur = conn.execute("""
+                SELECT AVG(strftime('%s', end_time) - strftime('%s', start_time))
+                FROM sessions WHERE end_time IS NOT NULL
+            """).fetchone()[0] or 0
+
+            top_cmds = conn.execute("""
+                SELECT command, COUNT(*) AS cnt
+                FROM command_history
+                GROUP BY command
+                ORDER BY cnt DESC
+                LIMIT 8
+            """).fetchall()
+
+            total_techniques = conn.execute("SELECT COUNT(DISTINCT technique_id) FROM attack_techniques").fetchone()[0]
+            total_ioc_types = conn.execute("SELECT COUNT(DISTINCT ioc_type) FROM iocs").fetchone()[0]
+
+            all_s = conn.execute("SELECT session_id FROM sessions").fetchall()
+            risk_dist = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
+            for s in all_s:
+                _, lvl = _compute_risk(s["session_id"], conn)
+                risk_dist[lvl] = risk_dist.get(lvl, 0) + 1
+
+            return {
+                "total_sessions": total,
+                "engaged_sessions": engaged_rows,
+                "engagement_rate": round((engaged_rows / total * 100) if total > 0 else 0, 1),
+                "avg_commands_per_session": round(avg_cmds, 1),
+                "avg_session_duration_s": round(avg_dur),
+                "top_commands": [{"command": r["command"], "count": r["cnt"]} for r in top_cmds],
+                "unique_techniques_seen": total_techniques,
+                "unique_ioc_types_seen": total_ioc_types,
+                "risk_distribution": risk_dist,
+            }
+    except sqlite3.OperationalError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
 # Geo heatmap
 # ---------------------------------------------------------------------------
 
@@ -480,6 +576,16 @@ async def get_ai_summary(session_id: str):
     except sqlite3.OperationalError as e:
         pass
 
+    # Fetch threat intelligence for the attacker IP (cache-first, non-fatal)
+    threat_intel: dict = {}
+    src_ip = session.get("source_ip") if isinstance(session, dict) else None
+    if src_ip:
+        try:
+            with get_db_connection() as ti_conn:
+                threat_intel = await enrich_ip(src_ip, ti_conn)
+        except Exception:
+            pass  # TI is best-effort — never block report generation
+
     # Generate report via ai-engine
     try:
         async with httpx.AsyncClient(timeout=35.0) as client:
@@ -490,6 +596,7 @@ async def get_ai_summary(session_id: str):
                     "commands": commands,
                     "techniques": techniques,
                     "iocs": iocs,
+                    "threat_intel": threat_intel,
                 },
             )
             resp.raise_for_status()
@@ -707,6 +814,129 @@ def list_users():
             return {"users": [dict(r) for r in rows]}
     except sqlite3.OperationalError as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# SIEM / SOAR integrations
+# ---------------------------------------------------------------------------
+
+_CEF_SEVERITY = {"Critical": 10, "High": 7, "Medium": 5, "Low": 3}
+
+
+def _session_to_cef(session: dict, commands: list, techniques: list) -> str:
+    """Render one session as a CEF syslog line."""
+    risk = session.get("risk_level", "Unknown")
+    sev = _CEF_SEVERITY.get(risk, 5)
+    src = session.get("source_ip", "0.0.0.0")
+    country = session.get("country") or "Unknown"
+    proto = session.get("protocol", "ssh").upper()
+    username = (session.get("username") or "").replace("|", "/")
+    start = session.get("start_time") or ""
+    cmd_count = len(commands)
+    tactic_set = sorted({t.get("tactic", "") for t in techniques if t.get("tactic")})
+    tactics = ",".join(tactic_set)[:200] or "none"
+
+    # Minimal CEF extensions — no pipe or = in values
+    ext = (
+        f"src={src} "
+        f"proto={proto} "
+        f"cs1={country} cs1Label=Country "
+        f"cs2={username or 'unknown'} cs2Label=Username "
+        f"cs3={tactics} cs3Label=MITRETactics "
+        f"cn1={cmd_count} cn1Label=CommandCount "
+        f"cn2={sev} cn2Label=RiskScore "
+        f"start={start}"
+    )
+    session_id = session.get("session_id", "unknown")
+    name = f"{proto} Honeypot Session — Risk {risk}"
+    return f"CEF:0|AdaptiveWardens|Honeypot|1.0|{session_id}|{name}|{sev}|{ext}"
+
+
+@app.get("/api/integrations/siem/cef/{session_id}", response_class=Response)
+def export_cef_session(session_id: str):
+    """Export a single session as a CEF-formatted syslog line (Content-Type: text/plain)."""
+    try:
+        detail = get_session_details(session_id)
+    except HTTPException:
+        raise
+
+    line = _session_to_cef(
+        detail.get("session", {}),
+        detail.get("commands", []),
+        detail.get("techniques", []),
+    )
+    return Response(content=line + "\n", media_type="text/plain")
+
+
+@app.get("/api/integrations/siem/cef", response_class=Response)
+def export_cef_bulk(limit: int = 200):
+    """Export recent sessions as CEF-formatted syslog lines, one per line."""
+    try:
+        with get_db_connection() as conn:
+            sessions = conn.execute(
+                "SELECT * FROM sessions ORDER BY start_time DESC LIMIT ?", (min(limit, 1000),)
+            ).fetchall()
+    except sqlite3.OperationalError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    lines = []
+    for s in sessions:
+        sid = s["session_id"]
+        try:
+            with get_db_connection() as conn:
+                cmds = conn.execute(
+                    "SELECT * FROM command_history WHERE session_id=? ORDER BY sequence_number", (sid,)
+                ).fetchall()
+                techs = conn.execute(
+                    "SELECT * FROM attack_techniques WHERE session_id=?", (sid,)
+                ).fetchall()
+        except sqlite3.OperationalError:
+            cmds, techs = [], []
+        lines.append(_session_to_cef(dict(s), [dict(c) for c in cmds], [dict(t) for t in techs]))
+
+    return Response(content="\n".join(lines) + ("\n" if lines else ""), media_type="text/plain")
+
+
+@app.post("/api/integrations/soar/test")
+async def test_soar_webhook(session_id: str):
+    """Fire the SOAR webhook for an existing session (for integration testing)."""
+    soar_url = os.getenv("SOAR_WEBHOOK_URL")
+    if not soar_url:
+        raise HTTPException(status_code=424, detail="SOAR_WEBHOOK_URL not configured")
+
+    try:
+        detail = get_session_details(session_id)
+    except HTTPException:
+        raise
+
+    session = detail.get("session", {})
+    commands = detail.get("commands", [])
+    techniques = detail.get("techniques", [])
+    tactic_set = sorted({t.get("tactic", "") for t in techniques if t.get("tactic")})
+    payload = {
+        "event": "honeypot.session.alert",
+        "session_id": session_id,
+        "source_ip": session.get("source_ip"),
+        "country": session.get("country"),
+        "protocol": session.get("protocol"),
+        "risk_level": session.get("risk_level"),
+        "command_count": len(commands),
+        "mitre_tactics": tactic_set,
+        "start_time": session.get("start_time"),
+        "end_time": session.get("end_time"),
+        "source": "AdaptiveWardens",
+    }
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.post(
+                soar_url,
+                json=payload,
+                headers={"Content-Type": "application/json", "X-Source": "AdaptiveWardens"},
+            )
+            return {"status": "sent", "http_status": resp.status_code, "response": resp.text[:500]}
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"SOAR webhook failed: {e}")
 
 
 # ---------------------------------------------------------------------------

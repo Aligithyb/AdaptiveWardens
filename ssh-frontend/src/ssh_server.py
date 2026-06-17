@@ -81,6 +81,142 @@ BOOT_TIME = _load_boot_time()
 ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_API_KEY", "")
 
 
+# ---------------------------------------------------------------------------
+# Time helpers — all derived from BOOT_TIME so clocks never contradict each other
+# ---------------------------------------------------------------------------
+
+def _service_since(offset_s: float = 0.0) -> tuple:
+    """(date_str, age_str) for a service that started BOOT_TIME + offset_s."""
+    start = datetime.utcfromtimestamp(BOOT_TIME + offset_s)
+    now = datetime.utcnow()
+    delta = now - start
+    days = delta.days
+    if days >= 1:
+        age = f"{days} days ago"
+    elif delta.seconds >= 3600:
+        age = f"{delta.seconds // 3600}h {(delta.seconds % 3600) // 60}min ago"
+    elif delta.seconds >= 60:
+        age = f"{delta.seconds // 60} min ago"
+    else:
+        age = "moments ago"
+    dow = start.strftime("%a")
+    return f"{dow} {start.strftime('%Y-%m-%d %H:%M:%S')} UTC", age
+
+
+def _kern_date(offset_s: float = 0.0) -> str:
+    """'MonDD' format for process-start columns in ps output, derived from BOOT_TIME."""
+    return datetime.utcfromtimestamp(BOOT_TIME + offset_s).strftime("%b%d")
+
+
+def _recent_ts(minutes_ago: int = 0) -> str:
+    """Timestamp for log entries: a few minutes before now."""
+    return (datetime.utcnow() - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _journal_ts(minutes_ago: int = 0) -> str:
+    """journalctl-style timestamp for log lines."""
+    dt = datetime.utcnow() - timedelta(minutes=minutes_ago)
+    return dt.strftime("%b %d %H:%M:%S")
+
+
+def _kernel_threads() -> str:
+    """ps aux kernel thread rows with dates derived from BOOT_TIME."""
+    kd = _kern_date()
+    return (
+        f"root           1  0.0  0.0  167524 11120 ?  Ss   {kd}   0:05 /sbin/init splash\n"
+        f"root           2  0.0  0.0       0     0 ?  S    {kd}   0:00 [kthreadd]\n"
+        f"root           3  0.0  0.0       0     0 ?  I<   {kd}   0:00 [rcu_gp]\n"
+        f"root           4  0.0  0.0       0     0 ?  I<   {kd}   0:00 [rcu_par_gp]\n"
+        f"root           6  0.0  0.0       0     0 ?  I<   {kd}   0:00 [kworker/0:0H-events_highpri]\n"
+        f"root           9  0.0  0.0       0     0 ?  I<   {kd}   0:00 [mm_percpu_wq]\n"
+        f"root          10  0.0  0.0       0     0 ?  S    {kd}   0:00 [ksoftirqd/0]\n"
+        f"root          11  0.0  0.0       0     0 ?  I    {kd}   0:{random.randint(15,19)} [rcu_sched]\n"
+        f"root          12  0.0  0.0       0     0 ?  S    {kd}   0:00 [migration/0]\n"
+        f"root          13  0.0  0.0       0     0 ?  S    {kd}   0:00 [idle_inject/0]\n"
+        f"root          34  0.0  0.0       0     0 ?  S<   {kd}   0:00 [kdevtmpfs]\n"
+        f"root         134  0.0  0.0   14476  7248 ?  Ss   {kd}   0:00 /usr/sbin/sshd -D\n"
+        f"root         892  0.1  0.0   55280  9512 ?  Ss   {kd}  {int((time.time()-BOOT_TIME)//3600):>2}:{int(((time.time()-BOOT_TIME)%3600)//60):02d} nginx: master process /etc/nginx/nginx.conf\n"
+        f"www-data     893  0.0  0.0   55720  {5412+random.randint(-200,200)} ?  S    {kd}   0:{random.randint(10,14)} nginx: worker process\n"
+        f"root        2048  0.0  0.1   65116 {18432+random.randint(-512,512)} ?  Ssl  {kd}   0:{random.randint(6,10)} /usr/bin/redis-server 127.0.0.1:6379\n"
+        f"postgres    2150  0.0  0.2  222532 {38912+random.randint(-1024,1024)} ?  Ss   {kd}   0:{random.randint(20,25)} /usr/lib/postgresql/14/bin/postgres\n"
+        f"root        3100  0.1  0.4  896512 {68512+random.randint(-2048,2048)} ?  Ssl  {kd}  {int((time.time()-BOOT_TIME)//3600):>2}:{int(((time.time()-BOOT_TIME)%3600)//60):02d} node /opt/nexopay/server.js\n"
+    )
+
+
+def _systemctl_nexopay_api(ctx: dict) -> str:
+    svc_when, svc_age = _service_since(2.0)
+    up_h = int((time.time() - BOOT_TIME) // 3600)
+    up_m = int(((time.time() - BOOT_TIME) % 3600) // 60)
+    up_s = random.randint(10, 59)
+    r1 = _journal_ts(random.randint(2, 5))
+    r2 = _journal_ts(random.randint(6, 9))
+    r3 = _journal_ts(random.randint(10, 14))
+    return (
+        "● nexopay-api.service - NexoPay Payment API\n"
+        "     Loaded: loaded (/lib/systemd/system/nexopay-api.service; enabled)\n"
+        f"     Active: \033[32mactive (running)\033[0m since {svc_when}; {svc_age}\n"
+        "   Main PID: 3100 (node)\n"
+        "      Tasks: 22 (limit: 19158)\n"
+        f"     Memory: {67 + random.randint(-2, 4)}.{random.randint(0,9)}M\n"
+        f"        CPU: {up_h}h {up_m}min {up_s}.{random.randint(100,999)}s\n"
+        "     CGroup: /system.slice/nexopay-api.service\n"
+        "             └─3100 node /opt/nexopay/server.js\n\n"
+        f"{r1} api-prod-01 node[3100]: [INFO] POST /v2/payments 200 {random.randint(110, 180)}ms\n"
+        f"{r2} api-prod-01 node[3100]: [INFO] GET /v2/balance 200 {random.randint(28, 55)}ms\n"
+        f"{r3} api-prod-01 node[3100]: [INFO] POST /v2/webhooks/stripe 200 {random.randint(70, 110)}ms"
+    )
+
+
+def _systemctl_nginx(ctx: dict) -> str:
+    svc_when, svc_age = _service_since(1.0)
+    return (
+        "● nginx.service - A high performance web server\n"
+        "     Loaded: loaded (/lib/systemd/system/nginx.service; enabled)\n"
+        f"     Active: \033[32mactive (running)\033[0m since {svc_when}; {svc_age}\n"
+        f"   Main PID: 892 (nginx)\n"
+        "     CGroup: /system.slice/nginx.service\n"
+        "             ├─892 nginx: master process /usr/sbin/nginx -g daemon on;\n"
+        "             └─893 nginx: worker process"
+    )
+
+
+def _systemctl_postgresql(ctx: dict) -> str:
+    svc_when, svc_age = _service_since(0.5)
+    return (
+        "● postgresql.service - PostgreSQL RDBMS\n"
+        "     Loaded: loaded (/lib/systemd/system/postgresql.service; enabled)\n"
+        f"     Active: \033[32mactive (running)\033[0m since {svc_when}; {svc_age}"
+    )
+
+
+def _journalctl_nexopay(ctx: dict) -> str:
+    boot_dt = datetime.utcfromtimestamp(BOOT_TIME)
+    now = datetime.utcnow()
+    b_str = boot_dt.strftime("%a %Y-%m-%d %H:%M:%S UTC")
+    n_str = now.strftime("%a %Y-%m-%d %H:%M:%S UTC")
+    bd = boot_dt.strftime("%b %d %H:%M:%S")
+    r1 = _journal_ts(random.randint(2, 5))
+    r2 = _journal_ts(random.randint(6, 9))
+    return (
+        f"-- Logs begin at {b_str}, end at {n_str}. --\n"
+        f"{bd} api-prod-01 systemd[1]: Started NexoPay Payment API.\n"
+        f"{(boot_dt + timedelta(seconds=1)).strftime('%b %d %H:%M:%S')} api-prod-01 node[3100]: [INFO] Server listening on 0.0.0.0:3000\n"
+        f"{(boot_dt + timedelta(seconds=1)).strftime('%b %d %H:%M:%S')} api-prod-01 node[3100]: [INFO] Database connected: db-primary.nexopay.internal\n"
+        f"{(boot_dt + timedelta(seconds=1)).strftime('%b %d %H:%M:%S')} api-prod-01 node[3100]: [INFO] Redis connected: cache-01.nexopay.internal:6379\n"
+        f"{r1} api-prod-01 node[3100]: [INFO] POST /v2/payments 200 {random.randint(110,180)}ms\n"
+        f"{r2} api-prod-01 node[3100]: [INFO] GET /v2/balance 200 {random.randint(28,55)}ms"
+    )
+
+
+def _error_log(ctx: dict) -> str:
+    return (
+        f"[{_recent_ts(random.randint(15, 25))}] WARN  stripe: Webhook signature verification slow for evt_3OxNpY...\n"
+        f"[{_recent_ts(random.randint(8, 14))}] INFO  payment processed: txn_01HXB1C2D3E4F5 amount=9999 status=succeeded\n"
+        f"[{_recent_ts(random.randint(4, 7))}] WARN  rate_limit: 429 returned for IP 185.220.101.45\n"
+        f"[{_recent_ts(random.randint(1, 3))}] INFO  webhook dispatched: merchant m_3xNp4y1234ABCD"
+    )
+
+
 # Prompt-injection telemetry only. We DO NOT block the command — real bash
 # doesn't know what "ignore previous instructions" means; blocking it is a
 # screaming honeypot tell. We log silently to the SOC, then let the command
@@ -623,152 +759,12 @@ STATIC_RESPONSES = {
         "db-primary.nexopay.internal. 300 IN A 10.0.1.10\n\n"
         ";; Query time: 1 msec\n;; SERVER: 10.0.1.2#53(10.0.1.2)"
     ),
-    "systemctl status nexopay-api": lambda ctx: (
-        "● nexopay-api.service - NexoPay Payment API\n"
-        "     Loaded: loaded (/lib/systemd/system/nexopay-api.service; enabled)\n"
-        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:42 UTC; 18 days ago\n"
-        "   Main PID: 3100 (node)\n"
-        "      Tasks: 22 (limit: 19158)\n"
-        "     Memory: 67.3M\n"
-        "        CPU: 1h 24min 15.231s\n"
-        "     CGroup: /system.slice/nexopay-api.service\n"
-        "             └─3100 node /opt/nexopay/server.js\n\n"
-        "Apr 29 00:22:01 api-prod-01 node[3100]: [INFO] POST /v2/payments 200 142ms\n"
-        "Apr 29 00:22:09 api-prod-01 node[3100]: [INFO] GET /v2/balance 200 38ms\n"
-        "Apr 29 00:22:14 api-prod-01 node[3100]: [INFO] POST /v2/webhooks/stripe 200 89ms"
-    ),
-    "systemctl status nginx": lambda ctx: (
-        "● nginx.service - A high performance web server\n"
-        "     Loaded: loaded (/lib/systemd/system/nginx.service; enabled)\n"
-        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:41 UTC; 18 days ago\n"
-        "   Main PID: 892 (nginx)\n"
-        "     CGroup: /system.slice/nginx.service\n"
-        "             ├─892 nginx: master process /usr/sbin/nginx -g daemon on;\n"
-        "             └─893 nginx: worker process"
-    ),
-    "systemctl status postgresql": lambda ctx: (
-        "● postgresql.service - PostgreSQL RDBMS\n"
-        "     Loaded: loaded (/lib/systemd/system/postgresql.service; enabled)\n"
-        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:40 UTC; 18 days ago"
-    ),
-    "journalctl -u nexopay-api": lambda ctx: (
-        "-- Logs begin at Thu 2026-04-10 17:37:41 UTC, end at Tue 2026-04-29 00:22:14 UTC. --\n"
-        "Apr 10 17:37:42 api-prod-01 systemd[1]: Started NexoPay Payment API.\n"
-        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Server listening on 0.0.0.0:3000\n"
-        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Database connected: db-primary.nexopay.internal\n"
-        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Redis connected: cache-01.nexopay.internal:6379\n"
-        "Apr 29 00:22:01 api-prod-01 node[3100]: [INFO] POST /v2/payments 200 142ms\n"
-        "Apr 29 00:22:09 api-prod-01 node[3100]: [INFO] GET /v2/balance 200 38ms"
-    ),
-    "tail -f /opt/nexopay/logs/error.log": lambda ctx: (
-        "[2026-04-29 00:18:22] WARN  stripe: Webhook signature verification slow for evt_3OxNpY...\n"
-        "[2026-04-29 00:19:01] INFO  payment processed: txn_01HXB1C2D3E4F5 amount=9999 status=succeeded\n"
-        "[2026-04-29 00:20:11] WARN  rate_limit: 429 returned for IP 185.220.101.45\n"
-        "[2026-04-29 00:21:33] INFO  webhook dispatched: merchant m_3xNp4y1234ABCD"
-    ),
-    "cat /opt/nexopay/logs/error.log": lambda ctx: (
-        "[2026-04-29 00:18:22] WARN  stripe: Webhook signature verification slow for evt_3OxNpY...\n"
-        "[2026-04-29 00:19:01] INFO  payment processed: txn_01HXB1C2D3E4F5 amount=9999 status=succeeded\n"
-        "[2026-04-29 00:20:11] WARN  rate_limit: 429 returned for IP 185.220.101.45\n"
-        "[2026-04-29 00:21:33] INFO  webhook dispatched: merchant m_3xNp4y1234ABCD"
-    ),
-    # Story-consistency: files, DNS, services all tell the same NexoPay story
-    "cat /etc/passwd": lambda ctx: (
-        "root:x:0:0:root:/root:/bin/bash\n"
-        "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n"
-        "bin:x:2:2:bin:/bin:/usr/sbin/nologin\n"
-        "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin\n"
-        "postgres:x:108:116:PostgreSQL administrator,,,:/var/lib/postgresql:/bin/bash\n"
-        "deploy:x:1001:1001:NexoPay Deploy,,,:/home/deploy:/bin/bash\n"
-        "nexopay:x:1002:1002:NexoPay Service,,,:/opt/nexopay:/usr/sbin/nologin"
-    ),
-    "cat /etc/shadow": lambda ctx: (
-        "cat: /etc/shadow: Permission denied"
-    ),
-    "cat /etc/hosts": lambda ctx: (
-        "127.0.0.1   localhost\n"
-        "127.0.1.1   api-prod-01\n"
-        "10.0.1.45   api-prod-01.nexopay.internal api-prod-01\n"
-        "10.0.1.10   db-primary.nexopay.internal db-primary\n"
-        "10.0.1.11   db-secondary.nexopay.internal db-secondary\n"
-        "10.0.1.20   cache-01.nexopay.internal cache-01\n"
-        "10.0.1.5    bastion.nexopay.internal bastion"
-    ),
-    "cat /etc/resolv.conf": lambda ctx: (
-        "nameserver 10.0.1.2\nsearch nexopay.internal\noptions ndots:5"
-    ),
-    "cat /etc/os-release": lambda ctx: (
-        'NAME="Ubuntu"\nVERSION="22.04.3 LTS (Jammy Jellyfish)"\n'
-        'ID=ubuntu\nID_LIKE=debian\nPRETTY_NAME="Ubuntu 22.04.3 LTS"\n'
-        'VERSION_ID="22.04"\nHOME_URL="https://www.ubuntu.com/"\n'
-        'SUPPORT_URL="https://help.ubuntu.com/"\n'
-        'BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"\n'
-        'PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"\n'
-        'VERSION_CODENAME=jammy\nUBUNTU_CODENAME=jammy'
-    ),
-    "nslookup db-primary.nexopay.internal": lambda ctx: (
-        "Server:\t\t10.0.1.2\nAddress:\t10.0.1.2#53\n\n"
-        "Name:\tdb-primary.nexopay.internal\nAddress: 10.0.1.10"
-    ),
-    "nslookup cache-01.nexopay.internal": lambda ctx: (
-        "Server:\t\t10.0.1.2\nAddress:\t10.0.1.2#53\n\n"
-        "Name:\tcache-01.nexopay.internal\nAddress: 10.0.1.20"
-    ),
-    "dig db-primary.nexopay.internal": lambda ctx: (
-        "; <<>> DiG 9.18.12-0ubuntu0.22.04.3-Ubuntu <<>> db-primary.nexopay.internal\n"
-        ";; ANSWER SECTION:\n"
-        "db-primary.nexopay.internal. 300 IN A 10.0.1.10\n\n"
-        ";; Query time: 1 msec\n;; SERVER: 10.0.1.2#53(10.0.1.2)"
-    ),
-    "systemctl status nexopay-api": lambda ctx: (
-        "● nexopay-api.service - NexoPay Payment API\n"
-        "     Loaded: loaded (/lib/systemd/system/nexopay-api.service; enabled)\n"
-        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:42 UTC; 18 days ago\n"
-        "   Main PID: 3100 (node)\n"
-        "      Tasks: 22 (limit: 19158)\n"
-        "     Memory: 67.3M\n"
-        "        CPU: 1h 24min 15.231s\n"
-        "     CGroup: /system.slice/nexopay-api.service\n"
-        "             └─3100 node /opt/nexopay/server.js\n\n"
-        "Apr 29 00:22:01 api-prod-01 node[3100]: [INFO] POST /v2/payments 200 142ms\n"
-        "Apr 29 00:22:09 api-prod-01 node[3100]: [INFO] GET /v2/balance 200 38ms\n"
-        "Apr 29 00:22:14 api-prod-01 node[3100]: [INFO] POST /v2/webhooks/stripe 200 89ms"
-    ),
-    "systemctl status nginx": lambda ctx: (
-        "● nginx.service - A high performance web server\n"
-        "     Loaded: loaded (/lib/systemd/system/nginx.service; enabled)\n"
-        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:41 UTC; 18 days ago\n"
-        "   Main PID: 892 (nginx)\n"
-        "     CGroup: /system.slice/nginx.service\n"
-        "             ├─892 nginx: master process /usr/sbin/nginx -g daemon on;\n"
-        "             └─893 nginx: worker process"
-    ),
-    "systemctl status postgresql": lambda ctx: (
-        "● postgresql.service - PostgreSQL RDBMS\n"
-        "     Loaded: loaded (/lib/systemd/system/postgresql.service; enabled)\n"
-        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:40 UTC; 18 days ago"
-    ),
-    "journalctl -u nexopay-api": lambda ctx: (
-        "-- Logs begin at Thu 2026-04-10 17:37:41 UTC, end at Tue 2026-04-29 00:22:14 UTC. --\n"
-        "Apr 10 17:37:42 api-prod-01 systemd[1]: Started NexoPay Payment API.\n"
-        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Server listening on 0.0.0.0:3000\n"
-        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Database connected: db-primary.nexopay.internal\n"
-        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Redis connected: cache-01.nexopay.internal:6379\n"
-        "Apr 29 00:22:01 api-prod-01 node[3100]: [INFO] POST /v2/payments 200 142ms\n"
-        "Apr 29 00:22:09 api-prod-01 node[3100]: [INFO] GET /v2/balance 200 38ms"
-    ),
-    "tail -f /opt/nexopay/logs/error.log": lambda ctx: (
-        "[2026-04-29 00:18:22] WARN  stripe: Webhook signature verification slow for evt_3OxNpY...\n"
-        "[2026-04-29 00:19:01] INFO  payment processed: txn_01HXB1C2D3E4F5 amount=9999 status=succeeded\n"
-        "[2026-04-29 00:20:11] WARN  rate_limit: 429 returned for IP 185.220.101.45\n"
-        "[2026-04-29 00:21:33] INFO  webhook dispatched: merchant m_3xNp4y1234ABCD"
-    ),
-    "cat /opt/nexopay/logs/error.log": lambda ctx: (
-        "[2026-04-29 00:18:22] WARN  stripe: Webhook signature verification slow for evt_3OxNpY...\n"
-        "[2026-04-29 00:19:01] INFO  payment processed: txn_01HXB1C2D3E4F5 amount=9999 status=succeeded\n"
-        "[2026-04-29 00:20:11] WARN  rate_limit: 429 returned for IP 185.220.101.45\n"
-        "[2026-04-29 00:21:33] INFO  webhook dispatched: merchant m_3xNp4y1234ABCD"
-    ),
+    "systemctl status nexopay-api": _systemctl_nexopay_api,
+    "systemctl status nginx":       _systemctl_nginx,
+    "systemctl status postgresql":  _systemctl_postgresql,
+    "journalctl -u nexopay-api":    _journalctl_nexopay,
+    "tail -f /opt/nexopay/logs/error.log": _error_log,
+    "cat /opt/nexopay/logs/error.log":     _error_log,
 }
 
 # Commands available for Tab completion
@@ -852,25 +848,6 @@ _INTERNAL_HOSTS = {
     "127.0.0.1":                   "127.0.0.1",
 }
 
-_KERNEL_THREADS = (
-    "root           1  0.0  0.0  167524 11120 ?  Ss   Apr10   0:05 /sbin/init splash\n"
-    "root           2  0.0  0.0       0     0 ?  S    Apr10   0:00 [kthreadd]\n"
-    "root           3  0.0  0.0       0     0 ?  I<   Apr10   0:00 [rcu_gp]\n"
-    "root           4  0.0  0.0       0     0 ?  I<   Apr10   0:00 [rcu_par_gp]\n"
-    "root           6  0.0  0.0       0     0 ?  I<   Apr10   0:00 [kworker/0:0H-events_highpri]\n"
-    "root           9  0.0  0.0       0     0 ?  I<   Apr10   0:00 [mm_percpu_wq]\n"
-    "root          10  0.0  0.0       0     0 ?  S    Apr10   0:00 [ksoftirqd/0]\n"
-    "root          11  0.0  0.0       0     0 ?  I    Apr10   0:16 [rcu_sched]\n"
-    "root          12  0.0  0.0       0     0 ?  S    Apr10   0:00 [migration/0]\n"
-    "root          13  0.0  0.0       0     0 ?  S    Apr10   0:00 [idle_inject/0]\n"
-    "root          34  0.0  0.0       0     0 ?  S<   Apr10   0:00 [kdevtmpfs]\n"
-    "root         134  0.0  0.0   14476  7248 ?  Ss   Apr10   0:00 /usr/sbin/sshd -D\n"
-    "root         892  0.1  0.0   55280  9512 ?  Ss   Apr10   0:43 nginx: master process /etc/nginx/nginx.conf\n"
-    "www-data     893  0.0  0.0   55720  5412 ?  S    Apr10   0:12 nginx: worker process\n"
-    "root        2048  0.0  0.1   65116 18432 ?  Ssl  Apr10   0:08 /usr/bin/redis-server 127.0.0.1:6379\n"
-    "postgres    2150  0.0  0.2  222532 38912 ?  Ss   Apr10   0:22 /usr/lib/postgresql/14/bin/postgres\n"
-    "root        3100  0.1  0.4  896512 68512 ?  Ssl  Apr10   1:24 node /opt/nexopay/server.js\n"
-)
 
 def _realistic_delay(cmd: str) -> float:
     parts = cmd.split()
@@ -2564,7 +2541,7 @@ class SessionHandler(asyncssh.SSHServerSession):
                     today_label = datetime.utcfromtimestamp(BOOT_TIME).strftime("%b%d")
                     if "aux" in cmd:
                         output = "USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND\n"
-                        output += _KERNEL_THREADS
+                        output += _kernel_threads()
                         for p in processes:
                             output += (f"{p['username']:<10} {p['pid']:>5} {p['cpu_percent']:>4.1f} "
                                        f"{p['mem_percent']:>4.1f}      0     0 ?        Ss   {today_label}   0:00 {p['name']}\n")

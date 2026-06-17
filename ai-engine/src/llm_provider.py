@@ -178,8 +178,8 @@ class LLMProvider:
         )
 
     def _call_with_retry(self, command: str, user_prompt: str) -> str:
-        backoff = [0.5, 2.0]
-        timeout_ladder = [4.0, 8.0]
+        backoff = [0.3, 1.5]
+        timeout_ladder = [2.5, 5.0]
         last_exc = None
 
         for attempt, (sleep_s, t_out) in enumerate(zip([0.0] + backoff, timeout_ladder + [timeout_ladder[-1]])):
@@ -315,18 +315,20 @@ class LLMProvider:
                     "Mem:        16384000     5234512     3123412      102344     8026076    10876543\n"
                     "Swap:        2097148           0     2097148")
         elif base == "uptime":
-            return " 00:22:14 up 18 days,  6:45,  1 user,  load average: 2.14, 1.98, 1.87"
+            now = datetime.datetime.utcnow()
+            return f" {now.strftime('%H:%M:%S')} up  1 user,  load average: 2.14, 1.98, 1.87"
         elif base == "ps":
             if "aux" in command:
+                kd = (datetime.datetime.utcnow() - datetime.timedelta(days=30)).strftime("%b%d")
                 return ("USER       PID %CPU %MEM    VSZ    RSS TTY  STAT START   TIME COMMAND\n"
-                        "root         1  0.1  0.5  22532   9820 ?   Ss   Apr10   0:12 /sbin/init\n"
-                        "root       134  0.0  0.2  72312   4512 ?   Ss   Apr10   0:00 /usr/sbin/sshd -D\n"
-                        "root       892  0.1  0.3 144896   6144 ?   Ss   Apr10   0:05 nginx: master process\n"
-                        "www-data   893  0.0  0.6 145231  12341 ?   S    Apr10   0:12 nginx: worker process\n"
-                        "nexopay   3100  2.1  8.4 921344 172032 ?  Sl   Apr10  18:34 node /opt/nexopay/current/server.js\n"
-                        "nexopay   3101  1.8  7.9 876288 163840 ?  Sl   Apr10  15:12 node /opt/nexopay/current/worker.js\n"
-                        "postgres  2150  0.1  4.2 341248  86016 ?  S    Apr10   1:23 postgres: nexopay_app nexopay_prod\n"
-                        "redis     2048  0.2  2.5 126976  51200 ?  Ssl  Apr10   0:45 /usr/bin/redis-server 127.0.0.1:6379")
+                        f"root         1  0.1  0.5  22532   9820 ?   Ss   {kd}   0:12 /sbin/init\n"
+                        f"root       134  0.0  0.2  72312   4512 ?   Ss   {kd}   0:00 /usr/sbin/sshd -D\n"
+                        f"root       892  0.1  0.3 144896   6144 ?   Ss   {kd}   0:05 nginx: master process\n"
+                        f"www-data   893  0.0  0.6 145231  12341 ?   S    {kd}   0:12 nginx: worker process\n"
+                        f"nexopay   3100  2.1  8.4 921344 172032 ?  Sl   {kd}  18:34 node /opt/nexopay/current/server.js\n"
+                        f"nexopay   3101  1.8  7.9 876288 163840 ?  Sl   {kd}  15:12 node /opt/nexopay/current/worker.js\n"
+                        f"postgres  2150  0.1  4.2 341248  86016 ?  S    {kd}   1:23 postgres: nexopay_app nexopay_prod\n"
+                        f"redis     2048  0.2  2.5 126976  51200 ?  Ssl  {kd}   0:45 /usr/bin/redis-server 127.0.0.1:6379")
             return "  PID TTY          TIME CMD\n 1562 pts/0    00:00:00 bash\n 3521 pts/0    00:00:00 ps"
         elif base == "who" or base == "w":
             today = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
