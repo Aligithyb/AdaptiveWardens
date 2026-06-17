@@ -213,54 +213,92 @@ html:not(.dark) ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 
 html:not(.dark) ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
 /* ── Light mode surface overrides ───────────────────────────── */
-/* Remap hardcoded dark Tailwind slate classes when NOT in dark mode */
+/* Remap hardcoded dark Tailwind slate classes when NOT in dark mode  */
 
-html:not(.dark) .bg-slate-950 { background-color: #eef2f8 !important; }
+/* ── Solid backgrounds ── */
+html:not(.dark) .bg-slate-950 { background-color: #f0f4f8 !important; }
 html:not(.dark) .bg-slate-900 { background-color: #ffffff !important; }
 html:not(.dark) .bg-slate-800 { background-color: #f1f5f9 !important; }
 html:not(.dark) .bg-slate-700 { background-color: #e2e8f0 !important; }
+html:not(.dark) .bg-slate-600 { background-color: #cbd5e1 !important; }
 
-/* Semi-transparent variants */
-html:not(.dark) .bg-slate-800\/50 { background-color: rgba(226, 232, 240, 0.6) !important; }
-html:not(.dark) .bg-slate-800\/30 { background-color: rgba(226, 232, 240, 0.35) !important; }
-html:not(.dark) .bg-slate-900\/80 { background-color: rgba(255, 255, 255, 0.85) !important; }
+/* ── Opacity variants — bg-slate-950 ── */
+html:not(.dark) .bg-slate-950\/80 { background-color: rgba(240, 244, 248, 0.85) !important; }
+html:not(.dark) .bg-slate-950\/60 { background-color: rgba(240, 244, 248, 0.70) !important; }
+html:not(.dark) .bg-slate-950\/50 { background-color: rgba(240, 244, 248, 0.60) !important; }
+html:not(.dark) .bg-slate-950\/30 { background-color: rgba(240, 244, 248, 0.38) !important; }
+
+/* ── Opacity variants — bg-slate-900 ── */
 html:not(.dark) .bg-slate-900\/95 { background-color: rgba(255, 255, 255, 0.97) !important; }
-html:not(.dark) .bg-slate-950\/80 { background-color: rgba(238, 242, 248, 0.85) !important; }
-html:not(.dark) .bg-slate-950\/50 { background-color: rgba(238, 242, 248, 0.55) !important; }
-html:not(.dark) .bg-slate-900\/60 { background-color: rgba(255, 255, 255, 0.65) !important; }
+html:not(.dark) .bg-slate-900\/90 { background-color: rgba(255, 255, 255, 0.93) !important; }
+html:not(.dark) .bg-slate-900\/80 { background-color: rgba(255, 255, 255, 0.85) !important; }
+html:not(.dark) .bg-slate-900\/60 { background-color: rgba(255, 255, 255, 0.68) !important; }
+html:not(.dark) .bg-slate-900\/50 { background-color: rgba(255, 255, 255, 0.58) !important; }
+html:not(.dark) .bg-slate-900\/40 { background-color: rgba(255, 255, 255, 0.48) !important; }
 
-/* Border colors */
-html:not(.dark) .border-slate-800 { border-color: #e2e8f0 !important; }
-html:not(.dark) .border-slate-700 { border-color: #d1d9e0 !important; }
-html:not(.dark) .border-slate-600 { border-color: #b8c4ce !important; }
+/* ── Opacity variants — bg-slate-800 ── */
+html:not(.dark) .bg-slate-800\/60 { background-color: rgba(241, 245, 249, 0.72) !important; }
+html:not(.dark) .bg-slate-800\/50 { background-color: rgba(241, 245, 249, 0.62) !important; }
+html:not(.dark) .bg-slate-800\/40 { background-color: rgba(241, 245, 249, 0.52) !important; }
+html:not(.dark) .bg-slate-800\/30 { background-color: rgba(241, 245, 249, 0.40) !important; }
+html:not(.dark) .bg-slate-800\/20 { background-color: rgba(241, 245, 249, 0.28) !important; }
+html:not(.dark) .bg-slate-800\/10 { background-color: rgba(241, 245, 249, 0.18) !important; }
 
-/* Text colors */
-html:not(.dark) .text-slate-100 { color: #0f172a !important; }
-html:not(.dark) .text-slate-200 { color: #1e293b !important; }
-html:not(.dark) .text-slate-300 { color: #374151 !important; }
-html:not(.dark) .text-slate-400 { color: #6b7280 !important; }
-html:not(.dark) .text-slate-500 { color: #9ca3af !important; }
-html:not(.dark) .text-slate-600 { color: #b5bcc5 !important; }
+/* ── Opacity variants — bg-slate-700 ── */
+html:not(.dark) .bg-slate-700\/60 { background-color: rgba(226, 232, 240, 0.72) !important; }
+html:not(.dark) .bg-slate-700\/50 { background-color: rgba(226, 232, 240, 0.62) !important; }
+html:not(.dark) .bg-slate-700\/40 { background-color: rgba(226, 232, 240, 0.52) !important; }
+html:not(.dark) .bg-slate-700\/20 { background-color: rgba(226, 232, 240, 0.30) !important; }
+html:not(.dark) .bg-slate-700\/10 { background-color: rgba(226, 232, 240, 0.20) !important; }
 
-/* Placeholder text */
-html:not(.dark) .placeholder-slate-500::placeholder { color: #9ca3af !important; }
+/* ── Border colors ── */
+html:not(.dark) .border-slate-800    { border-color: #e2e8f0 !important; }
+html:not(.dark) .border-slate-700    { border-color: #cbd5e1 !important; }
+html:not(.dark) .border-slate-600    { border-color: #b8c4ce !important; }
+html:not(.dark) .border-slate-500    { border-color: #a3b0bc !important; }
+
+/* Border opacity variants */
+html:not(.dark) .border-slate-800\/60 { border-color: rgba(226, 232, 240, 0.72) !important; }
+html:not(.dark) .border-slate-800\/40 { border-color: rgba(226, 232, 240, 0.52) !important; }
+html:not(.dark) .border-slate-800\/30 { border-color: rgba(226, 232, 240, 0.40) !important; }
+html:not(.dark) .border-slate-700\/50 { border-color: rgba(203, 213, 225, 0.62) !important; }
+html:not(.dark) .border-slate-700\/40 { border-color: rgba(203, 213, 225, 0.52) !important; }
+html:not(.dark) .border-slate-600\/40 { border-color: rgba(184, 196, 206, 0.52) !important; }
+html:not(.dark) .border-slate-500\/30 { border-color: rgba(163, 176, 188, 0.42) !important; }
+
+/* ── Text colors — remapped for light-bg contrast ── */
+/* In dark mode slate-600→slate-100 reads dark→light.                   */
+/* In light mode we compress the range so all text stays legible.        */
+html:not(.dark) .text-slate-100 { color: #0f172a !important; }  /* near-black heading    */
+html:not(.dark) .text-slate-200 { color: #1e293b !important; }  /* dark heading          */
+html:not(.dark) .text-slate-300 { color: #334155 !important; }  /* body text             */
+html:not(.dark) .text-slate-400 { color: #475569 !important; }  /* secondary text        */
+html:not(.dark) .text-slate-500 { color: #64748b !important; }  /* muted text            */
+html:not(.dark) .text-slate-600 { color: #94a3b8 !important; }  /* very muted / captions */
+
+/* ── Placeholder text ── */
+html:not(.dark) .placeholder-slate-500::placeholder { color: #94a3b8 !important; }
 html:not(.dark) .placeholder-slate-600::placeholder { color: #b5bcc5 !important; }
 
-/* Divide (table row dividers) */
+/* ── Divide (table row dividers) ── */
 html:not(.dark) .divide-slate-800 > * + * { border-color: #e2e8f0 !important; }
-html:not(.dark) .divide-slate-700 > * + * { border-color: #d1d9e0 !important; }
+html:not(.dark) .divide-slate-700 > * + * { border-color: #cbd5e1 !important; }
 
-/* Hover states */
-html:not(.dark) .hover\:bg-slate-800:hover { background-color: #f1f5f9 !important; }
-html:not(.dark) .hover\:bg-slate-700:hover { background-color: #e2e8f0 !important; }
-html:not(.dark) .hover\:bg-slate-800\/50:hover { background-color: rgba(226, 232, 240, 0.6) !important; }
-html:not(.dark) .hover\:bg-slate-800\/30:hover { background-color: rgba(226, 232, 240, 0.35) !important; }
-html:not(.dark) .hover\:text-slate-200:hover { color: #1e293b !important; }
+/* ── Hover states ── */
+html:not(.dark) .hover\:bg-slate-800:hover      { background-color: #f1f5f9 !important; }
+html:not(.dark) .hover\:bg-slate-700:hover      { background-color: #e2e8f0 !important; }
+html:not(.dark) .hover\:bg-slate-800\/60:hover  { background-color: rgba(241, 245, 249, 0.72) !important; }
+html:not(.dark) .hover\:bg-slate-800\/50:hover  { background-color: rgba(241, 245, 249, 0.62) !important; }
+html:not(.dark) .hover\:bg-slate-800\/40:hover  { background-color: rgba(241, 245, 249, 0.52) !important; }
+html:not(.dark) .hover\:bg-slate-800\/30:hover  { background-color: rgba(241, 245, 249, 0.40) !important; }
+html:not(.dark) .hover\:text-slate-200:hover    { color: #1e293b !important; }
+html:not(.dark) .hover\:text-slate-300:hover    { color: #334155 !important; }
+html:not(.dark) .hover\:text-slate-400:hover    { color: #475569 !important; }
 
-/* Focus borders for inputs */
+/* ── Focus borders for inputs ── */
 html:not(.dark) .focus\:border-cyan-500:focus { border-color: #0891b2 !important; }
 
-/* Active/selected row highlight */
+/* ── Active/selected row highlight ── */
 html:not(.dark) .bg-cyan-500\/5 { background-color: rgba(8, 145, 178, 0.06) !important; }
 html:not(.dark) .border-l-cyan-500 { border-left-color: #0891b2 !important; }
 
@@ -302,16 +340,54 @@ html:not(.dark) .login-bg {
   background: linear-gradient(135deg, #dbeafe 0%, #e0f2fe 40%, #f0f9ff 100%) !important;
 }
 
+/* Login warning banner — red-950 is too dark on light backgrounds */
+html:not(.dark) .bg-red-950\/60  { background-color: rgba(254, 226, 226, 0.80) !important; }
+html:not(.dark) .bg-red-950\/50  { background-color: rgba(254, 226, 226, 0.65) !important; }
+html:not(.dark) .border-red-900\/40 { border-color: rgba(239, 68, 68, 0.25) !important; }
+html:not(.dark) .border-red-800\/50 { border-color: rgba(239, 68, 68, 0.30) !important; }
+html:not(.dark) .text-red-300    { color: #b91c1c !important; }
+
+/* ── Notification / dropdown panels ─────────────────────────── */
+html:not(.dark) .shadow-2xl { box-shadow: 0 8px 32px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.08) !important; }
+
+/* ── Modal backdrop overlays ─────────────────────────────────── */
+html:not(.dark) .bg-black\/50 { background-color: rgba(15, 23, 42, 0.32) !important; }
+
 /* ── Sidebar in light mode gets a subtle border shadow ─────────── */
 html:not(.dark) .w-64.bg-slate-900 {
   box-shadow: 1px 0 0 #e2e8f0;
 }
 
 /* ── Table improvements ──────────────────────────────────────── */
-html:not(.dark) thead.bg-slate-800\/50,
-html:not(.dark) .bg-slate-800\/50 {
-  background-color: rgba(241, 245, 249, 0.8) !important;
+html:not(.dark) thead.bg-slate-800\/50 {
+  background-color: rgba(241, 245, 249, 0.9) !important;
 }
+/* Table head text */
+html:not(.dark) thead .text-slate-400 { color: #475569 !important; }
+
+/* ── Risk / status badge opacity tints ──────────────────────── */
+/* These use colour/10 tints which look invisible on white — boost them */
+html:not(.dark) .bg-red-500\/10    { background-color: rgba(239, 68,  68,  0.10) !important; }
+html:not(.dark) .bg-orange-500\/10 { background-color: rgba(249, 115, 22,  0.10) !important; }
+html:not(.dark) .bg-yellow-500\/10 { background-color: rgba(234, 179, 8,   0.10) !important; }
+html:not(.dark) .bg-blue-500\/10   { background-color: rgba(59,  130, 246, 0.10) !important; }
+html:not(.dark) .bg-green-500\/10  { background-color: rgba(34,  197, 94,  0.10) !important; }
+html:not(.dark) .bg-violet-500\/10 { background-color: rgba(139, 92,  246, 0.10) !important; }
+html:not(.dark) .bg-purple-500\/10 { background-color: rgba(168, 85,  247, 0.10) !important; }
+html:not(.dark) .bg-cyan-500\/10   { background-color: rgba(6,   182, 212, 0.10) !important; }
+
+/* Slightly stronger border tints for badges so they're visible */
+html:not(.dark) .border-red-500\/30    { border-color: rgba(239, 68,  68,  0.35) !important; }
+html:not(.dark) .border-orange-500\/30 { border-color: rgba(249, 115, 22,  0.35) !important; }
+html:not(.dark) .border-yellow-500\/30 { border-color: rgba(234, 179, 8,   0.35) !important; }
+html:not(.dark) .border-blue-500\/30   { border-color: rgba(59,  130, 246, 0.35) !important; }
+html:not(.dark) .border-green-500\/30  { border-color: rgba(34,  197, 94,  0.35) !important; }
+html:not(.dark) .border-violet-500\/30 { border-color: rgba(139, 92,  246, 0.35) !important; }
+html:not(.dark) .border-cyan-500\/20   { border-color: rgba(6,   182, 212, 0.25) !important; }
+
+/* ── Session row selected highlight ─────────────────────────── */
+html:not(.dark) .bg-cyan-500\/10 { background-color: rgba(6, 182, 212, 0.08) !important; }
+html:not(.dark) .border-cyan-500\/20 { border-color: rgba(6, 182, 212, 0.28) !important; }
 
 /* ── Input focus glow ────────────────────────────────────────── */
 html:not(.dark) input:focus,
