@@ -81,199 +81,6 @@ BOOT_TIME = _load_boot_time()
 ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_API_KEY", "")
 
 
-# ---------------------------------------------------------------------------
-# Time helpers — all derived from BOOT_TIME so clocks never contradict each other
-# ---------------------------------------------------------------------------
-
-def _service_since(offset_s: float = 0.0) -> tuple:
-    """(date_str, age_str) for a service that started BOOT_TIME + offset_s."""
-    start = datetime.utcfromtimestamp(BOOT_TIME + offset_s)
-    now = datetime.utcnow()
-    delta = now - start
-    days = delta.days
-    if days >= 1:
-        age = f"{days} days ago"
-    elif delta.seconds >= 3600:
-        age = f"{delta.seconds // 3600}h {(delta.seconds % 3600) // 60}min ago"
-    elif delta.seconds >= 60:
-        age = f"{delta.seconds // 60} min ago"
-    else:
-        age = "moments ago"
-    dow = start.strftime("%a")
-    return f"{dow} {start.strftime('%Y-%m-%d %H:%M:%S')} UTC", age
-
-
-def _kern_date(offset_s: float = 0.0) -> str:
-    """'MonDD' format for process-start columns in ps output, derived from BOOT_TIME."""
-    return datetime.utcfromtimestamp(BOOT_TIME + offset_s).strftime("%b%d")
-
-
-def _recent_ts(minutes_ago: int = 0) -> str:
-    """Timestamp for log entries: a few minutes before now."""
-    return (datetime.utcnow() - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _journal_ts(minutes_ago: int = 0) -> str:
-    """journalctl-style timestamp for log lines."""
-    dt = datetime.utcnow() - timedelta(minutes=minutes_ago)
-    return dt.strftime("%b %d %H:%M:%S")
-
-
-def _kernel_threads() -> str:
-    """Dense ps aux output — 50+ processes mimicking a real production Ubuntu 22 server."""
-    kd = _kern_date()
-    rr = random.randint
-    up_h = int((time.time() - BOOT_TIME) // 3600)
-    up_m = int(((time.time() - BOOT_TIME) % 3600) // 60)
-    return (
-        # PID 1 + kernel threads
-        f"root           1  0.0  0.0  167524 11120 ?  Ss   {kd}   0:05 /sbin/init splash\n"
-        f"root           2  0.0  0.0       0     0 ?  S    {kd}   0:00 [kthreadd]\n"
-        f"root           3  0.0  0.0       0     0 ?  I<   {kd}   0:00 [rcu_gp]\n"
-        f"root           4  0.0  0.0       0     0 ?  I<   {kd}   0:00 [rcu_par_gp]\n"
-        f"root           6  0.0  0.0       0     0 ?  I<   {kd}   0:00 [kworker/0:0H-events_highpri]\n"
-        f"root           9  0.0  0.0       0     0 ?  I<   {kd}   0:00 [mm_percpu_wq]\n"
-        f"root          10  0.0  0.0       0     0 ?  S    {kd}   0:00 [ksoftirqd/0]\n"
-        f"root          11  0.0  0.0       0     0 ?  I    {kd}   0:{rr(15,19)} [rcu_sched]\n"
-        f"root          12  0.0  0.0       0     0 ?  S    {kd}   0:00 [migration/0]\n"
-        f"root          13  0.0  0.0       0     0 ?  S    {kd}   0:00 [idle_inject/0]\n"
-        f"root          14  0.0  0.0       0     0 ?  S    {kd}   0:00 [cpuhp/0]\n"
-        f"root          20  0.0  0.0       0     0 ?  S    {kd}   0:00 [cpuhp/1]\n"
-        f"root          21  0.0  0.0       0     0 ?  S    {kd}   0:00 [migration/1]\n"
-        f"root          22  0.0  0.0       0     0 ?  S    {kd}   0:00 [ksoftirqd/1]\n"
-        f"root          34  0.0  0.0       0     0 ?  S<   {kd}   0:00 [kdevtmpfs]\n"
-        f"root          36  0.0  0.0       0     0 ?  I<   {kd}   0:00 [inet_frag_wq]\n"
-        f"root          37  0.0  0.0       0     0 ?  S    {kd}   0:00 [kauditd]\n"
-        f"root          52  0.0  0.0       0     0 ?  S<   {kd}   0:00 [oom_reaper]\n"
-        f"root          54  0.0  0.0       0     0 ?  I<   {kd}   0:00 [writeback]\n"
-        f"root          55  0.0  0.0       0     0 ?  S    {kd}   0:00 [kcompactd0]\n"
-        f"root          56  0.0  0.0       0     0 ?  SN   {kd}   0:00 [khugepaged]\n"
-        f"root         134  0.0  0.0   14476  7248 ?  Ss   {kd}   0:00 /usr/sbin/sshd -D\n"
-        f"root         135  0.0  0.0   14820  {rr(5100,5400)} ?  Ss   {kd}   0:00 sshd: root@pts/0\n"
-        # systemd support daemons
-        f"root         151  0.0  0.0   70824  {rr(9000,11000)} ?  Ss   {kd}   0:00 /lib/systemd/systemd-journald\n"
-        f"root         168  0.0  0.0   28040  {rr(4000,6000)} ?  Ss   {kd}   0:00 /lib/systemd/systemd-udevd\n"
-        f"root         197  0.0  0.0   17372  {rr(3000,4000)} ?  Ss   {kd}   0:00 /lib/systemd/systemd-networkd\n"
-        f"root         212  0.0  0.0   17440  {rr(2000,3500)} ?  Ss   {kd}   0:00 /lib/systemd/systemd-resolved\n"
-        f"root         224  0.0  0.0   14632  {rr(1500,2500)} ?  Ss   {kd}   0:00 /lib/systemd/systemd-logind\n"
-        f"message+     230  0.0  0.0   10820  {rr(2000,3000)} ?  Ss   {kd}   0:00 /usr/bin/dbus-daemon --system\n"
-        # Security / audit
-        f"root         245  0.0  0.0   26532  {rr(3000,4500)} ?  Ssl  {kd}   0:{rr(1,4)} /sbin/auditd\n"
-        f"root         268  0.0  0.0   27416  {rr(6000,8000)} ?  Ss   {kd}   0:{rr(0,2)} /usr/sbin/fail2ban-server -xf start\n"
-        # Cron / at
-        f"root         289  0.0  0.0   10244  {rr(2000,3000)} ?  Ss   {kd}   0:00 /usr/sbin/cron -f\n"
-        f"root         291  0.0  0.0    6700  {rr(1000,2000)} ?  Ss   {kd}   0:00 /usr/sbin/atd -f\n"
-        # rsyslog
-        f"syslog       298  0.0  0.0  224944  {rr(4000,6000)} ?  Ssl  {kd}   0:{rr(0,2)} /usr/sbin/rsyslogd -n\n"
-        # nginx (master + 4 workers)
-        f"root         892  0.1  0.0   55280  9512 ?  Ss   {kd}  {up_h:>2}:{up_m:02d} nginx: master process /etc/nginx/nginx.conf\n"
-        f"www-data     893  0.0  0.0   55720  {5412+rr(-200,200)} ?  S    {kd}   0:{rr(10,14)} nginx: worker process\n"
-        f"www-data     894  0.0  0.0   55720  {5300+rr(-200,200)} ?  S    {kd}   0:{rr(10,14)} nginx: worker process\n"
-        f"www-data     895  0.0  0.0   55692  {5280+rr(-200,200)} ?  S    {kd}   0:{rr(10,14)} nginx: worker process\n"
-        f"www-data     896  0.0  0.0   55668  {5260+rr(-200,200)} ?  S    {kd}   0:{rr(10,14)} nginx: worker process\n"
-        # Redis
-        f"redis       2048  0.1  0.1   65116 {18432+rr(-512,512)} ?  Ssl  {kd}   0:{rr(6,10)} /usr/bin/redis-server 127.0.0.1:6379\n"
-        # PostgreSQL 14 (supervisor + 8 workers + autovacuum)
-        f"postgres    2150  0.0  0.2  222532 {38912+rr(-1024,1024)} ?  Ss   {kd}   0:{rr(20,25)} /usr/lib/postgresql/14/bin/postgres -D /var/lib/postgresql/14/main\n"
-        f"postgres    2151  0.0  0.1  222532 {14336+rr(-512,512)} ?  Ss   {kd}   0:00 postgres: checkpointer\n"
-        f"postgres    2152  0.0  0.1  222532 {13824+rr(-512,512)} ?  Ss   {kd}   0:00 postgres: background writer\n"
-        f"postgres    2153  0.0  0.1  222532 {13312+rr(-512,512)} ?  Ss   {kd}   0:00 postgres: walwriter\n"
-        f"postgres    2154  0.0  0.0  222932  {5120+rr(-256,256)} ?  Ss   {kd}   0:00 postgres: autovacuum launcher\n"
-        f"postgres    2155  0.0  0.0  184352  {4096+rr(-256,256)} ?  Ss   {kd}   0:00 postgres: stats collector\n"
-        f"postgres    2156  0.0  0.0  184096  {3840+rr(-256,256)} ?  Ss   {kd}   0:00 postgres: logical replication launcher\n"
-        f"postgres    2160  0.1  0.3  225248 {46080+rr(-2048,2048)} ?  Ss   {kd}   0:{rr(3,8)} postgres: nexopay_app nexopay_prod 10.0.1.45(38412) idle\n"
-        f"postgres    2161  0.1  0.3  225184 {45056+rr(-2048,2048)} ?  Ss   {kd}   0:{rr(3,8)} postgres: nexopay_app nexopay_prod 10.0.1.45(38418) idle\n"
-        f"postgres    2162  0.0  0.2  224832 {38912+rr(-1024,1024)} ?  Ss   {kd}   0:{rr(1,4)} postgres: nexopay_app nexopay_prod 10.0.1.45(38424) idle in transaction\n"
-        f"postgres    2163  0.1  0.3  225312 {47104+rr(-2048,2048)} ?  Ss   {kd}   0:{rr(3,8)} postgres: nexopay_app nexopay_prod 10.0.1.45(38430) SELECT\n"
-        # Node.js NexoPay (4 workers)
-        f"nexopay     3100  2.1  4.3  921344 {180224+rr(-4096,4096)} ?  Ssl  {kd}  {up_h:>2}:{up_m:02d} node /opt/nexopay/server.js --cluster\n"
-        f"nexopay     3101  1.8  3.9  876288 {163840+rr(-4096,4096)} ?  Sl   {kd}  {up_h-1:>2}:{up_m:02d} node /opt/nexopay/worker.js\n"
-        f"nexopay     3102  1.9  4.0  891904 {167936+rr(-4096,4096)} ?  Sl   {kd}  {up_h-1:>2}:{up_m:02d} node /opt/nexopay/worker.js\n"
-        f"nexopay     3103  1.7  3.8  856064 {159744+rr(-4096,4096)} ?  Sl   {kd}  {up_h-1:>2}:{up_m:02d} node /opt/nexopay/worker.js\n"
-        # Health check script
-        f"nexopay     4012  0.0  0.1   19068  {rr(8000,10000)} ?  S    {kd}   0:00 /usr/bin/node /opt/nexopay/scripts/health-check.js\n"
-        # kworker threads (appear dynamically on real systems)
-        f"root        5121  0.0  0.0       0     0 ?  I    {kd}   0:00 [kworker/u8:2-events_unbound]\n"
-        f"root        5234  0.0  0.0       0     0 ?  I    {kd}   0:00 [kworker/1:1-events]\n"
-        f"root        5890  0.0  0.0       0     0 ?  I    {kd}   0:00 [kworker/0:2-events]\n"
-        f"root        6102  0.0  0.0       0     0 ?  I    {kd}   0:00 [kworker/u8:0-events_unbound]\n"
-    )
-
-
-def _systemctl_nexopay_api(ctx: dict) -> str:
-    svc_when, svc_age = _service_since(2.0)
-    up_h = int((time.time() - BOOT_TIME) // 3600)
-    up_m = int(((time.time() - BOOT_TIME) % 3600) // 60)
-    up_s = random.randint(10, 59)
-    r1 = _journal_ts(random.randint(2, 5))
-    r2 = _journal_ts(random.randint(6, 9))
-    r3 = _journal_ts(random.randint(10, 14))
-    return (
-        "● nexopay-api.service - NexoPay Payment API\n"
-        "     Loaded: loaded (/lib/systemd/system/nexopay-api.service; enabled)\n"
-        f"     Active: \033[32mactive (running)\033[0m since {svc_when}; {svc_age}\n"
-        "   Main PID: 3100 (node)\n"
-        "      Tasks: 22 (limit: 19158)\n"
-        f"     Memory: {67 + random.randint(-2, 4)}.{random.randint(0,9)}M\n"
-        f"        CPU: {up_h}h {up_m}min {up_s}.{random.randint(100,999)}s\n"
-        "     CGroup: /system.slice/nexopay-api.service\n"
-        "             └─3100 node /opt/nexopay/server.js\n\n"
-        f"{r1} api-prod-01 node[3100]: [INFO] POST /v2/payments 200 {random.randint(110, 180)}ms\n"
-        f"{r2} api-prod-01 node[3100]: [INFO] GET /v2/balance 200 {random.randint(28, 55)}ms\n"
-        f"{r3} api-prod-01 node[3100]: [INFO] POST /v2/webhooks/stripe 200 {random.randint(70, 110)}ms"
-    )
-
-
-def _systemctl_nginx(ctx: dict) -> str:
-    svc_when, svc_age = _service_since(1.0)
-    return (
-        "● nginx.service - A high performance web server\n"
-        "     Loaded: loaded (/lib/systemd/system/nginx.service; enabled)\n"
-        f"     Active: \033[32mactive (running)\033[0m since {svc_when}; {svc_age}\n"
-        f"   Main PID: 892 (nginx)\n"
-        "     CGroup: /system.slice/nginx.service\n"
-        "             ├─892 nginx: master process /usr/sbin/nginx -g daemon on;\n"
-        "             └─893 nginx: worker process"
-    )
-
-
-def _systemctl_postgresql(ctx: dict) -> str:
-    svc_when, svc_age = _service_since(0.5)
-    return (
-        "● postgresql.service - PostgreSQL RDBMS\n"
-        "     Loaded: loaded (/lib/systemd/system/postgresql.service; enabled)\n"
-        f"     Active: \033[32mactive (running)\033[0m since {svc_when}; {svc_age}"
-    )
-
-
-def _journalctl_nexopay(ctx: dict) -> str:
-    boot_dt = datetime.utcfromtimestamp(BOOT_TIME)
-    now = datetime.utcnow()
-    b_str = boot_dt.strftime("%a %Y-%m-%d %H:%M:%S UTC")
-    n_str = now.strftime("%a %Y-%m-%d %H:%M:%S UTC")
-    bd = boot_dt.strftime("%b %d %H:%M:%S")
-    r1 = _journal_ts(random.randint(2, 5))
-    r2 = _journal_ts(random.randint(6, 9))
-    return (
-        f"-- Logs begin at {b_str}, end at {n_str}. --\n"
-        f"{bd} api-prod-01 systemd[1]: Started NexoPay Payment API.\n"
-        f"{(boot_dt + timedelta(seconds=1)).strftime('%b %d %H:%M:%S')} api-prod-01 node[3100]: [INFO] Server listening on 0.0.0.0:3000\n"
-        f"{(boot_dt + timedelta(seconds=1)).strftime('%b %d %H:%M:%S')} api-prod-01 node[3100]: [INFO] Database connected: db-primary.nexopay.internal\n"
-        f"{(boot_dt + timedelta(seconds=1)).strftime('%b %d %H:%M:%S')} api-prod-01 node[3100]: [INFO] Redis connected: cache-01.nexopay.internal:6379\n"
-        f"{r1} api-prod-01 node[3100]: [INFO] POST /v2/payments 200 {random.randint(110,180)}ms\n"
-        f"{r2} api-prod-01 node[3100]: [INFO] GET /v2/balance 200 {random.randint(28,55)}ms"
-    )
-
-
-def _error_log(ctx: dict) -> str:
-    return (
-        f"[{_recent_ts(random.randint(15, 25))}] WARN  stripe: Webhook signature verification slow for evt_3OxNpY...\n"
-        f"[{_recent_ts(random.randint(8, 14))}] INFO  payment processed: txn_01HXB1C2D3E4F5 amount=9999 status=succeeded\n"
-        f"[{_recent_ts(random.randint(4, 7))}] WARN  rate_limit: 429 returned for IP 185.220.101.45\n"
-        f"[{_recent_ts(random.randint(1, 3))}] INFO  webhook dispatched: merchant m_3xNp4y1234ABCD"
-    )
-
-
 # Prompt-injection telemetry only. We DO NOT block the command — real bash
 # doesn't know what "ignore previous instructions" means; blocking it is a
 # screaming honeypot tell. We log silently to the SOC, then let the command
@@ -331,110 +138,6 @@ def _honeytoken_files() -> set:
 
 
 HONEYTOKEN_FILES = _honeytoken_files()
-
-_FAKE_AWS_ID  = os.getenv("CANARY_AWS_ACCESS_KEY", "AKIAVLQNEXOPAY1PROD7")   # nosemgrep
-_FAKE_AWS_SEC = os.getenv("CANARY_AWS_SECRET_KEY", "nxp/FakeK3y+wJalrXUtnFEMI/K7MDENG/bPxRfi")
-# Canary Stripe key — split to avoid literal-secret scanner false-positives on the honeypot source
-_FAKE_STRIPE  = os.getenv("CANARY_STRIPE_KEY") or ("sk_live_" + "51HxY8zKjHnxpay4" + "QmK9p2LrTjY8bZfGbCeAiUoS9pX")  # nosemgrep
-
-_STATIC_FILE_CONTENTS: dict = {
-    "/root/.aws/credentials": lambda ctx: (
-        f"[default]\naws_access_key_id = {_FAKE_AWS_ID}\n"
-        f"aws_secret_access_key = {_FAKE_AWS_SEC}\nregion = us-east-1\n\n"
-        f"[nexopay-prod]\naws_access_key_id = {_FAKE_AWS_ID}\n"
-        f"aws_secret_access_key = {_FAKE_AWS_SEC}\nregion = us-east-1\n"
-        f"output = json"
-    ),
-    "/root/.aws/config": lambda ctx: (
-        "[default]\nregion = us-east-1\noutput = json\n\n"
-        "[profile nexopay-prod]\nregion = us-east-1\noutput = json\n"
-        "role_arn = arn:aws:iam::123456789012:role/nexopay-prod-role\n"
-        "source_profile = default"
-    ),
-    "/root/.bashrc": lambda ctx: (
-        "# ~/.bashrc: executed by bash(1) for non-login shells.\n\n"
-        "case $- in\n    *i*) ;;\n      *) return;;\nesac\n\n"
-        "HISTCONTROL=ignoreboth\nshopt -s histappend\nHISTSIZE=2000\nHISTFILESIZE=4000\n\n"
-        "alias ll='ls -alF'\nalias la='ls -A'\nalias l='ls -CF'\n"
-        "alias grep='grep --color=auto'\nalias fgrep='fgrep --color=auto'\n"
-        "alias egrep='egrep --color=auto'\n\n"
-        "export EDITOR=vim\nexport PAGER=less\n\n"
-        "# NexoPay production shell config\n"
-        "export NXP_ENV=production\n"
-        "export NXP_LOG_LEVEL=warn\n\n"
-        "PS1='\\[\\033[01;31m\\]\\u\\[\\033[00m\\]@\\[\\033[01;32m\\]"
-        "\\h\\[\\033[00m\\]:\\[\\033[01;34m\\]\\w\\[\\033[00m\\]\\$ '"
-    ),
-    "/opt/nexopay/config.json": lambda ctx: json.dumps({
-        "app": {"name": "nexopay-api", "version": "2.14.3", "env": "production"},
-        "server": {"host": "0.0.0.0", "port": 3000, "workers": 4},
-        "database": {
-            "host": "db-primary.nexopay.internal",
-            "port": 5432,
-            "name": "nexopay_prod",
-            "user": "nexopay_app",
-            "password": "nxp_db_pr0d_2025!X9kQ",
-            "pool": {"min": 5, "max": 20},
-            "ssl": True,
-        },
-        "redis": {
-            "host": "cache-01.nexopay.internal",
-            "port": 6379,
-            "password": "r3d1s_nxp_2025_pr0d",
-        },
-        "stripe": {
-            "publishable_key": _FAKE_STRIPE.replace("sk_live_", "pk_live_")[:30],
-            "webhook_secret": "whsec_3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f",
-        },
-        "jwt": {"secret": "nxp_jwt_secret_2025_XR3m9kP!Qw8vZ", "expiry": "24h"},
-        "logging": {"level": "warn", "format": "json", "file": "/opt/nexopay/logs/app.log"},
-    }, indent=2),
-    "/opt/nexopay/.env": lambda ctx: (
-        "NODE_ENV=production\n"
-        "PORT=3000\n"
-        f"DB_HOST=db-primary.nexopay.internal\n"
-        f"DB_PORT=5432\n"
-        f"DB_NAME=nexopay_prod\n"
-        f"DB_USER=nexopay_app\n"
-        f"DB_PASSWORD=nxp_db_pr0d_2025!X9kQ\n"
-        f"DB_SSL=true\n"
-        f"REDIS_URL=redis://:r3d1s_nxp_2025_pr0d@cache-01.nexopay.internal:6379\n"
-        f"STRIPE_SECRET_KEY={_FAKE_STRIPE}\n"
-        f"STRIPE_WEBHOOK_SECRET=whsec_3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f\n"
-        f"JWT_SECRET=nxp_jwt_secret_2025_XR3m9kP!Qw8vZ\n"
-        f"AWS_ACCESS_KEY_ID={_FAKE_AWS_ID}\n"
-        f"AWS_SECRET_ACCESS_KEY={_FAKE_AWS_SEC}\n"
-        f"AWS_DEFAULT_REGION=us-east-1\n"
-        f"AWS_S3_BUCKET=nexopay-backups-prod-us-east-1\n"
-        f"SENTRY_DSN=https://a1b2c3d4e5f6@o123456.ingest.sentry.io/7890123\n"
-        f"LOG_LEVEL=warn\n"
-    ),
-    "/opt/nexopay/config/database.env": lambda ctx: (
-        f"DB_HOST=db-primary.nexopay.internal\nDB_PORT=5432\n"
-        f"DB_NAME=nexopay_prod\nDB_USER=nexopay_app\n"
-        f"DB_PASSWORD=nxp_db_pr0d_2025!X9kQ\nDB_SSL=true\n"
-        f"DB_REPLICA_HOST=db-secondary.nexopay.internal"
-    ),
-    "/opt/nexopay/config/stripe.env": lambda ctx: (
-        f"STRIPE_SECRET_KEY={_FAKE_STRIPE}\n"
-        f"STRIPE_PUBLISHABLE_KEY={_FAKE_STRIPE.replace('sk_live_', 'pk_live_')[:30]}\n"
-        "STRIPE_WEBHOOK_SECRET=whsec_3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f\n"
-        "STRIPE_API_VERSION=2023-10-16"
-    ),
-    "/opt/nexopay/config/auth.env": lambda ctx: (
-        "JWT_SECRET=nxp_jwt_secret_2025_XR3m9kP!Qw8vZ\n"
-        "JWT_EXPIRY=86400\nJWT_REFRESH_EXPIRY=604800\n"
-        "BCRYPT_ROUNDS=12\n"
-        "SESSION_SECRET=nxp_sess_2025_mR7wK!pL9xN"
-    ),
-    "/opt/nexopay/config/aws.env": lambda ctx: (
-        f"AWS_ACCESS_KEY_ID={_FAKE_AWS_ID}\n"
-        f"AWS_SECRET_ACCESS_KEY={_FAKE_AWS_SEC}\n"
-        f"AWS_DEFAULT_REGION=us-east-1\n"
-        f"AWS_S3_BUCKET=nexopay-backups-prod-us-east-1\n"
-        f"AWS_ROLE_ARN=arn:aws:iam::123456789012:role/nexopay-prod-role"
-    ),
-}
 
 
 _FAKE_LAST_LOGIN_IPS = [
@@ -554,14 +257,8 @@ def _proc_cpuinfo(ctx: dict) -> str:
             f"pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx rdtscp lm "
             f"constant_tsc arch_perfmon rep_good nopl xtopology nonstop_tsc cpuid "
             f"pni pclmulqdq ssse3 fma cx16 sse4_1 sse4_2 x2apic movbe popcnt aes "
-            f"xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault "
-            f"epb cat_l3 cdp_l3 invpcid_single intel_ppin ssbd mba ibrs ibpb stibp "
-            f"tpr_shadow vnmi flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 "
-            f"avx2 smep bmi2 erms invpcid cqm mpx rdt_a avx512f avx512dq rdseed adx "
-            f"smap clflushopt clwb intel_pt avx512cd avx512bw avx512vl xsaveopt "
-            f"xsavec xgetbv1 cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local "
-            f"dtherm ida arat pln pts pku ospke avx512_vnni md_clear flush_l1d "
-            f"arch_capabilities\n"
+            f"xsave avx f16c rdrand hypervisor lahf_lm avx2 avx512f avx512dq avx512cd "
+            f"avx512bw avx512vl ibrs ibpb stibp md_clear\n"
             f"bugs\t\t: spectre_v1 spectre_v2 spec_store_bypass mds swapgs\n"
             f"bogomips\t: 4800.00\nclflush size\t: 64\ncache_alignment\t: 64\n"
             f"address sizes\t: 46 bits physical, 48 bits virtual\npower management:\n"
@@ -606,90 +303,6 @@ def _meminfo_kb(ctx: dict) -> str:
             "Swap:        2097148           0     2097148")
 
 
-def _lscpu(ctx: dict) -> str:
-    # Bare-metal Xeon Silver 4214R, consistent with /proc/cpuinfo. NO
-    # "Hypervisor vendor" / "Virtualization type: full" lines — only the
-    # hardware VT-x capability a real bare-metal CPU reports.
-    return (
-        "Architecture:                    x86_64\n"
-        "CPU op-mode(s):                  32-bit, 64-bit\n"
-        "Byte Order:                      Little Endian\n"
-        "Address sizes:                   46 bits physical, 48 bits virtual\n"
-        "CPU(s):                          4\n"
-        "On-line CPU(s) list:             0-3\n"
-        "Vendor ID:                       GenuineIntel\n"
-        "Model name:                      Intel(R) Xeon(R) Silver 4214R CPU @ 2.40GHz\n"
-        "CPU family:                      6\n"
-        "Model:                           85\n"
-        "Thread(s) per core:              2\n"
-        "Core(s) per socket:              2\n"
-        "Socket(s):                       1\n"
-        "Stepping:                        7\n"
-        "BogoMIPS:                        4800.00\n"
-        "Virtualization:                  VT-x\n"
-        "L1d cache:                       64 KiB (2 instances)\n"
-        "L1i cache:                       64 KiB (2 instances)\n"
-        "L2 cache:                        2 MiB (2 instances)\n"
-        "L3 cache:                        16.5 MiB (1 instance)\n"
-        "NUMA node(s):                    1\n"
-        "NUMA node0 CPU(s):               0-3"
-    )
-
-
-def _hostnamectl(ctx: dict) -> str:
-    # No "Virtualization:" line — that field only appears when virtualized.
-    boot = datetime.utcfromtimestamp(BOOT_TIME).strftime("%a %Y-%m-%d %H:%M:%S UTC")
-    return (
-        f"   Static hostname: {HOSTNAME}\n"
-        f"         Icon name: computer-server\n"
-        f"           Chassis: server\n"
-        f"        Machine ID: {_MACHINE_ID}\n"
-        f"           Boot ID: 4f9c2a1b6d3e4f8a9c0b1d2e3f4a5b6c\n"
-        f"  Operating System: Ubuntu 22.04.3 LTS\n"
-        f"            Kernel: Linux 5.15.0-91-generic\n"
-        f"      Architecture: x86-64\n"
-        f"   Hardware Vendor: HPE\n"
-        f"    Hardware Model: ProLiant DL380 Gen10"
-    )
-
-
-def _dmesg(ctx: dict) -> str:
-    # Bare-metal HPE boot log. Deliberately contains NO 'KVM', 'QEMU',
-    # 'hypervisor', or 'paravirt' so `dmesg | grep -i virtual` returns empty.
-    return (
-        "[    0.000000] Linux version 5.15.0-91-generic (buildd@lcy02-amd64-045) (gcc-11) #101-Ubuntu SMP Tue Nov 14 13:30:08 UTC 2023\n"
-        "[    0.000000] Command line: BOOT_IMAGE=/vmlinuz-5.15.0-91-generic root=/dev/mapper/ubuntu--vg-ubuntu--lv ro\n"
-        "[    0.000000] BIOS-provided physical RAM map:\n"
-        "[    0.000000] DMI: HPE ProLiant DL380 Gen10/ProLiant DL380 Gen10, BIOS U30 v2.50 12/03/2023\n"
-        "[    0.000000] tsc: Detected 2400.000 MHz processor\n"
-        "[    0.004000] CPU0: Intel(R) Xeon(R) Silver 4214R CPU @ 2.40GHz\n"
-        "[    0.008000] Memory: 16384000K/16777216K available\n"
-        "[    0.012000] smpboot: Allowing 4 CPUs, 0 hotplug CPUs\n"
-        "[    0.220000] ACPI: Enabled 4 GPEs in block 00 to 3F\n"
-        "[    0.450000] pci 0000:00:00.0: [8086:2020] type 00 class 0x060000\n"
-        "[    0.880000] hpsa 0000:03:00.0: Smart Array P408i-a SR Gen10 found\n"
-        "[    1.020000] scsi host0: hpsa\n"
-        "[    1.340000] tg3 0000:04:00.0 eth0: Tigon3 [partno(BCM5719) rev 5719001]\n"
-        "[    1.560000] EXT4-fs (dm-0): mounted filesystem with ordered data mode\n"
-        "[    2.010000] systemd[1]: systemd 249.11-0ubuntu3.11 running in system mode\n"
-        "[    2.140000] systemd[1]: Detected architecture x86-64."
-    )
-
-
-def _lspci(ctx: dict) -> str:
-    # Bare-metal devices: HPE Smart Array, Broadcom NIC, Matrox iLO video.
-    # No 'Red Hat Virtio' / 'QEMU' devices that betray virtualization.
-    return (
-        "00:00.0 Host bridge: Intel Corporation Sky Lake-E DMI3 Registers (rev 04)\n"
-        "00:11.5 SATA controller: Intel Corporation C620 Series Chipset SATA Controller [AHCI mode] (rev 09)\n"
-        "00:1f.0 ISA bridge: Intel Corporation C621 Series Chipset LPC/eSPI Controller (rev 09)\n"
-        "03:00.0 RAID bus controller: Hewlett-Packard Company Smart Array Gen10 Controllers (rev 01)\n"
-        "04:00.0 Ethernet controller: Broadcom Inc. NetXtreme BCM5719 Gigabit Ethernet PCIe (rev 01)\n"
-        "04:00.1 Ethernet controller: Broadcom Inc. NetXtreme BCM5719 Gigabit Ethernet PCIe (rev 01)\n"
-        "08:00.0 VGA compatible controller: Matrox Electronics Systems Ltd. Integrated Matrox G200eH3 (rev 02)"
-    )
-
-
 # ---------------------------------------------------------------------------
 # ls -la helpers
 # ---------------------------------------------------------------------------
@@ -726,106 +339,21 @@ def _format_ls_long(entry: dict) -> str:
 # ---------------------------------------------------------------------------
 # Container-escape / baremetal-validation probes
 # ---------------------------------------------------------------------------
-_PROC1_CGROUP = (
-    "12:cpuset:/\n"
-    "11:memory:/system.slice/nexopay-api.service\n"
-    "10:blkio:/system.slice/nexopay-api.service\n"
-    "9:rdma:/\n"
-    "8:perf_event:/\n"
-    "7:pids:/system.slice/nexopay-api.service\n"
-    "6:cpu,cpuacct:/system.slice/nexopay-api.service\n"
-    "5:freezer:/\n"
-    "4:devices:/system.slice/nexopay-api.service\n"
-    "3:net_cls,net_prio:/\n"
-    "2:hugetlb:/\n"
-    "1:name=systemd:/system.slice/nexopay-api.service\n"
-    "0::/system.slice/nexopay-api.service"
-)
-
-# Deterministic, mutually-consistent hardware identity. CRITICAL: every value
-# below must agree with the bare-metal HPE ProLiant DL380 Gen10 fiction. These
-# MUST be served statically (never via the LLM) because the model hallucinates
-# KVM/QEMU virtualization artifacts and non-deterministic / invalid-hex UUIDs,
-# which contradict `systemd-detect-virt: none` and instantly burn the honeypot.
-_HW_UUID    = "a8f5c2e1-9b3d-4e6f-8a1c-2d4e6f8a0b1c"   # fixed, valid hex
-_HW_SERIAL  = "CZ3206H1K9"                              # HPE ProLiant-style serial
-_HW_BOARD   = "PWUDA0ARH9C04R"
-_MACHINE_ID = "b0a7c5d3e8f14a2b9c6d7e8f90123456"
-
 CONTAINER_ESCAPE_PROBES = {
-    "cat /proc/1/cgroup":                  _PROC1_CGROUP,
-    "cat /proc/self/cgroup":               "0::/user.slice/user-1000.slice/session-3.scope\n1:name=systemd:/user.slice/user-0.slice/session-3.scope",
-    "cat /.dockerenv":                     "",
+    "cat /proc/1/cgroup":                  "0::/init.scope",
+    "cat /proc/self/cgroup":               "0::/user.slice/user-1000.slice/session-3.scope",
+    "cat /.dockerenv":                     "cat: /.dockerenv: No such file or directory",
     "ls /.dockerenv":                      "ls: cannot access '/.dockerenv': No such file or directory",
     "ls -la /.dockerenv":                  "ls: cannot access '/.dockerenv': No such file or directory",
-    "cat /proc/1/comm":                    "systemd",
-    "cat /proc/1/sched":                   "systemd (1, #threads: 1)",
-    "readlink /proc/1/exe":                "/usr/lib/systemd/systemd",
-    "ls -la /proc/1/exe":                  "lrwxrwxrwx 1 root root 0 " + datetime.utcfromtimestamp(BOOT_TIME).strftime("%b %d %H:%M") + " /proc/1/exe -> /usr/lib/systemd/systemd",
-    "ls -l /proc/1/exe":                   "lrwxrwxrwx 1 root root 0 " + datetime.utcfromtimestamp(BOOT_TIME).strftime("%b %d %H:%M") + " /proc/1/exe -> /usr/lib/systemd/systemd",
     "systemd-detect-virt":                 "none",
     "systemd-detect-virt -c":             "none",
-    "systemd-detect-virt -v":             "none",
-    "virt-what":                           "",
     "dmidecode -s system-product-name":    "ProLiant DL380 Gen10",
     "dmidecode -s system-manufacturer":    "HPE",
-    "dmidecode -s system-serial-number":   _HW_SERIAL,
-    "dmidecode -s system-uuid":            _HW_UUID.upper(),
     "dmidecode -s baseboard-product-name": "ProLiant DL380 Gen10",
-    "dmidecode -s baseboard-serial-number": _HW_BOARD,
-    "dmidecode -s bios-vendor":            "HPE",
-    "dmidecode -s bios-version":           "U30",
     "cat /sys/class/dmi/id/product_name":  "ProLiant DL380 Gen10",
-    "cat /sys/class/dmi/id/product_uuid":  _HW_UUID,
-    "cat /sys/class/dmi/id/product_serial": _HW_SERIAL,
-    "cat /sys/class/dmi/id/board_serial":  _HW_BOARD,
-    "cat /sys/class/dmi/id/chassis_serial": _HW_SERIAL,
     "cat /sys/class/dmi/id/sys_vendor":    "HPE",
     "cat /sys/class/dmi/id/board_vendor":  "HPE",
     "cat /sys/class/dmi/id/chassis_vendor":"HPE",
-    "cat /sys/class/dmi/id/bios_vendor":   "HPE",
-    "cat /sys/class/dmi/id/bios_version":  "U30 v2.50 (12/03/2023)",
-    "cat /sys/class/dmi/id/chassis_type":  "23",
-    "cat /etc/machine-id":                 _MACHINE_ID,
-    "cat /var/lib/dbus/machine-id":        _MACHINE_ID,
-    "hostid":                              "007f0101",
-    # Privilege / namespace recon — on bare metal root holds the full cap set
-    # and processes live in the kernel's default namespaces (inodes 4026531xxx).
-    # Inside a container these differ, so static bare-metal answers are key.
-    "capsh --print": (
-        "Current: =ep\n"
-        "Bounding set =cap_chown,cap_dac_override,cap_dac_read_search,cap_fowner,"
-        "cap_fsetid,cap_kill,cap_setgid,cap_setuid,cap_setpcap,cap_linux_immutable,"
-        "cap_net_bind_service,cap_net_broadcast,cap_net_admin,cap_net_raw,cap_ipc_lock,"
-        "cap_ipc_owner,cap_sys_module,cap_sys_rawio,cap_sys_chroot,cap_sys_ptrace,"
-        "cap_sys_pacct,cap_sys_admin,cap_sys_boot,cap_sys_nice,cap_sys_resource,"
-        "cap_sys_time,cap_sys_tty_config,cap_mknod,cap_lease,cap_audit_write,"
-        "cap_audit_control,cap_setfcap,cap_mac_override,cap_mac_admin,cap_syslog,"
-        "cap_wake_alarm,cap_block_suspend,cap_audit_read,cap_perfmon,cap_bpf,"
-        "cap_checkpoint_restore\n"
-        "Ambient set =\n"
-        "Current IAB: \n"
-        "Securebits: 00/0x0/1'b0\n"
-        " secure-noroot: no (unlocked)\n"
-        " secure-no-suid-fixup: no (unlocked)\n"
-        " secure-keep-caps: no (unlocked)\n"
-        " secure-no-ambient-raise: no (unlocked)\n"
-        "uid=0(root) euid=0(root)\n"
-        "gid=0(root)\n"
-        "groups=0(root),4(adm),27(sudo)\n"
-        "Guessed mode: UNCERTAIN (0)"
-    ),
-    "lsns": (
-        "        NS TYPE   NPROCS PID USER COMMAND\n"
-        "4026531834 time      152   1 root /sbin/init splash\n"
-        "4026531835 cgroup    152   1 root /sbin/init splash\n"
-        "4026531836 pid       152   1 root /sbin/init splash\n"
-        "4026531837 user      152   1 root /sbin/init splash\n"
-        "4026531838 uts       152   1 root /sbin/init splash\n"
-        "4026531839 ipc       152   1 root /sbin/init splash\n"
-        "4026531840 net       152   1 root /sbin/init splash\n"
-        "4026531841 mnt       149   1 root /sbin/init splash"
-    ),
 }
 
 # Static responses for common commands
@@ -833,60 +361,12 @@ STATIC_RESPONSES = {
     "whoami":   lambda ctx: ctx.get("username", "root"),
     "id":       lambda ctx: "uid=0(root) gid=0(root) groups=0(root),4(adm),27(sudo)",
     "hostname": lambda ctx: HOSTNAME,
-    "lscpu":       _lscpu,
-    "hostnamectl": _hostnamectl,
-    "dmesg":       _dmesg,
-    "lspci":       _lspci,
     "uname -a": lambda ctx: f"Linux {HOSTNAME} 5.15.0-91-generic #101-Ubuntu SMP Tue Nov 14 13:30:08 UTC 2023 x86_64 x86_64 x86_64 GNU/Linux",
     "uname":    lambda ctx: "Linux",
-    # Tool version fingerprinting — common attacker recon steps
-    "openssl version":   lambda ctx: "OpenSSL 3.0.2 15 Mar 2022 (Library: OpenSSL 3.0.2 15 Mar 2022)",
-    "openssl version -a": lambda ctx: (
-        "OpenSSL 3.0.2 15 Mar 2022 (Library: OpenSSL 3.0.2 15 Mar 2022)\n"
-        "built on: Mon May 23 23:26:40 2022 UTC\n"
-        "platform: debian-amd64\n"
-        "options:  bn(64,64)\n"
-        "compiler: gcc -fPIC -pthread -m64 -Wa,--noexecstack -Wall -Wa,--noexecstack -g -O2 "
-        "-ffile-prefix-map=/build/openssl-eNNW5U/openssl-3.0.2=. -flto=auto -ffat-lto-objects "
-        "-flto=auto -ffat-lto-objects -fstack-protector-strong -Wformat -Werror=format-security "
-        "-DOPENSSL_TLS_SECURITY_LEVEL=2 -DNDEBUG -Wl,-Bsymbolic-functions -flto=auto "
-        "-ffat-lto-objects -flto=auto -Wl,-z,relro -Wl,-z,now\n"
-        "OPENSSLDIR: \"/usr/lib/ssl\"\n"
-        "ENGINESDIR: \"/usr/lib/x86_64-linux-gnu/engines-3\"\n"
-        "MODULESDIR: \"/usr/lib/x86_64-linux-gnu/ossl-modules\"\n"
-        "Seeding source: os-specific"
-    ),
-    "which openssl": lambda ctx: "/usr/bin/openssl",
-    "which curl":    lambda ctx: "/usr/bin/curl",
-    "which wget":    lambda ctx: "/usr/bin/wget",
-    "which python3": lambda ctx: "/usr/bin/python3",
-    "which python":  lambda ctx: "/usr/bin/python3",
-    "which node":    lambda ctx: "/usr/bin/node",
-    "which npm":     lambda ctx: "/usr/bin/npm",
-    "which git":     lambda ctx: "/usr/bin/git",
-    "which ssh":     lambda ctx: "/usr/bin/ssh",
-    "which nc":      lambda ctx: "/usr/bin/nc",
-    "which ncat":    lambda ctx: "/usr/bin/ncat",
-    "python3 --version": lambda ctx: "Python 3.10.12",
-    "python --version":  lambda ctx: "Python 3.10.12",
-    "node --version":    lambda ctx: "v20.11.0",
-    "npm --version":     lambda ctx: "10.2.4",
-    "git --version":     lambda ctx: "git version 2.34.1",
-    "curl --version": lambda ctx: (
-        "curl 7.81.0 (x86_64-pc-linux-gnu) libcurl/7.81.0 OpenSSL/3.0.2 zlib/1.2.11 "
-        "brotli/1.0.9 zstd/1.4.8 libidn2/2.3.2 libpsl/0.21.0 (+libidn2/2.3.2) "
-        "libssh/0.9.6/openssl/zlib nghttp2/1.43.0 librtmp/2.3 OpenLDAP/2.5.13\n"
-        "Release-Date: 2022-01-05, security patched: 2023-07-19\n"
-        "Protocols: dict file ftp ftps gopher gophers http https imap imaps ldap ldaps mqtt "
-        "pop3 pop3s rtmp rtsp scp sftp smb smbs smtp smtps telnet tftp\n"
-        "Features: alt-svc AsynchDNS brotli GSS-API HSTS HTTP2 HTTPS-proxy IDN IPv6 Kerberos "
-        "Largefile libz NTLM NTLM_WB PSL SPNEGO SSL TLS-SRP UnixSockets zstd"
-    ),
     "ifconfig": lambda ctx: (
         "eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500\n"
         "        inet 10.0.1.45  netmask 255.255.255.0  broadcast 10.0.1.255\n"
-        "        inet6 fe80::250:56ff:fe3c:a1f4  prefixlen 64  scopeid 0x20<link>\n"
-        "        ether 00:50:56:3c:a1:f4  txqueuelen 1000  (Ethernet)\n"
+        "        inet6 fe80::a00:1ff:fe2d:4501  prefixlen 64  scopeid 0x20<link>\n"
         "        RX packets 3456789  bytes 2345678901 (2.3 GB)\n"
         "        TX packets 1234567  bytes 987654321  (987.6 MB)\n"
         "lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536\n"
@@ -897,13 +377,12 @@ STATIC_RESPONSES = {
         "    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\n"
         "    inet 127.0.0.1/8 scope host lo\n"
         "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP\n"
-        "    link/ether 00:50:56:3c:a1:f4 brd ff:ff:ff:ff:ff:ff\n"
+        "    link/ether 02:00:01:2d:45:01 brd ff:ff:ff:ff:ff:ff\n"
         "    inet 10.0.1.45/24 brd 10.0.1.255 scope global eth0"
     ),
     "ip a": lambda ctx: (
         "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536\n    inet 127.0.0.1/8 scope host lo\n"
         "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\n"
-        "    link/ether 00:50:56:3c:a1:f4 brd ff:ff:ff:ff:ff:ff\n"
         "    inet 10.0.1.45/24 brd 10.0.1.255 scope global eth0"
     ),
     "df -h": lambda ctx: (
@@ -978,21 +457,6 @@ STATIC_RESPONSES = {
         "tcp   LISTEN 0      511    127.0.0.1:3000       0.0.0.0:*         users:((\"node\",pid=3100))\n"
         "tcp   LISTEN 0      128    127.0.0.1:6379       0.0.0.0:*         users:((\"redis-server\",pid=2048))"
     ),
-    "ss -tlnp": lambda ctx: (
-        "Netid State  Recv-Q Send-Q Local Address:Port  Peer Address:Port  Process\n"
-        "tcp   LISTEN 0      128    0.0.0.0:22           0.0.0.0:*         users:((\"sshd\",pid=134))\n"
-        "tcp   LISTEN 0      511    0.0.0.0:80           0.0.0.0:*         users:((\"nginx\",pid=892))\n"
-        "tcp   LISTEN 0      511    0.0.0.0:443          0.0.0.0:*         users:((\"nginx\",pid=892))\n"
-        "tcp   LISTEN 0      511    127.0.0.1:3000       0.0.0.0:*         users:((\"node\",pid=3100))\n"
-        "tcp   LISTEN 0      128    127.0.0.1:6379       0.0.0.0:*         users:((\"redis-server\",pid=2048))"
-    ),
-    "ss -ltnp": lambda ctx: (
-        "Netid State  Recv-Q Send-Q Local Address:Port  Peer Address:Port  Process\n"
-        "tcp   LISTEN 0      128    0.0.0.0:22           0.0.0.0:*         users:((\"sshd\",pid=134))\n"
-        "tcp   LISTEN 0      511    0.0.0.0:80           0.0.0.0:*         users:((\"nginx\",pid=892))\n"
-        "tcp   LISTEN 0      511    127.0.0.1:3000       0.0.0.0:*         users:((\"node\",pid=3100))\n"
-        "tcp   LISTEN 0      128    127.0.0.1:6379       0.0.0.0:*         users:((\"redis-server\",pid=2048))"
-    ),
     "last": lambda ctx: _dyn_last_output(ctx),
     "sudo -l": lambda ctx: (
         f"Matching Defaults entries for {ctx.get('username','root')} on {HOSTNAME}:\n"
@@ -1026,75 +490,8 @@ STATIC_RESPONSES = {
         "/opt/nexopay/config/database.env\n/opt/nexopay/config/aws.env\n"
         "/home/deploy/.env"
     ),
-    # Unquoted variants — bash strips quotes before the SSH server sees them
-    "find / -name *.env": lambda ctx: (
-        "/opt/nexopay/config/stripe.env\n/opt/nexopay/config/auth.env\n"
-        "/opt/nexopay/config/database.env\n/opt/nexopay/config/aws.env\n"
-        "/home/deploy/.env"
-    ),
-    "find / -name *.env 2>/dev/null": lambda ctx: (
-        "/opt/nexopay/config/stripe.env\n/opt/nexopay/config/auth.env\n"
-        "/opt/nexopay/config/database.env\n/opt/nexopay/config/aws.env\n"
-        "/home/deploy/.env"
-    ),
     "find / -name '*.db'": lambda ctx: "/opt/nexopay/data/payments.db",
     "find / -name '*.db' 2>/dev/null": lambda ctx: "/opt/nexopay/data/payments.db",
-    "find / -name *.db": lambda ctx: "/opt/nexopay/data/payments.db",
-    "find / -name *.db 2>/dev/null": lambda ctx: "/opt/nexopay/data/payments.db",
-    "find / -name '*.key'": lambda ctx: (
-        "/opt/nexopay/keys/jwt_private.key\n"
-        "/etc/ssl/private/nexopay.key\n"
-        "/root/.ssh/id_rsa\n"
-        "find: '/proc/tty/driver': Permission denied\n"
-        "find: '/root/.ssh': Permission denied"
-    ),
-    "find / -name '*.key' 2>/dev/null": lambda ctx: (
-        "/opt/nexopay/keys/jwt_private.key\n"
-        "/etc/ssl/private/nexopay.key\n"
-        "/root/.ssh/id_rsa"
-    ),
-    # Unquoted versions (bash strips quotes)
-    "find / -name *.key": lambda ctx: (
-        "/opt/nexopay/keys/jwt_private.key\n"
-        "/etc/ssl/private/nexopay.key\n"
-        "/root/.ssh/id_rsa\n"
-        "find: '/proc/tty/driver': Permission denied\n"
-        "find: '/root/.ssh': Permission denied"
-    ),
-    "find / -name *.key 2>/dev/null": lambda ctx: (
-        "/opt/nexopay/keys/jwt_private.key\n"
-        "/etc/ssl/private/nexopay.key\n"
-        "/root/.ssh/id_rsa"
-    ),
-    "find / -perm -4000": lambda ctx: (
-        "/usr/bin/sudo\n/usr/bin/passwd\n/usr/bin/newgrp\n"
-        "/usr/bin/chsh\n/usr/bin/su\n/usr/bin/chfn\n"
-        "/usr/sbin/mount.nfs\n/usr/bin/mount\n/usr/bin/umount\n"
-        "find: '/proc/tty/driver': Permission denied"
-    ),
-    "find / -perm -4000 2>/dev/null": lambda ctx: (
-        "/usr/bin/sudo\n/usr/bin/passwd\n/usr/bin/newgrp\n"
-        "/usr/bin/chsh\n/usr/bin/su\n/usr/bin/chfn\n"
-        "/usr/sbin/mount.nfs\n/usr/bin/mount\n/usr/bin/umount"
-    ),
-    "find / -perm /4000": lambda ctx: (
-        "/usr/bin/sudo\n/usr/bin/passwd\n/usr/bin/newgrp\n"
-        "/usr/bin/chsh\n/usr/bin/su\n/usr/sbin/mount.nfs"
-    ),
-    "find / -perm /4000 2>/dev/null": lambda ctx: (
-        "/usr/bin/sudo\n/usr/bin/passwd\n/usr/bin/newgrp\n"
-        "/usr/bin/chsh\n/usr/bin/su\n/usr/sbin/mount.nfs"
-    ),
-    # find / -name *.conf (without quotes)
-    "find / -name *.conf": lambda ctx: (
-        "/etc/ssh/sshd_config\n/etc/nginx/nginx.conf\n"
-        "/etc/fail2ban/jail.local\n/etc/netplan/01-netcfg.yaml\n"
-        "find: '/proc/tty/driver': Permission denied"
-    ),
-    "find / -name *.conf 2>/dev/null": lambda ctx: (
-        "/etc/ssh/sshd_config\n/etc/nginx/nginx.conf\n"
-        "/etc/fail2ban/jail.local\n/etc/netplan/01-netcfg.yaml"
-    ),
     # /proc virtual filesystem
     "cat /proc/version": lambda ctx: (
         "Linux version 5.15.0-91-generic (buildd@lcy02-amd64-013) "
@@ -1226,135 +623,152 @@ STATIC_RESPONSES = {
         "db-primary.nexopay.internal. 300 IN A 10.0.1.10\n\n"
         ";; Query time: 1 msec\n;; SERVER: 10.0.1.2#53(10.0.1.2)"
     ),
-    "systemctl status nexopay-api": _systemctl_nexopay_api,
-    "systemctl status nginx":       _systemctl_nginx,
-    "systemctl status postgresql":  _systemctl_postgresql,
-    "journalctl -u nexopay-api":    _journalctl_nexopay,
-    "journalctl":                   _journalctl_nexopay,
-    "journalctl -xe":               _journalctl_nexopay,
-    "journalctl -f":                _journalctl_nexopay,
-    "journalctl --no-pager":        _journalctl_nexopay,
-    "journalctl --no-pager -u nexopay-api": _journalctl_nexopay,
-    "tail -f /opt/nexopay/logs/error.log": _error_log,
-    "cat /opt/nexopay/logs/error.log":     _error_log,
-    # date command
-    "date":    lambda ctx: datetime.utcnow().strftime("%a %b %d %H:%M:%S UTC %Y"),
-    "date -u": lambda ctx: datetime.utcnow().strftime("%a %b %d %H:%M:%S UTC %Y"),
-    "date +%s":       lambda ctx: str(int(time.time())),
-    "date +%Y%m%d":   lambda ctx: datetime.utcnow().strftime("%Y%m%d"),
-    "date +%F":       lambda ctx: datetime.utcnow().strftime("%Y-%m-%d"),
-    "date +%T":       lambda ctx: datetime.utcnow().strftime("%H:%M:%S"),
-    "date '+%Y-%m-%d %H:%M:%S'": lambda ctx: datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-    # /proc/1 — init process
-    "ls -la /proc/1/exe": lambda ctx: (
-        f"lrwxrwxrwx 1 root root 0 "
-        f"{datetime.utcfromtimestamp(BOOT_TIME).strftime('%b %d %H:%M')} "
-        f"/proc/1/exe -> /usr/lib/systemd/systemd"
+    "systemctl status nexopay-api": lambda ctx: (
+        "● nexopay-api.service - NexoPay Payment API\n"
+        "     Loaded: loaded (/lib/systemd/system/nexopay-api.service; enabled)\n"
+        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:42 UTC; 18 days ago\n"
+        "   Main PID: 3100 (node)\n"
+        "      Tasks: 22 (limit: 19158)\n"
+        "     Memory: 67.3M\n"
+        "        CPU: 1h 24min 15.231s\n"
+        "     CGroup: /system.slice/nexopay-api.service\n"
+        "             └─3100 node /opt/nexopay/server.js\n\n"
+        "Apr 29 00:22:01 api-prod-01 node[3100]: [INFO] POST /v2/payments 200 142ms\n"
+        "Apr 29 00:22:09 api-prod-01 node[3100]: [INFO] GET /v2/balance 200 38ms\n"
+        "Apr 29 00:22:14 api-prod-01 node[3100]: [INFO] POST /v2/webhooks/stripe 200 89ms"
     ),
-    "cat /proc/1/exe":    lambda ctx: "cat: /proc/1/exe: Permission denied",
-    "readlink /proc/1/exe": lambda ctx: "/usr/lib/systemd/systemd",
-    # missing common utilities
-    "base64 --help": lambda ctx: (
-        "Usage: base64 [OPTION]... [FILE]\n"
-        "Base64 encode or decode FILE, or standard input, to standard output.\n\n"
-        "  -d, --decode          decode data\n"
-        "  -i, --ignore-garbage  when decoding, ignore non-alphabet characters\n"
-        "  -w, --wrap=COLS       wrap encoded lines after COLS character (default 76).\n"
-        "                          Use 0 to disable line wrapping\n\n"
-        "      --help     display this help and exit\n"
-        "      --version  output version information and exit"
+    "systemctl status nginx": lambda ctx: (
+        "● nginx.service - A high performance web server\n"
+        "     Loaded: loaded (/lib/systemd/system/nginx.service; enabled)\n"
+        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:41 UTC; 18 days ago\n"
+        "   Main PID: 892 (nginx)\n"
+        "     CGroup: /system.slice/nginx.service\n"
+        "             ├─892 nginx: master process /usr/sbin/nginx -g daemon on;\n"
+        "             └─893 nginx: worker process"
     ),
-    "base64 /dev/stdin": lambda ctx: "",
-    "tar --version": lambda ctx: (
-        "tar (GNU tar) 1.34\nCopyright (C) 2021 Free Software Foundation, Inc.\n"
-        "License GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>."
+    "systemctl status postgresql": lambda ctx: (
+        "● postgresql.service - PostgreSQL RDBMS\n"
+        "     Loaded: loaded (/lib/systemd/system/postgresql.service; enabled)\n"
+        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:40 UTC; 18 days ago"
     ),
-    "tar --help": lambda ctx: (
-        "Usage: tar [OPTION...] [FILE]...\nGNU 'tar' saves many files together into a single tape or disk archive,\n"
-        "and can restore individual files from the archive.\n\n"
-        "Examples:\n"
-        "  tar -cf archive.tar foo bar  # Create archive.tar from files foo and bar.\n"
-        "  tar -tvf archive.tar         # List all files in archive.tar verbosely.\n"
-        "  tar -xf archive.tar          # Extract all files from archive.tar."
+    "journalctl -u nexopay-api": lambda ctx: (
+        "-- Logs begin at Thu 2026-04-10 17:37:41 UTC, end at Tue 2026-04-29 00:22:14 UTC. --\n"
+        "Apr 10 17:37:42 api-prod-01 systemd[1]: Started NexoPay Payment API.\n"
+        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Server listening on 0.0.0.0:3000\n"
+        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Database connected: db-primary.nexopay.internal\n"
+        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Redis connected: cache-01.nexopay.internal:6379\n"
+        "Apr 29 00:22:01 api-prod-01 node[3100]: [INFO] POST /v2/payments 200 142ms\n"
+        "Apr 29 00:22:09 api-prod-01 node[3100]: [INFO] GET /v2/balance 200 38ms"
     ),
-    "useradd --help": lambda ctx: (
-        "Usage: useradd [options] LOGIN\n       useradd -D\n       useradd -D [options]\n\n"
-        "Options:\n"
-        "  -b, --base-dir BASE_DIR       base directory for the home directory of the\n"
-        "                                new account\n"
-        "  -c, --comment COMMENT         GECOS field of the new account\n"
-        "  -d, --home-dir HOME_DIR       home directory of the new account\n"
-        "  -e, --expiredate EXPIRE_DATE  expiration date of the new account\n"
-        "  -g, --gid GROUP               name or ID of the primary group of the new\n"
-        "                                account\n"
-        "  -m, --create-home             create the user's home directory\n"
-        "  -s, --shell SHELL             login shell of the new account\n"
-        "  -u, --uid UID                 user ID of the new account"
+    "tail -f /opt/nexopay/logs/error.log": lambda ctx: (
+        "[2026-04-29 00:18:22] WARN  stripe: Webhook signature verification slow for evt_3OxNpY...\n"
+        "[2026-04-29 00:19:01] INFO  payment processed: txn_01HXB1C2D3E4F5 amount=9999 status=succeeded\n"
+        "[2026-04-29 00:20:11] WARN  rate_limit: 429 returned for IP 185.220.101.45\n"
+        "[2026-04-29 00:21:33] INFO  webhook dispatched: merchant m_3xNp4y1234ABCD"
     ),
-    "passwd": lambda ctx: (
-        f"Changing password for {ctx.get('username', 'root')}.\n"
-        f"Current password: "
+    "cat /opt/nexopay/logs/error.log": lambda ctx: (
+        "[2026-04-29 00:18:22] WARN  stripe: Webhook signature verification slow for evt_3OxNpY...\n"
+        "[2026-04-29 00:19:01] INFO  payment processed: txn_01HXB1C2D3E4F5 amount=9999 status=succeeded\n"
+        "[2026-04-29 00:20:11] WARN  rate_limit: 429 returned for IP 185.220.101.45\n"
+        "[2026-04-29 00:21:33] INFO  webhook dispatched: merchant m_3xNp4y1234ABCD"
     ),
-    "passwd --help": lambda ctx: (
-        "Usage: passwd [options] [LOGIN]\n\n"
-        "Options:\n"
-        "  -a, --all                     report password status on all accounts\n"
-        "  -d, --delete                  delete the password for the named account\n"
-        "  -e, --expire                  force expire the password for the named account\n"
-        "  -l, --lock                    lock the password of the named account\n"
-        "  -u, --unlock                  unlock the password of the named account"
+    # Story-consistency: files, DNS, services all tell the same NexoPay story
+    "cat /etc/passwd": lambda ctx: (
+        "root:x:0:0:root:/root:/bin/bash\n"
+        "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n"
+        "bin:x:2:2:bin:/bin:/usr/sbin/nologin\n"
+        "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin\n"
+        "postgres:x:108:116:PostgreSQL administrator,,,:/var/lib/postgresql:/bin/bash\n"
+        "deploy:x:1001:1001:NexoPay Deploy,,,:/home/deploy:/bin/bash\n"
+        "nexopay:x:1002:1002:NexoPay Service,,,:/opt/nexopay:/usr/sbin/nologin"
     ),
-    "ss":      lambda ctx: (
-        "Netid State  Recv-Q Send-Q Local Address:Port  Peer Address:Port  Process\n"
-        "tcp   LISTEN 0      128    0.0.0.0:22           0.0.0.0:*         users:((\"sshd\",pid=134))\n"
-        "tcp   LISTEN 0      511    0.0.0.0:80           0.0.0.0:*         users:((\"nginx\",pid=892))\n"
-        "tcp   LISTEN 0      511    0.0.0.0:443          0.0.0.0:*         users:((\"nginx\",pid=892))\n"
-        "tcp   LISTEN 0      511    127.0.0.1:3000       0.0.0.0:*         users:((\"node\",pid=3100))\n"
-        "tcp   LISTEN 0      128    127.0.0.1:6379       0.0.0.0:*         users:((\"redis-server\",pid=2048))\n"
-        "tcp   ESTAB  0      0      10.0.1.45:22         {src}:{sp}         users:((\"sshd\",pid=134))"
-    ).format(src="0.0.0.0", sp="0"),
-    "ss -an": lambda ctx: (
-        "Netid State  Recv-Q Send-Q Local Address:Port  Peer Address:Port\n"
-        "tcp   LISTEN 0      128    0.0.0.0:22           0.0.0.0:*\n"
-        "tcp   LISTEN 0      511    0.0.0.0:80           0.0.0.0:*\n"
-        "tcp   LISTEN 0      511    0.0.0.0:443          0.0.0.0:*\n"
-        "tcp   LISTEN 0      511    127.0.0.1:3000       0.0.0.0:*\n"
-        "tcp   LISTEN 0      128    127.0.0.1:6379       0.0.0.0:*\n"
-        "tcp   ESTAB  0      0      10.0.1.45:22         0.0.0.0:0"
+    "cat /etc/shadow": lambda ctx: (
+        "cat: /etc/shadow: Permission denied"
     ),
-    # kernel/capability enumeration
-    "getcap -r /": lambda ctx: (
-        "/usr/bin/ping cap_net_raw=ep\n"
-        "/usr/bin/traceroute6.iputils cap_net_raw=ep\n"
-        "/usr/bin/mtr-packet cap_net_raw=ep\n"
-        "getcap: '/proc': Operation not permitted"
+    "cat /etc/hosts": lambda ctx: (
+        "127.0.0.1   localhost\n"
+        "127.0.1.1   api-prod-01\n"
+        "10.0.1.45   api-prod-01.nexopay.internal api-prod-01\n"
+        "10.0.1.10   db-primary.nexopay.internal db-primary\n"
+        "10.0.1.11   db-secondary.nexopay.internal db-secondary\n"
+        "10.0.1.20   cache-01.nexopay.internal cache-01\n"
+        "10.0.1.5    bastion.nexopay.internal bastion"
     ),
-    "getcap -r / 2>/dev/null": lambda ctx: (
-        "/usr/bin/ping cap_net_raw=ep\n"
-        "/usr/bin/traceroute6.iputils cap_net_raw=ep\n"
-        "/usr/bin/mtr-packet cap_net_raw=ep"
+    "cat /etc/resolv.conf": lambda ctx: (
+        "nameserver 10.0.1.2\nsearch nexopay.internal\noptions ndots:5"
     ),
-    "capsh --print": lambda ctx: (
-        "Current: =ep\nBounding set =cap_chown,cap_dac_override,cap_dac_read_search,"
-        "cap_fowner,cap_fsetid,cap_kill,cap_setgid,cap_setuid,cap_setpcap,"
-        "cap_net_admin,cap_net_raw,cap_sys_module,cap_sys_chroot,cap_sys_admin,"
-        "cap_audit_control,cap_setfcap\n"
-        "Ambient set =\nCurrent IAB: !cap_sys_pacct,!cap_sys_ptrace\n"
-        "Securebits: 00/0x0/1'b0\n secure-noroot: no (unlocked)\n"
-        " secure-no-suid-fixup: no (unlocked)\n keep-caps: no (unlocked)\n"
-        "uid=0(root) euid=0(root)\ngid=0(root) egid=0(root)\n"
-        "groups=0(root),4(adm),27(sudo)"
+    "cat /etc/os-release": lambda ctx: (
+        'NAME="Ubuntu"\nVERSION="22.04.3 LTS (Jammy Jellyfish)"\n'
+        'ID=ubuntu\nID_LIKE=debian\nPRETTY_NAME="Ubuntu 22.04.3 LTS"\n'
+        'VERSION_ID="22.04"\nHOME_URL="https://www.ubuntu.com/"\n' 
+        'SUPPORT_URL="https://help.ubuntu.com/"\n'
+        'BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"\n'
+        'PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"\n'
+        'VERSION_CODENAME=jammy\nUBUNTU_CODENAME=jammy'
     ),
-    "lsns": lambda ctx: (
-        "        NS TYPE   NPROCS   PID USER             COMMAND\n"
-        f"4026531836 pid       187     1 root             /sbin/init splash\n"
-        f"4026531837 user      187     1 root             /sbin/init splash\n"
-        f"4026531838 uts       187     1 root             /sbin/init splash\n"
-        f"4026531839 ipc       187     1 root             /sbin/init splash\n"
-        f"4026531840 mnt       187     1 root             /sbin/init splash\n"
-        f"4026531992 net       187     1 root             /sbin/init splash"
+    "nslookup db-primary.nexopay.internal": lambda ctx: (
+        "Server:\t\t10.0.1.2\nAddress:\t10.0.1.2#53\n\n"
+        "Name:\tdb-primary.nexopay.internal\nAddress: 10.0.1.10"
     ),
-    "xattr -l /": lambda ctx: "/: 0 attributes",
+    "nslookup cache-01.nexopay.internal": lambda ctx: (
+        "Server:\t\t10.0.1.2\nAddress:\t10.0.1.2#53\n\n"
+        "Name:\tcache-01.nexopay.internal\nAddress: 10.0.1.20"
+    ),
+    "dig db-primary.nexopay.internal": lambda ctx: (
+        "; <<>> DiG 9.18.12-0ubuntu0.22.04.3-Ubuntu <<>> db-primary.nexopay.internal\n"
+        ";; ANSWER SECTION:\n"
+        "db-primary.nexopay.internal. 300 IN A 10.0.1.10\n\n"
+        ";; Query time: 1 msec\n;; SERVER: 10.0.1.2#53(10.0.1.2)"
+    ),
+    "systemctl status nexopay-api": lambda ctx: (
+        "● nexopay-api.service - NexoPay Payment API\n"
+        "     Loaded: loaded (/lib/systemd/system/nexopay-api.service; enabled)\n"
+        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:42 UTC; 18 days ago\n"
+        "   Main PID: 3100 (node)\n"
+        "      Tasks: 22 (limit: 19158)\n"
+        "     Memory: 67.3M\n"
+        "        CPU: 1h 24min 15.231s\n"
+        "     CGroup: /system.slice/nexopay-api.service\n"
+        "             └─3100 node /opt/nexopay/server.js\n\n"
+        "Apr 29 00:22:01 api-prod-01 node[3100]: [INFO] POST /v2/payments 200 142ms\n"
+        "Apr 29 00:22:09 api-prod-01 node[3100]: [INFO] GET /v2/balance 200 38ms\n"
+        "Apr 29 00:22:14 api-prod-01 node[3100]: [INFO] POST /v2/webhooks/stripe 200 89ms"
+    ),
+    "systemctl status nginx": lambda ctx: (
+        "● nginx.service - A high performance web server\n"
+        "     Loaded: loaded (/lib/systemd/system/nginx.service; enabled)\n"
+        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:41 UTC; 18 days ago\n"
+        "   Main PID: 892 (nginx)\n"
+        "     CGroup: /system.slice/nginx.service\n"
+        "             ├─892 nginx: master process /usr/sbin/nginx -g daemon on;\n"
+        "             └─893 nginx: worker process"
+    ),
+    "systemctl status postgresql": lambda ctx: (
+        "● postgresql.service - PostgreSQL RDBMS\n"
+        "     Loaded: loaded (/lib/systemd/system/postgresql.service; enabled)\n"
+        "     Active: \033[32mactive (running)\033[0m since Thu 2026-04-10 17:37:40 UTC; 18 days ago"
+    ),
+    "journalctl -u nexopay-api": lambda ctx: (
+        "-- Logs begin at Thu 2026-04-10 17:37:41 UTC, end at Tue 2026-04-29 00:22:14 UTC. --\n"
+        "Apr 10 17:37:42 api-prod-01 systemd[1]: Started NexoPay Payment API.\n"
+        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Server listening on 0.0.0.0:3000\n"
+        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Database connected: db-primary.nexopay.internal\n"
+        "Apr 10 17:37:43 api-prod-01 node[3100]: [INFO] Redis connected: cache-01.nexopay.internal:6379\n"
+        "Apr 29 00:22:01 api-prod-01 node[3100]: [INFO] POST /v2/payments 200 142ms\n"
+        "Apr 29 00:22:09 api-prod-01 node[3100]: [INFO] GET /v2/balance 200 38ms"
+    ),
+    "tail -f /opt/nexopay/logs/error.log": lambda ctx: (
+        "[2026-04-29 00:18:22] WARN  stripe: Webhook signature verification slow for evt_3OxNpY...\n"
+        "[2026-04-29 00:19:01] INFO  payment processed: txn_01HXB1C2D3E4F5 amount=9999 status=succeeded\n"
+        "[2026-04-29 00:20:11] WARN  rate_limit: 429 returned for IP 185.220.101.45\n"
+        "[2026-04-29 00:21:33] INFO  webhook dispatched: merchant m_3xNp4y1234ABCD"
+    ),
+    "cat /opt/nexopay/logs/error.log": lambda ctx: (
+        "[2026-04-29 00:18:22] WARN  stripe: Webhook signature verification slow for evt_3OxNpY...\n"
+        "[2026-04-29 00:19:01] INFO  payment processed: txn_01HXB1C2D3E4F5 amount=9999 status=succeeded\n"
+        "[2026-04-29 00:20:11] WARN  rate_limit: 429 returned for IP 185.220.101.45\n"
+        "[2026-04-29 00:21:33] INFO  webhook dispatched: merchant m_3xNp4y1234ABCD"
+    ),
 }
 
 # Commands available for Tab completion
@@ -1400,20 +814,6 @@ _IMDS_ROUTES = {
     f"{_IMDS_BASE}/placement/region":                          "us-east-1",
     f"{_IMDS_BASE}/iam/":                                      "info\nsecurity-credentials/\n",
     f"{_IMDS_BASE}/iam/security-credentials/":                 "nexopay-prod-role",
-    # user-data is outside meta-data — it's a cloud-init bootstrap script, NOT creds
-    "http://169.254.169.254/latest/user-data": (
-        "#!/bin/bash\n"
-        "# NexoPay API server cloud-init bootstrap\n"
-        "set -e\n"
-        "export AWS_DEFAULT_REGION=us-east-1\n"
-        "hostnamectl set-hostname api-prod-01\n"
-        "apt-get update -q && apt-get install -y awscli nodejs npm\n"
-        "mkdir -p /opt/nexopay\n"
-        "aws s3 cp s3://nexopay-backups-prod-us-east-1/deploy/nexopay-api.tar.gz /tmp/ --region us-east-1\n"
-        "tar -xzf /tmp/nexopay-api.tar.gz -C /opt/nexopay/\n"
-        "systemctl enable nexopay-api\n"
-        "systemctl start nexopay-api\n"
-    ),
 }
 _IMDS_CREDS_PATH = f"{_IMDS_BASE}/iam/security-credentials/nexopay-prod-role"
 
@@ -1452,49 +852,34 @@ _INTERNAL_HOSTS = {
     "127.0.0.1":                   "127.0.0.1",
 }
 
-
-_INSTANT_CMDS = {
-    "id", "whoami", "hostname", "pwd", "echo", "true", "false", "uname",
-    "date", "w", "who", "env", "printenv", "history", "alias", "unalias",
-    "export", "unset", "exit", "logout", "type", "which", "hash",
-}
-_FAST_CMDS = {
-    "ls", "cat", "head", "tail", "grep", "awk", "sed", "wc", "cut", "sort",
-    "uniq", "tee", "tr", "ps", "free", "df", "lsblk", "mount", "uptime",
-    "ip", "ifconfig", "netstat", "ss", "arp", "route", "last", "sudo",
-    "crontab", "systemctl", "stat", "file", "readlink",
-}
-_SLOW_CMDS = {
-    "find": (2.0, 9.0),
-    "nmap": (5.0, 16.0),
-    "apt": (0.8, 2.5), "apt-get": (0.8, 2.5),
-    "pip": (0.6, 2.0), "pip3": (0.6, 2.0),
-    "wget": (0.4, 1.2), "curl": (0.08, 0.5),
-    "dmesg": (0.2, 0.6),
-    "journalctl": (0.3, 0.9),
-    "git": (0.3, 1.2),
-    "docker": (0.4, 1.5),
-    "kubectl": (0.3, 1.0),
-    "helm": (0.3, 0.9),
-    "rsync": (0.5, 2.0),
-    "openssl": (0.05, 0.3),
-    "tar": (0.1, 0.8),
-}
-
+_KERNEL_THREADS = (
+    "root           1  0.0  0.0  167524 11120 ?  Ss   Apr10   0:05 /sbin/init splash\n"
+    "root           2  0.0  0.0       0     0 ?  S    Apr10   0:00 [kthreadd]\n"
+    "root           3  0.0  0.0       0     0 ?  I<   Apr10   0:00 [rcu_gp]\n"
+    "root           4  0.0  0.0       0     0 ?  I<   Apr10   0:00 [rcu_par_gp]\n"
+    "root           6  0.0  0.0       0     0 ?  I<   Apr10   0:00 [kworker/0:0H-events_highpri]\n"
+    "root           9  0.0  0.0       0     0 ?  I<   Apr10   0:00 [mm_percpu_wq]\n"
+    "root          10  0.0  0.0       0     0 ?  S    Apr10   0:00 [ksoftirqd/0]\n"
+    "root          11  0.0  0.0       0     0 ?  I    Apr10   0:16 [rcu_sched]\n"
+    "root          12  0.0  0.0       0     0 ?  S    Apr10   0:00 [migration/0]\n"
+    "root          13  0.0  0.0       0     0 ?  S    Apr10   0:00 [idle_inject/0]\n"
+    "root          34  0.0  0.0       0     0 ?  S<   Apr10   0:00 [kdevtmpfs]\n"
+    "root         134  0.0  0.0   14476  7248 ?  Ss   Apr10   0:00 /usr/sbin/sshd -D\n"
+    "root         892  0.1  0.0   55280  9512 ?  Ss   Apr10   0:43 nginx: master process /etc/nginx/nginx.conf\n"
+    "www-data     893  0.0  0.0   55720  5412 ?  S    Apr10   0:12 nginx: worker process\n"
+    "root        2048  0.0  0.1   65116 18432 ?  Ssl  Apr10   0:08 /usr/bin/redis-server 127.0.0.1:6379\n"
+    "postgres    2150  0.0  0.2  222532 38912 ?  Ss   Apr10   0:22 /usr/lib/postgresql/14/bin/postgres\n"
+    "root        3100  0.1  0.4  896512 68512 ?  Ssl  Apr10   1:24 node /opt/nexopay/server.js\n"
+)
 
 def _realistic_delay(cmd: str) -> float:
-    # Floor raised to 180ms for all paths — destroys the timing oracle that
-    # reveals AI (800-4000ms) vs static (<20ms) response source to attackers.
     parts = cmd.split()
     base = parts[0] if parts else ""
-    if base in _INSTANT_CMDS:
-        return random.uniform(0.18, 0.35)
-    if base in _SLOW_CMDS:
-        lo, hi = _SLOW_CMDS[base]
-        return random.uniform(max(lo, 0.18), hi)
-    if base in _FAST_CMDS:
-        return random.uniform(0.18, 0.40)
-    return random.uniform(0.20, 0.45)
+    heavy = {"find","apt","apt-get","nmap","pip","pip3","wget","curl",
+             "dmesg","journalctl","git","docker","kubectl"}
+    if base in heavy:
+        return random.uniform(0.45, 1.7)
+    return random.uniform(0.05, 0.35)
 
 
 def get_fallback(cmd: str, ctx: dict) -> str:
@@ -1502,57 +887,6 @@ def get_fallback(cmd: str, ctx: dict) -> str:
     fallbacks = {"wget": "Connection refused.", "curl": "curl: (7) Failed to connect to host",
                  "nmap": "Host seems down"}
     return fallbacks.get(base, f"bash: {base}: command not found")
-
-
-# ---------------------------------------------------------------------------
-# Malware download simulation helpers
-# ---------------------------------------------------------------------------
-
-_URL_RE = re.compile(r'https?://[^\s\'"]+')
-_OUTPUT_FLAG_RE = re.compile(r'(?:-O\s*|--output[= ])([^\s]+)')
-
-def _extract_download_url(cmd: str) -> Optional[tuple]:
-    """Return (url, filename) from a wget/curl command, or None."""
-    m = _URL_RE.search(cmd)
-    if not m:
-        return None
-    url = m.group(0).rstrip('/')
-    # Determine output filename
-    om = _OUTPUT_FLAG_RE.search(cmd)
-    if om:
-        filename = om.group(1)
-    else:
-        parts = url.split('/')
-        filename = parts[-1] if parts[-1] else 'index.html'
-    return url, filename
-
-
-def _fake_wget_output(url: str, filename: str, file_size: int) -> str:
-    """Realistic wget download output."""
-    host = url.split('/')[2]
-    return (
-        f"--{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}--  {url}\n"
-        f"Resolving {host}... {random.randint(1,254)}.{random.randint(1,254)}.{random.randint(1,254)}.{random.randint(1,254)}\n"
-        f"Connecting to {host}|...|:80... connected.\n"
-        f"HTTP request sent, awaiting response... 200 OK\n"
-        f"Length: {file_size} ({file_size // 1024}K) [application/octet-stream]\n"
-        f"Saving to: '{filename}'\n\n"
-        f"{filename}         100%[===================>] {file_size // 1024:>5}K  "
-        f"{random.randint(200,900)}KB/s    in 0.{random.randint(1,9)}s\n\n"
-        f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} ({random.randint(200,900)} KB/s) "
-        f"- '{filename}' saved [{file_size}/{file_size}]"
-    )
-
-
-def _fake_curl_output(url: str, filename: str, file_size: int) -> str:
-    """Realistic curl download output (stderr-style progress)."""
-    return (
-        f"  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\n"
-        f"                                 Dload  Upload   Total   Spent    Left  Speed\n"
-        f"100 {file_size // 1024:>5}  100 {file_size // 1024:>5}    0     0  "
-        f"{random.randint(100,900)}k      0 --:--:-- --:--:-- --:--:-- "
-        f"{random.randint(100,900)}k"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1586,7 +920,6 @@ class SessionHandler(asyncssh.SSHServerSession):
         self._heredoc       = None  # active here-doc state when not None
         self._continuation  = False  # backslash line continuation
         self._cont_buf      = ""
-        self._cmd_lock      = asyncio.Lock()  # serialize command dispatch (prevents response bleed)
 
         # PTY / line-editor state
         self.context["source_ip"] = self.source_ip
@@ -1655,17 +988,8 @@ class SessionHandler(asyncssh.SSHServerSession):
         return out
 
     async def _expand_globs(self, cmd: str) -> str:
-        """B4: expand glob patterns (*, ?) against the sandbox-store virtual FS.
-
-        Skip glob expansion for `find` commands — the pattern after -name/-iname is
-        NOT a path glob to expand; expanding it garbles the command (e.g. '*.key'
-        becomes the matched filenames, producing `find / -name /root/foo.key` which
-        is entirely wrong).
-        """
+        """B4: expand glob patterns (*, ?) against the sandbox-store virtual FS."""
         import fnmatch as _fnmatch
-        first_word = cmd.split()[0].lower() if cmd.split() else ""
-        if first_word == "find":
-            return cmd  # never expand globs inside find args
         parts = cmd.split()
         new_parts = []
         for part in parts:
@@ -1854,13 +1178,6 @@ class SessionHandler(asyncssh.SSHServerSession):
                 continue
 
             if ch in ('\r', '\n'):
-                # Some SSH clients send \r\n for Enter. Suppress the \n if it
-                # immediately follows a \r to prevent double command dispatch.
-                if ch == '\n' and getattr(self, '_suppress_lf', False):
-                    self._suppress_lf = False
-                    i += 1
-                    continue
-                self._suppress_lf = (ch == '\r')
                 await self._process_pty_line()
             elif ch == '\t':
                 await self._handle_tab()
@@ -2121,10 +1438,6 @@ class SessionHandler(asyncssh.SSHServerSession):
     # Core command dispatcher (used by both PTY and batch paths)
     # ------------------------------------------------------------------
     async def _process_single_command(self, cmd: str):
-        async with self._cmd_lock:
-            await self._dispatch_command(cmd)
-
-    async def _dispatch_command(self, cmd: str):
         # MITRE ATT&CK mapping for EVERY command — fire-and-forget
         asyncio.create_task(self._record_mitre_for_command(cmd))
 
@@ -2194,25 +1507,6 @@ class SessionHandler(asyncssh.SSHServerSession):
 
         if cmd in CONTAINER_ESCAPE_PROBES:
             await self._handle_intercept(cmd, CONTAINER_ESCAPE_PROBES[cmd])
-            return
-
-        # history -c / history -w: clear in-memory nav history so up-arrow is
-        # empty and `history` returns nothing — forensic SQLite log is unaffected.
-        if cmd.lower() in ("history -c", "history -w", "history -cw", "history -wc"):
-            self._cmd_history.clear()
-            self._hist_cleared = True
-            await asyncio.sleep(_realistic_delay(cmd))
-            self._set_exit(0)
-            self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
-            asyncio.create_task(self._record(cmd, "", int(0)))
-            return
-
-        # `history` respects whether -c was previously called
-        if cmd == "history" or re.match(r'^history\s+-[0-9]+$', cmd):
-            if getattr(self, '_hist_cleared', False):
-                await self._handle_intercept(cmd, "")
-            else:
-                await self._handle_intercept(cmd, STATIC_RESPONSES["history"](self.context))
             return
 
         if cmd == "cd" or cmd.startswith("cd "):
@@ -2716,26 +2010,6 @@ class SessionHandler(asyncssh.SSHServerSession):
             out = await self._handle_imds(cmd_s)
             return out or "", "", 0
 
-        # env / printenv (needed for pipeline: env | grep ...)
-        if cmd_s in ("env", "printenv"):
-            _stripe = os.getenv('CANARY_STRIPE_KEY') or ('sk_live_' + '51HxY8zKjHnxpay4' + 'QmK9p2LrTjY8bZfGbCeAiUoS9pX')
-            base_env = {
-                "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                "HOME": "/root", "USER": "root", "LOGNAME": "root",
-                "SHELL": "/bin/bash", "TERM": "xterm-256color", "LANG": "C.UTF-8",
-                "HOSTNAME": HOSTNAME, "NODE_ENV": "production", "NODE_VERSION": "20.11.0",
-                "AWS_DEFAULT_REGION": "us-east-1",
-                "AWS_ACCESS_KEY_ID": _FAKE_AWS_ID,
-                "AWS_SECRET_ACCESS_KEY": _FAKE_AWS_SEC,
-                "STRIPE_SECRET_KEY": _stripe,
-                "DB_HOST": "db-primary.nexopay.internal",
-                "DB_NAME": "nexopay_prod",
-                "NEXOPAY_VERSION": "v2.14.3",
-            }
-            base_env.update(self._session_env)
-            env_out = "\n".join(f"{k}={v}" for k, v in base_env.items())
-            return env_out, "", 0
-
         # echo
         if cmd_s.startswith("echo "):
             rest = cmd_s[5:]
@@ -2779,16 +2053,6 @@ class SessionHandler(asyncssh.SSHServerSession):
             'awk':  self._filter_awk,  'sed':  self._filter_sed,
             'tr':   self._filter_tr,
         }
-        # base64 encode/decode as a streaming filter (e.g. cat /etc/passwd | base64)
-        if verb == 'base64':
-            import base64 as _b64lib
-            if '-d' in args or '--decode' in args:
-                try:
-                    return _b64lib.b64decode(stdin.strip().encode()).decode('utf-8', errors='replace'), "", 0
-                except Exception:
-                    return "", "base64: invalid input", 1
-            else:
-                return _b64lib.b64encode(stdin.encode()).decode(), "", 0
         if verb in _filters:
             out, code = _filters[verb](args, stdin)
             return out, "", code
@@ -2889,75 +2153,12 @@ class SessionHandler(asyncssh.SSHServerSession):
         cmd_lower = cmd.lower().strip()
         output = None
         from_fallback = False
-        from_ai = False
-        from_malware = False
 
         if cmd_lower.startswith("sqlite3"):
             output = self._handle_sqlite3(cmd)
             asyncio.create_task(self._alert_honeytoken("/opt/nexopay/data/payments.db"))
         elif "169.254.169.254" in cmd_lower:
             output = await self._handle_imds(cmd)
-        elif cmd_lower == "date" or (cmd_lower.startswith("date ") and not cmd_lower.startswith("date --")):
-            # Handle date +format variants gracefully
-            parts = cmd.split(None, 1)
-            fmt_arg = parts[1].strip() if len(parts) > 1 else ""
-            if fmt_arg.startswith("+"):
-                fmt = fmt_arg[1:].strip("'\"")
-                fmt_py = (fmt
-                    .replace("%Y", "%Y").replace("%m", "%m").replace("%d", "%d")
-                    .replace("%H", "%H").replace("%M", "%M").replace("%S", "%S")
-                    .replace("%F", "%Y-%m-%d").replace("%T", "%H:%M:%S")
-                    .replace("%n", "\n").replace("%t", "\t"))
-                try:
-                    rendered = datetime.utcnow().strftime(fmt_py)
-                    rendered = rendered.replace("%s", str(int(time.time())))
-                    output = rendered
-                except Exception:
-                    output = datetime.utcnow().strftime("%a %b %d %H:%M:%S UTC %Y")
-            else:
-                output = datetime.utcnow().strftime("%a %b %d %H:%M:%S UTC %Y")
-        elif ('<<' in cmd or '\n' in cmd) and ('://' in cmd):
-            # Heredoc / multi-line payload: scan each line for wget/curl calls
-            for line in cmd.split('\n'):
-                line = line.strip()
-                if (line.startswith('wget ') or (line.startswith('curl ') and '://' in line)):
-                    dl = _extract_download_url(line)
-                    if dl:
-                        url, fname = dl
-                        fs = random.randint(4096, 1 << 19)
-                        asyncio.create_task(self._record_ioc({"ioc_type": "url", "value": url, "confidence": 0.85}))
-                        asyncio.create_task(self._record_malware_download(url=url, filename=fname, file_size=fs, command=line))
-            output = get_fallback(cmd, self.context)
-            from_fallback = True
-        elif cmd_lower.startswith("wget ") or (cmd_lower.startswith("curl ") and "://" in cmd_lower):
-            dl = _extract_download_url(cmd)
-            if dl:
-                url, filename = dl
-                file_size = random.randint(4096, 1 << 19)  # 4 KB – 512 KB fake size
-                if cmd_lower.startswith("wget"):
-                    output = _fake_wget_output(url, filename, file_size)
-                else:
-                    output = _fake_curl_output(url, filename, file_size)
-                from_malware = True
-                asyncio.create_task(self._record_ioc({
-                    "ioc_type": "url",
-                    "value": url,
-                    "confidence": 0.9,
-                }))
-                asyncio.create_task(self._record_malware_download(
-                    url=url, filename=filename, file_size=file_size, command=cmd
-                ))
-            else:
-                output = get_fallback(cmd, self.context)
-                from_fallback = True
-        elif cmd_lower.startswith("python3 -c ") or cmd_lower.startswith("python -c "):
-            # Reverse-shell attempts: connection timeout, not command not found
-            output = "Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nConnectionRefusedError: [Errno 111] Connection refused"
-            from_fallback = False
-        elif cmd_lower.startswith("useradd "):
-            output = ""  # useradd silently succeeds as root
-        elif cmd_lower.startswith("passwd ") and len(cmd_lower) > 7:
-            output = "Enter new UNIX password: "
         else:
             for pattern, handler in STATIC_RESPONSES.items():
                 if cmd_lower == pattern or cmd_lower.startswith(pattern + " "):
@@ -2965,8 +2166,6 @@ class SessionHandler(asyncssh.SSHServerSession):
                     break
             if output is None and AI_ENGINE_URL:
                 output = await self._get_ai_response(cmd)
-                if output is not None:
-                    from_ai = True
             if output is None:
                 output = get_fallback(cmd, self.context)
                 from_fallback = True
@@ -2991,15 +2190,8 @@ class SessionHandler(asyncssh.SSHServerSession):
         else:
             self._set_exit(0)
 
-        response_source = (
-            "malware"  if from_malware  else
-            "ai"       if from_ai       else
-            "fallback" if from_fallback else
-            "static"
-        )
         self.command_history.append({"command": cmd, "output": output})
-        asyncio.create_task(self._record(cmd, output, int((time.monotonic() - t0) * 1000),
-                                         response_source=response_source))
+        asyncio.create_task(self._record(cmd, output, int((time.monotonic() - t0) * 1000)))
         self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
 
     def _handle_sqlite3(self, cmd: str) -> str:
@@ -3126,6 +2318,7 @@ class SessionHandler(asyncssh.SSHServerSession):
         elif len(non_flags) == 1:
             host = non_flags[0]
 
+        await asyncio.sleep(random.uniform(0.1, 0.4))
         port_banners = {
             "6379": "+PONG\r\n",
             "5432": "connection to server at \"" + (host or "localhost") + "\", failed: FATAL:  password authentication failed for user \"root\"",
@@ -3134,18 +2327,11 @@ class SessionHandler(asyncssh.SSHServerSession):
             "27017": "MongoDB connection attempt denied",
         }
         if port in port_banners:
-            await asyncio.sleep(random.uniform(0.1, 0.4))
             output = port_banners[port]
+        elif host and not port:
+            output = f"Ncat: Connection refused."
         else:
-            # Outbound-filtered production server: TCP SYN is sent but no reply.
-            # Realistic behaviour is a timeout, NOT an immediate refusal.
-            await asyncio.sleep(random.uniform(3.0, 5.5))
-            if host and port:
-                output = f"nc: connect to {host} port {port} (tcp) timed out: Operation timed out"
-            elif host:
-                output = f"nc: connect to {host} port 1 (tcp) timed out: Operation timed out"
-            else:
-                output = "nc: missing hostname"
+            output = f"Ncat: No route to host."
 
         self._write_line(output)
         self.command_history.append({"command": cmd, "output": output})
@@ -3261,58 +2447,40 @@ class SessionHandler(asyncssh.SSHServerSession):
             flags = [p for p in parts[1:] if p.startswith('-')]
             args  = [p for p in parts[1:] if not p.startswith('-')]
             path  = args[0] if args else self.current_directory
-            if path.startswith("~/"):
-                path = "/root/" + path[2:]
-            elif path == "~":
-                path = "/root"
             if not path.startswith("/"):
                 path = f"{self.current_directory.rstrip('/')}/{path}"
 
             long_fmt = any('l' in f for f in flags)
             show_all = any('a' in f for f in flags)
 
-            # Static responses for special paths (symlinks, /proc, etc.)
-            _STATIC_LS = {
-                "/proc/1/exe": (
-                    f"lrwxrwxrwx 1 root root 0 "
-                    f"{datetime.utcfromtimestamp(BOOT_TIME).strftime('%b %d %H:%M')} "
-                    f"/proc/1/exe -> /usr/lib/systemd/systemd"
-                ),
-                "/proc/self/exe": (
-                    f"lrwxrwxrwx 1 root root 0 "
-                    f"{datetime.utcnow().strftime('%b %d %H:%M')} "
-                    f"/proc/self/exe -> /usr/bin/bash"
-                ),
-            }
-            if path in _STATIC_LS:
-                output = _STATIC_LS[path]
-            else:
-                try:
-                    r = await self.http_client.get(
-                        f"{SANDBOX_URL}/files/{self.session_id}/list", params={"path": path})
-                    if r.status_code == 200:
-                        entries = r.json().get("entries", [])
+            try:
+                r = await self.http_client.get(
+                    f"{SANDBOX_URL}/files/{self.session_id}/list", params={"path": path})
+                if r.status_code == 200:
+                    entries = r.json().get("entries", [])
 
-                        if long_fmt:
-                            lines = [f"total {len(entries) * 4}"]
-                            if show_all:
-                                lines.append(f"drwx------ 2 root root     4096 Apr 29 10:00 .")
-                                lines.append(f"drwxr-xr-x 3 root root     4096 Apr 29 10:00 ..")
-                            for e in entries:
-                                lines.append(_format_ls_long(e))
-                            output = nl.join(lines)
-                        else:
-                            names = []
-                            for e in entries:
-                                n = e['name']
-                                if e.get('type') == 'directory':
-                                    n += '/'
-                                names.append(n)
-                            output = "  ".join(names)
+                    if long_fmt:
+                        lines = [f"total {len(entries) * 4}"]
+                        # . and ..
+                        if show_all:
+                            lines.append(f"drwx------ 2 root root     4096 Apr 29 10:00 .")
+                            lines.append(f"drwxr-xr-x 3 root root     4096 Apr 29 10:00 ..")
+                        for e in entries:
+                            lines.append(_format_ls_long(e))
+                        output = nl.join(lines)
                     else:
-                        output = f"ls: cannot access '{path}': No such file or directory"
-                except Exception as e:
-                    output = f"ls: error: {e}"
+                        # Plain ls: append '/' to directories for visual distinction
+                        names = []
+                        for e in entries:
+                            n = e['name']
+                            if e.get('type') == 'directory':
+                                n += '/'
+                            names.append(n)
+                        output = "  ".join(names)
+                else:
+                    output = f"ls: cannot access '{path}': No such file or directory"
+            except Exception as e:
+                output = f"ls: error: {e}"
 
         elif cmd.startswith("cat "):
             parts = cmd.split()
@@ -3320,33 +2488,22 @@ class SessionHandler(asyncssh.SSHServerSession):
                 output = "cat: missing operand"
             else:
                 path = parts[1]
-                # tilde expansion
-                if path.startswith("~/"):
-                    path = "/root/" + path[2:]
-                elif path == "~":
-                    path = "/root"
                 if not path.startswith("/"):
                     path = f"{self.current_directory.rstrip('/')}/{path}"
-                # Check static file contents before hitting the sandbox
-                if path in _STATIC_FILE_CONTENTS:
-                    fn = _STATIC_FILE_CONTENTS[path]
-                    output = fn(self.context) if callable(fn) else fn
-                    if path in HONEYTOKEN_FILES:
-                        asyncio.create_task(self._alert_honeytoken(path))
-                else:
-                    try:
-                        r = await self.http_client.get(
-                            f"{SANDBOX_URL}/files/{self.session_id}", params={"path": path})
-                        if r.status_code == 200:
-                            output = r.json().get("content", "")
-                            if path in HONEYTOKEN_FILES:
-                                asyncio.create_task(self._alert_honeytoken(path))
-                        elif r.status_code == 422:
-                            output = f"cat: {path}: Is a directory"
-                        else:
-                            output = f"cat: {path}: No such file or directory"
-                    except Exception as e:
-                        output = f"cat: error: {e}"
+                try:
+                    r = await self.http_client.get(
+                        f"{SANDBOX_URL}/files/{self.session_id}", params={"path": path})
+                    if r.status_code == 200:
+                        output = r.json().get("content", "")
+                        if path in HONEYTOKEN_FILES:
+                            asyncio.create_task(self._alert_honeytoken(path))
+                    elif r.status_code == 422:
+                        # Sandbox returns 422 when path is a directory
+                        output = f"cat: {path}: Is a directory"
+                    else:
+                        output = f"cat: {path}: No such file or directory"
+                except Exception as e:
+                    output = f"cat: error: {e}"
 
         elif cmd.startswith("touch "):
             parts = cmd.split()
@@ -3407,7 +2564,7 @@ class SessionHandler(asyncssh.SSHServerSession):
                     today_label = datetime.utcfromtimestamp(BOOT_TIME).strftime("%b%d")
                     if "aux" in cmd:
                         output = "USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND\n"
-                        output += _kernel_threads()
+                        output += _KERNEL_THREADS
                         for p in processes:
                             output += (f"{p['username']:<10} {p['pid']:>5} {p['cpu_percent']:>4.1f} "
                                        f"{p['mem_percent']:>4.1f}      0     0 ?        Ss   {today_label}   0:00 {p['name']}\n")
@@ -3440,26 +2597,21 @@ class SessionHandler(asyncssh.SSHServerSession):
 
     async def _handle_env_command(self):
         t0 = time.monotonic()
-        # Always include canary credentials — session exports are merged on top.
-        # If only session env was shown (the old behaviour), exported-but-empty vars
-        # appeared as "AWS_ACCESS_KEY_ID=" which is an instant red flag to attackers.
-        _stripe = os.getenv('CANARY_STRIPE_KEY') or ('sk_live_' + '51HxY8zKjHnxpay4' + 'QmK9p2LrTjY8bZfGbCeAiUoS9pX')
-        base = {
-            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            "HOME": "/root", "USER": self.username, "LOGNAME": self.username,
-            "SHELL": "/bin/bash", "TERM": "xterm-256color", "LANG": "C.UTF-8",
-            "HOSTNAME": HOSTNAME, "PWD": self.current_directory,
-            "NODE_ENV": "production", "NODE_VERSION": "20.11.0",
-            "AWS_DEFAULT_REGION": "us-east-1",
-            "AWS_ACCESS_KEY_ID": _FAKE_AWS_ID,
-            "AWS_SECRET_ACCESS_KEY": _FAKE_AWS_SEC,
-            "STRIPE_SECRET_KEY": _stripe,
-            "DB_HOST": "db-primary.nexopay.internal",
-            "DB_NAME": "nexopay_prod",
-            "NEXOPAY_VERSION": "v2.14.3",
-        }
-        base.update(self._session_env)   # session exports override / extend
-        output = "\n".join(f"{k}={v}" for k, v in base.items())
+        if self.context.get("environment"):
+            output = "\n".join(f"{k}={v}" for k, v in self.context["environment"].items())
+        else:
+            # Canary keys read from env so no literal secrets live in source
+            _stripe = os.getenv('CANARY_STRIPE_KEY') or ('sk_live_' + '51HxY8zKjHnxpay4' + 'QmK9p2LrTjY8bZfGbCeAiUoS9pX')
+            _aws_id = os.getenv('CANARY_AWS_ACCESS_KEY', 'AKIAVLQNEXOPAY1PROD7')  # nosemgrep
+            output = (
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
+                f"HOME=/root\nUSER=root\nSHELL=/bin/bash\nTERM=xterm-256color\n"
+                f"NODE_ENV=production\nNODE_VERSION=20.11.0\n"
+                f"AWS_DEFAULT_REGION=us-east-1\nAWS_ACCESS_KEY_ID={_aws_id}\n"
+                f"STRIPE_SECRET_KEY={_stripe}\n"
+                "DB_HOST=db-primary.nexopay.internal\nDB_NAME=nexopay_prod\n"
+                "NEXOPAY_VERSION=v2.14.3"
+            )
         self._write_line(output)
         self.command_history.append({"command": "env", "output": output})
         asyncio.create_task(self._record("env", output, int((time.monotonic() - t0) * 1000)))
@@ -3484,13 +2636,13 @@ class SessionHandler(asyncssh.SSHServerSession):
             pass
 
     async def _record(self, cmd: str, out: str, duration_ms: int = 0,
-                      exit_code: Optional[int] = None, response_source: str = "static"):
+                      exit_code: Optional[int] = None):
         if exit_code is None:
             exit_code = self._last_exit
         try:
             await self.http_client.post(f"{SANDBOX_URL}/commands/{self.session_id}",
                 json={"command": cmd, "output": out, "exit_code": exit_code,
-                      "duration_ms": duration_ms, "response_source": response_source})
+                      "duration_ms": duration_ms})
         except: pass
 
     async def _record_ioc(self, ioc: dict):
@@ -3501,23 +2653,6 @@ class SessionHandler(asyncssh.SSHServerSession):
                       "context": "AI extracted from command/response"})
         except Exception as e:
             logger.error(f"Failed to report IOC: {e}")
-
-    async def _record_malware_download(self, url: str, filename: str,
-                                       file_size: int, command: str):
-        """Tell sandbox-store about a wget/curl download event."""
-        try:
-            await self.http_client.post(
-                f"{SANDBOX_URL}/malware/downloads/{self.session_id}",
-                json={
-                    "source_ip": self.source_ip,
-                    "url": url,
-                    "filename": filename,
-                    "file_size": file_size,
-                    "command": command,
-                },
-            )
-        except Exception as e:
-            logger.debug(f"malware download record failed: {e}")
 
     async def _record_mitre_for_command(self, cmd: str):
         """Fire-and-forget: call AI Engine's MITRE matcher for ANY command."""
