@@ -963,6 +963,16 @@ class SessionHandler(asyncssh.SSHServerSession):
             "OLDPWD": self._session_env.get("OLDPWD", "/root"),
             "LANG": "C.UTF-8",
             "TERM": "xterm-256color",
+            # Canary variables must be visible to $VAR expansion (echo $AWS_ACCESS_KEY_ID etc.)
+            "AWS_DEFAULT_REGION": "us-east-1",
+            "AWS_ACCESS_KEY_ID": _FAKE_AWS_ID,
+            "AWS_SECRET_ACCESS_KEY": _FAKE_AWS_SEC,
+            "STRIPE_SECRET_KEY": _FAKE_STRIPE,
+            "DB_HOST": "db-primary.nexopay.internal",
+            "DB_NAME": "nexopay_prod",
+            "NODE_ENV": "production",
+            "NODE_VERSION": "20.11.0",
+            "NEXOPAY_VERSION": "v2.14.3",
         }
         env.update(self._session_env)
 
