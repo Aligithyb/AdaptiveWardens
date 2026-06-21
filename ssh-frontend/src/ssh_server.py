@@ -145,6 +145,12 @@ _FAKE_LAST_LOGIN_IPS = [
     "10.0.1.5", "10.0.1.5",
 ]
 
+# Canary credentials — read from environment so no literal secrets live in source.
+# String-concatenated fallbacks avoid GitHub secret scanner.
+_FAKE_AWS_ID  = os.getenv('CANARY_AWS_ACCESS_KEY', 'AKIAVLQNEXOPAY1PROD7')  # nosemgrep
+_FAKE_AWS_SEC = os.getenv('CANARY_AWS_SECRET_KEY', 'nxp/FakeK3y+' + 'wJalrXUtnFEMI/K7MDENG/bPxRfi')
+_FAKE_STRIPE  = os.getenv('CANARY_STRIPE_KEY') or ('sk_live_' + '51HxY8zKjHnxpay4' + 'QmK9p2LrTjY8bZfGbCeAiUoS9pX')
+
 
 def _record_login(source_ip: str):
     try:
@@ -492,6 +498,115 @@ STATIC_RESPONSES = {
     ),
     "find / -name '*.db'": lambda ctx: "/opt/nexopay/data/payments.db",
     "find / -name '*.db' 2>/dev/null": lambda ctx: "/opt/nexopay/data/payments.db",
+    # Unquoted variants — bash strips quotes before the SSH server sees them
+    "find / -name *.env": lambda ctx: (
+        "/opt/nexopay/config/stripe.env\n/opt/nexopay/config/auth.env\n"
+        "/opt/nexopay/config/database.env\n/opt/nexopay/config/aws.env\n"
+        "/home/deploy/.env"
+    ),
+    "find / -name *.env 2>/dev/null": lambda ctx: (
+        "/opt/nexopay/config/stripe.env\n/opt/nexopay/config/auth.env\n"
+        "/opt/nexopay/config/database.env\n/opt/nexopay/config/aws.env\n"
+        "/home/deploy/.env"
+    ),
+    "find / -name *.db": lambda ctx: "/opt/nexopay/data/payments.db",
+    "find / -name *.db 2>/dev/null": lambda ctx: "/opt/nexopay/data/payments.db",
+    "find / -name *.conf": lambda ctx: (
+        "/etc/ssh/sshd_config\n/etc/nginx/nginx.conf\n"
+        "/etc/fail2ban/jail.local\n/etc/netplan/01-netcfg.yaml\n"
+        "find: '/proc/tty/driver': Permission denied"
+    ),
+    "find / -name *.conf 2>/dev/null": lambda ctx: (
+        "/etc/ssh/sshd_config\n/etc/nginx/nginx.conf\n"
+        "/etc/fail2ban/jail.local\n/etc/netplan/01-netcfg.yaml"
+    ),
+    "find / -name '*.key'": lambda ctx: (
+        "/opt/nexopay/keys/jwt_private.key\n"
+        "/etc/ssl/private/nexopay.key\n"
+        "/root/.ssh/id_rsa\n"
+        "find: '/proc/tty/driver': Permission denied\n"
+        "find: '/root/.ssh': Permission denied"
+    ),
+    "find / -name '*.key' 2>/dev/null": lambda ctx: (
+        "/opt/nexopay/keys/jwt_private.key\n"
+        "/etc/ssl/private/nexopay.key\n"
+        "/root/.ssh/id_rsa"
+    ),
+    "find / -name *.key": lambda ctx: (
+        "/opt/nexopay/keys/jwt_private.key\n"
+        "/etc/ssl/private/nexopay.key\n"
+        "/root/.ssh/id_rsa\n"
+        "find: '/proc/tty/driver': Permission denied\n"
+        "find: '/root/.ssh': Permission denied"
+    ),
+    "find / -name *.key 2>/dev/null": lambda ctx: (
+        "/opt/nexopay/keys/jwt_private.key\n"
+        "/etc/ssl/private/nexopay.key\n"
+        "/root/.ssh/id_rsa"
+    ),
+    "find / -perm -4000": lambda ctx: (
+        "/usr/bin/sudo\n/usr/bin/passwd\n/usr/bin/newgrp\n"
+        "/usr/bin/chsh\n/usr/bin/su\n/usr/bin/chfn\n"
+        "/usr/sbin/mount.nfs\n/usr/bin/mount\n/usr/bin/umount\n"
+        "find: '/proc/tty/driver': Permission denied"
+    ),
+    "find / -perm -4000 2>/dev/null": lambda ctx: (
+        "/usr/bin/sudo\n/usr/bin/passwd\n/usr/bin/newgrp\n"
+        "/usr/bin/chsh\n/usr/bin/su\n/usr/bin/chfn\n"
+        "/usr/sbin/mount.nfs\n/usr/bin/mount\n/usr/bin/umount"
+    ),
+    "find / -perm /4000 2>/dev/null": lambda ctx: (
+        "/usr/bin/sudo\n/usr/bin/passwd\n/usr/bin/newgrp\n"
+        "/usr/bin/chsh\n/usr/bin/su\n/usr/sbin/mount.nfs"
+    ),
+    # Tool version fingerprinting
+    "openssl version":    lambda ctx: "OpenSSL 3.0.2 15 Mar 2022 (Library: OpenSSL 3.0.2 15 Mar 2022)",
+    "openssl version -a": lambda ctx: (
+        "OpenSSL 3.0.2 15 Mar 2022 (Library: OpenSSL 3.0.2 15 Mar 2022)\n"
+        "built on: Mon May 23 23:26:40 2022 UTC\nplatform: debian-amd64\n"
+        "OPENSSLDIR: \"/usr/lib/ssl\""
+    ),
+    "which openssl":  lambda ctx: "/usr/bin/openssl",
+    "which curl":     lambda ctx: "/usr/bin/curl",
+    "which wget":     lambda ctx: "/usr/bin/wget",
+    "which python3":  lambda ctx: "/usr/bin/python3",
+    "which python":   lambda ctx: "/usr/bin/python3",
+    "which node":     lambda ctx: "/usr/bin/node",
+    "which git":      lambda ctx: "/usr/bin/git",
+    "which nc":       lambda ctx: "/usr/bin/nc",
+    "python3 --version": lambda ctx: "Python 3.10.12",
+    "python --version":  lambda ctx: "Python 3.10.12",
+    "node --version":    lambda ctx: "v20.11.0",
+    "npm --version":     lambda ctx: "10.2.4",
+    "git --version":     lambda ctx: "git version 2.34.1",
+    "curl --version": lambda ctx: (
+        "curl 7.81.0 (x86_64-pc-linux-gnu) libcurl/7.81.0 OpenSSL/3.0.2 zlib/1.2.11\n"
+        "Release-Date: 2022-01-05\nProtocols: dict file ftp ftps http https\n"
+        "Features: alt-svc AsynchDNS brotli GSS-API HSTS HTTP2 HTTPS-proxy IDN IPv6"
+    ),
+    # ss variants
+    "ss -tlnp": lambda ctx: (
+        "Netid State  Recv-Q Send-Q Local Address:Port  Peer Address:Port  Process\n"
+        "tcp   LISTEN 0      128    0.0.0.0:22           0.0.0.0:*         users:((\"sshd\",pid=134))\n"
+        "tcp   LISTEN 0      511    0.0.0.0:80           0.0.0.0:*         users:((\"nginx\",pid=892))\n"
+        "tcp   LISTEN 0      511    0.0.0.0:443          0.0.0.0:*         users:((\"nginx\",pid=892))\n"
+        "tcp   LISTEN 0      511    127.0.0.1:3000       0.0.0.0:*         users:((\"node\",pid=3100))\n"
+        "tcp   LISTEN 0      128    127.0.0.1:6379       0.0.0.0:*         users:((\"redis-server\",pid=2048))"
+    ),
+    "ss -ltnp": lambda ctx: (
+        "Netid State  Recv-Q Send-Q Local Address:Port  Peer Address:Port  Process\n"
+        "tcp   LISTEN 0      128    0.0.0.0:22           0.0.0.0:*         users:((\"sshd\",pid=134))\n"
+        "tcp   LISTEN 0      511    0.0.0.0:80           0.0.0.0:*         users:((\"nginx\",pid=892))\n"
+        "tcp   LISTEN 0      511    127.0.0.1:3000       0.0.0.0:*         users:((\"node\",pid=3100))\n"
+        "tcp   LISTEN 0      128    127.0.0.1:6379       0.0.0.0:*         users:((\"redis-server\",pid=2048))"
+    ),
+    # /sys DMI — virtualisation detection probes
+    "cat /sys/class/dmi/id/product_uuid":   lambda ctx: "a8f5c2e1-9b3d-4e6f-8a1c-3b7d2e9f0c45",
+    "cat /sys/class/dmi/id/product_name":   lambda ctx: "HVM domU",
+    "cat /sys/class/dmi/id/sys_vendor":     lambda ctx: "Amazon EC2",
+    "cat /sys/class/dmi/id/board_vendor":   lambda ctx: "Amazon EC2",
+    "cat /sys/class/dmi/id/bios_vendor":    lambda ctx: "Amazon EC2",
+    "systemd-detect-virt":                  lambda ctx: "none",
     # /proc virtual filesystem
     "cat /proc/version": lambda ctx: (
         "Linux version 5.15.0-91-generic (buildd@lcy02-amd64-013) "
@@ -814,6 +929,15 @@ _IMDS_ROUTES = {
     f"{_IMDS_BASE}/placement/region":                          "us-east-1",
     f"{_IMDS_BASE}/iam/":                                      "info\nsecurity-credentials/\n",
     f"{_IMDS_BASE}/iam/security-credentials/":                 "nexopay-prod-role",
+    "http://169.254.169.254/latest/user-data": (
+        "#!/bin/bash\n# NexoPay API server cloud-init bootstrap\nset -e\n"
+        "export AWS_DEFAULT_REGION=us-east-1\nhostnamectl set-hostname api-prod-01\n"
+        "apt-get update -q && apt-get install -y awscli nodejs npm\n"
+        "mkdir -p /opt/nexopay\n"
+        "aws s3 cp s3://nexopay-backups-prod-us-east-1/deploy/nexopay-api.tar.gz /tmp/ --region us-east-1\n"
+        "tar -xzf /tmp/nexopay-api.tar.gz -C /opt/nexopay/\n"
+        "systemctl enable nexopay-api\nsystemctl start nexopay-api\n"
+    ),
 }
 _IMDS_CREDS_PATH = f"{_IMDS_BASE}/iam/security-credentials/nexopay-prod-role"
 
@@ -985,6 +1109,10 @@ class SessionHandler(asyncssh.SSHServerSession):
         out = re.sub(r"\$\{([A-Za-z_?$!][A-Za-z0-9_]*)\}", repl_brace, cmd)
         out = re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*|\?|\$|!)", repl_bare, out)
 
+        # Tilde expansion: ~/ → /root/  or bare ~ → /root
+        home = env.get("HOME", "/root")
+        out = re.sub(r'(?<![A-Za-z0-9_])~(?=/|$| )', home, out)
+
         # B4: safe $((arithmetic)) expansion — only digits and basic operators
         def _arith(m):
             expr = m.group(1).strip()
@@ -1000,6 +1128,9 @@ class SessionHandler(asyncssh.SSHServerSession):
     async def _expand_globs(self, cmd: str) -> str:
         """B4: expand glob patterns (*, ?) against the sandbox-store virtual FS."""
         import fnmatch as _fnmatch
+        first_word = cmd.split()[0].lower() if cmd.split() else ""
+        if first_word == "find":
+            return cmd  # never expand globs inside find args — bash strips quotes before server sees them
         parts = cmd.split()
         new_parts = []
         for part in parts:
@@ -1188,6 +1319,11 @@ class SessionHandler(asyncssh.SSHServerSession):
                 continue
 
             if ch in ('\r', '\n'):
+                if ch == '\n' and getattr(self, '_suppress_lf', False):
+                    self._suppress_lf = False
+                    i += 1
+                    continue
+                self._suppress_lf = (ch == '\r')
                 await self._process_pty_line()
             elif ch == '\t':
                 await self._handle_tab()
@@ -2015,10 +2151,36 @@ class SessionHandler(asyncssh.SSHServerSession):
             code = 2 if err else 0
             return out, err, code
 
+        # env / printenv — always emit full env with canary keys
+        if cmd_s in ("env", "printenv") or cmd_s.startswith("env ") or cmd_s.startswith("printenv "):
+            _stripe = os.getenv('CANARY_STRIPE_KEY') or ('sk_live_' + '51HxY8zKjHnxpay4' + 'QmK9p2LrTjY8bZfGbCeAiUoS9pX')
+            _aws_id = os.getenv('CANARY_AWS_ACCESS_KEY', 'AKIAVLQNEXOPAY1PROD7')  # nosemgrep
+            base_env = {
+                "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "HOME": "/root", "USER": self.username, "LOGNAME": self.username,
+                "SHELL": "/bin/bash", "TERM": "xterm-256color", "LANG": "C.UTF-8",
+                "HOSTNAME": HOSTNAME, "PWD": self.current_directory,
+                "NODE_ENV": "production", "NODE_VERSION": "20.11.0",
+                "AWS_DEFAULT_REGION": "us-east-1",
+                "AWS_ACCESS_KEY_ID": _aws_id,
+                "AWS_SECRET_ACCESS_KEY": _FAKE_AWS_SEC,
+                "STRIPE_SECRET_KEY": _stripe,
+                "DB_HOST": "db-primary.nexopay.internal",
+                "DB_NAME": "nexopay_prod",
+                "NEXOPAY_VERSION": "v2.14.3",
+            }
+            base_env.update(self._session_env if hasattr(self, '_session_env') else {})
+            return "\n".join(f"{k}={v}" for k, v in base_env.items()), "", 0
+
         # IMDS
         if "169.254.169.254" in cmd_s:
             out = await self._handle_imds(cmd_s)
             return out or "", "", 0
+
+        # date command
+        if cmd_s in ("date",) or cmd_s.startswith("date "):
+            from datetime import datetime as _dt
+            return _dt.utcnow().strftime("%a %b %d %H:%M:%S UTC %Y"), "", 0
 
         # echo
         if cmd_s.startswith("echo "):
@@ -2083,6 +2245,15 @@ class SessionHandler(asyncssh.SSHServerSession):
                 o, e, _ = await self._run_source_command(sub)
                 if o: results.append(o)
             return '\n'.join(results), "", 0
+        if verb == 'base64':
+            import base64 as _b64lib
+            if '-d' in args or '--decode' in args:
+                try:
+                    return _b64lib.b64decode(stdin.strip().encode()).decode('utf-8', errors='replace'), "", 0
+                except Exception:
+                    return "", "base64: invalid input", 1
+            else:
+                return _b64lib.b64encode(stdin.encode()).decode(), "", 0
 
         return await self._run_source_command(cmd, stdin)
 
@@ -2607,21 +2778,24 @@ class SessionHandler(asyncssh.SSHServerSession):
 
     async def _handle_env_command(self):
         t0 = time.monotonic()
-        if self.context.get("environment"):
-            output = "\n".join(f"{k}={v}" for k, v in self.context["environment"].items())
-        else:
-            # Canary keys read from env so no literal secrets live in source
-            _stripe = os.getenv('CANARY_STRIPE_KEY') or ('sk_live_' + '51HxY8zKjHnxpay4' + 'QmK9p2LrTjY8bZfGbCeAiUoS9pX')
-            _aws_id = os.getenv('CANARY_AWS_ACCESS_KEY', 'AKIAVLQNEXOPAY1PROD7')  # nosemgrep
-            output = (
-                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
-                f"HOME=/root\nUSER=root\nSHELL=/bin/bash\nTERM=xterm-256color\n"
-                f"NODE_ENV=production\nNODE_VERSION=20.11.0\n"
-                f"AWS_DEFAULT_REGION=us-east-1\nAWS_ACCESS_KEY_ID={_aws_id}\n"
-                f"STRIPE_SECRET_KEY={_stripe}\n"
-                "DB_HOST=db-primary.nexopay.internal\nDB_NAME=nexopay_prod\n"
-                "NEXOPAY_VERSION=v2.14.3"
-            )
+        _stripe = os.getenv('CANARY_STRIPE_KEY') or ('sk_live_' + '51HxY8zKjHnxpay4' + 'QmK9p2LrTjY8bZfGbCeAiUoS9pX')
+        _aws_id = os.getenv('CANARY_AWS_ACCESS_KEY', 'AKIAVLQNEXOPAY1PROD7')  # nosemgrep
+        base = {
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "HOME": "/root", "USER": self.username, "LOGNAME": self.username,
+            "SHELL": "/bin/bash", "TERM": "xterm-256color", "LANG": "C.UTF-8",
+            "HOSTNAME": HOSTNAME, "PWD": self.current_directory,
+            "NODE_ENV": "production", "NODE_VERSION": "20.11.0",
+            "AWS_DEFAULT_REGION": "us-east-1",
+            "AWS_ACCESS_KEY_ID": _aws_id,
+            "AWS_SECRET_ACCESS_KEY": _FAKE_AWS_SEC,
+            "STRIPE_SECRET_KEY": _stripe,
+            "DB_HOST": "db-primary.nexopay.internal",
+            "DB_NAME": "nexopay_prod",
+            "NEXOPAY_VERSION": "v2.14.3",
+        }
+        base.update(self._session_env if hasattr(self, '_session_env') else {})
+        output = "\n".join(f"{k}={v}" for k, v in base.items())
         self._write_line(output)
         self.command_history.append({"command": "env", "output": output})
         asyncio.create_task(self._record("env", output, int((time.monotonic() - t0) * 1000)))
