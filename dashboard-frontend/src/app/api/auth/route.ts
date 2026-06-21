@@ -38,9 +38,11 @@ export async function POST(req: NextRequest) {
     });
 
     const res = NextResponse.json({ ok: true, role: userData.role, fullName: userData.full_name });
+    // secure:true requires HTTPS — set false when no TLS (plain HTTP deployment)
+    const useSecure = process.env.COOKIE_SECURE === 'true';
     res.cookies.set('session', token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: useSecure,
       sameSite: 'lax',
       maxAge: 60 * 60 * 4, // 4 hours
       path: '/',
