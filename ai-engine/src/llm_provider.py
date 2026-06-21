@@ -426,5 +426,33 @@ class LLMProvider:
             if base == "uname" and "-a" in command:
                 return "Linux api-prod-01 5.15.0-91-generic #101-Ubuntu SMP Tue Nov 14 13:30:08 UTC 2023 x86_64 x86_64 x86_64 GNU/Linux"
             return "root"
+        elif base == "top":
+            return ("top - 04:35:37 up 149 days, 21:46,  1 user,  load average: 2.14, 1.98, 1.87\n"
+                    "Tasks: 142 total,   1 running, 141 sleeping,   0 stopped,   0 zombie\n"
+                    "%Cpu(s):  3.2 us,  1.1 sy,  0.0 ni, 95.4 id,  0.2 wa,  0.0 hi,  0.1 si,  0.0 st\n"
+                    "MiB Mem :  16000.0 total,   3050.0 free,   5110.0 used,   7840.0 buff/cache\n\n"
+                    "    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND\n"
+                    "   3100 nexopay   20   0  921344 172032  18234 S   2.1   1.1  18:34.12 node\n"
+                    "      1 root      20   0   22532   9820   6700 S   0.0   0.1   0:12.00 systemd")
+        elif base == "vmstat":
+            return ("procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----\n"
+                    " r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st\n"
+                    " 1  0      0 3123412 204800 8026076    0    0     8    24  102  198  3  1 95  1  0")
+        elif base == "arch":
+            return "x86_64"
+        elif base == "nproc":
+            return "4"
+        elif base == "users":
+            return "root"
+        elif base == "groups":
+            return "root adm sudo"
+        elif base == "service":
+            return " * all services are running"
+        elif base == "docker":
+            return ("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. "
+                    "Is the docker daemon running?")
+        elif base == "kubectl":
+            return ("The connection to the server localhost:8080 was refused - "
+                    "did you specify the right host or port?")
         else:
             return f"bash: {base}: command not found"

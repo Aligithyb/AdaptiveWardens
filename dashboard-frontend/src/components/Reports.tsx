@@ -91,6 +91,25 @@ function generatePrintHTML(session: any, detail: any, aiReport?: any): string {
       ? '<span style="background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:4px;font-size:10px">AI Generated</span>'
       : '<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:4px;font-size:10px">Template (AI unavailable)</span>';
 
+    const dataAtRisk = (aiReport.data_at_risk || []);
+    const dataRiskSection = dataAtRisk.length ? `
+    <h3 style="font-size:13px;color:#b91c1c;margin:12px 0 4px">Data at Risk</h3>
+    <ul style="margin:0 0 12px;padding-left:20px;line-height:1.7;color:#991b1b">
+      ${dataAtRisk.map((d: string) => `<li>${d}</li>`).join('')}
+    </ul>` : '';
+
+    const behaviour = aiReport.behavioural_analysis || {};
+    const behaviourRows = Object.entries(behaviour).map(([cat, cmds]: [string, any]) => `
+      <tr>
+        <td style="text-transform:capitalize;font-weight:600">${cat}</td>
+        <td>${(cmds || []).map((c: string) => `<code>${(c ?? '').replace(/</g, '&lt;')}</code>`).join('<br>')}</td>
+      </tr>`).join('');
+    const behaviourSection = behaviourRows ? `
+    <h3 style="font-size:13px;color:#334155;margin:12px 0 4px">Behavioural Analysis</h3>
+    <table style="border-collapse:collapse;width:100%;margin-bottom:12px">
+      <thead><tr><th style="background:#dcfce7;padding:6px 10px;text-align:left;font-size:11px">Category</th><th style="background:#dcfce7;padding:6px 10px;text-align:left;font-size:11px">Evidence (commands)</th></tr></thead>
+      <tbody>${behaviourRows}</tbody></table>` : '';
+
     aiSection = `
   <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:16px;margin-bottom:24px">
     <h2 style="color:#15803d;border-bottom:2px solid #86efac;padding-bottom:6px;margin:0 0 12px">
@@ -112,6 +131,9 @@ function generatePrintHTML(session: any, detail: any, aiReport?: any): string {
     ${iocNotableRows ? `<table style="border-collapse:collapse;width:100%;margin-bottom:12px">
       <thead><tr><th style="background:#dcfce7;padding:6px 10px;text-align:left;font-size:11px">Type</th><th style="background:#dcfce7;padding:6px 10px;text-align:left;font-size:11px">Value</th><th style="background:#dcfce7;padding:6px 10px;text-align:left;font-size:11px">Significance</th></tr></thead>
       <tbody>${iocNotableRows}</tbody></table>` : '<p style="color:#94a3b8;margin:0 0 12px">No notable IOCs.</p>'}
+
+    ${dataRiskSection}
+    ${behaviourSection}
 
     <h3 style="font-size:13px;color:#334155;margin:12px 0 4px">Severity Justification</h3>
     <p style="margin:0 0 12px;line-height:1.5">${aiReport.severity_justification ?? ''}</p>
@@ -344,6 +366,46 @@ function AIReportModal({
               </div>
             )}
           </section>
+
+          {/* Data at Risk */}
+          {(report.data_at_risk || []).length > 0 && (
+            <section>
+              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
+                Data at Risk
+              </h3>
+              <div className="space-y-1.5">
+                {(report.data_at_risk || []).map((d: string, i: number) => (
+                  <div key={i} className="flex items-start gap-2 p-2.5 bg-red-500/5 border border-red-500/20 rounded-lg">
+                    <ShieldAlert className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                    <p className="text-sm text-red-200">{d}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* Behavioural Analysis */}
+          {report.behavioural_analysis && Object.keys(report.behavioural_analysis).length > 0 && (
+            <section>
+              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
+                Behavioural Analysis
+              </h3>
+              <div className="space-y-2">
+                {Object.entries(report.behavioural_analysis).map(([cat, cmds]: [string, any], i: number) => (
+                  <div key={i} className="p-3 bg-slate-800/50 border border-slate-700 rounded-lg">
+                    <p className="text-sm font-medium text-cyan-300 capitalize mb-1.5">{cat}</p>
+                    <div className="space-y-1">
+                      {(cmds || []).map((c: string, j: number) => (
+                        <code key={j} className="block text-xs font-mono text-emerald-400 bg-slate-950 rounded px-2 py-1 break-all">
+                          {c}
+                        </code>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* Severity Justification */}
           <section>

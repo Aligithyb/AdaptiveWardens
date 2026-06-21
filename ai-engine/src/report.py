@@ -32,6 +32,10 @@ The JSON object MUST have exactly these keys:
   Reference VirusTotal / AbuseIPDB data if available (e.g. "VirusTotal flagged this IP as malicious by 12 vendors").
 - recommended_actions: array of strings — concrete defensive actions (block IP, rotate credentials, patch CVE, etc.).
   If the IP has a high AbuseIPDB confidence score (≥80) or multiple VT detections, prioritise firewall block as action #1.
+- data_at_risk: array of strings — specific sensitive assets the attacker accessed or attempted to access
+  (e.g. "AWS IAM access keys", "Stripe live API key", "customer payment database"). Empty array if none.
+- behavioural_analysis: object mapping a behaviour category (e.g. "reconnaissance", "credential access",
+  "persistence", "data exfiltration") to an array of the specific commands that evidence it. Empty object if unclear.
 
 Return ONLY the JSON object. No markdown, no code fences, no prose outside the JSON."""
 
@@ -46,6 +50,78 @@ def _strip_fences(text: str) -> str:
     lines = text.strip().splitlines()
     lines = [l for l in lines if not _FENCE_RE.match(l.strip())]
     return "\n".join(lines).strip()
+
+
+def _categorize_commands(commands: list) -> dict:
+    """Bucket the attacker's commands into behavioural categories so the report
+    can describe *what they actually did*, not just count techniques."""
+    cats = {
+        "recon": [], "credential_access": [], "discovery": [],
+        "persistence": [], "exfiltration": [], "defense_evasion": [],
+        "lateral_movement": [], "execution": [],
+    }
+    patterns = {
+        "recon": ["whoami", "id", "hostname", "uname", "lscpu", "lsb_release",
+                  "ps ", "ps aux", "netstat", "ss ", "ifconfig", "ip a", "ip addr",
+                  "env", "printenv", "uptime", "w ", "who", "top", "free"],
+        "credential_access": ["/etc/shadow", "/etc/passwd", ".aws/credentials",
+                              ".aws/config", ".ssh/", "id_rsa", ".env", "stripe",
+                              "credentials", "password", "secret", "token",
+                              "config.json", ".git-credentials", "sqlite3", ".npmrc"],
+        "discovery": ["find ", "ls ", "cat ", "grep ", "locate ", "which ",
+                     "169.254.169.254", "imds", "meta-data", "dmidecode",
+                     "systemd-detect-virt", "/sys/class/dmi"],
+        "persistence": ["crontab", "cron", "systemctl enable", "authorized_keys",
+                       ".bashrc", ".bash_profile", "/etc/rc.local", "useradd",
+                       "adduser", "nohup"],
+        "exfiltration": ["scp ", "rsync ", "curl -T", "wget --post", "nc ",
+                        "base64", "tar ", "gzip ", "> /tmp/"],
+        "defense_evasion": ["history -c", "unset histfile", "rm -rf", "shred",
+                           "iptables -F", "> /var/log", "kill ", "pkill"],
+        "lateral_movement": ["ssh ", "telnet ", "rdp", "psql -h", "mysql -h",
+                            "redis-cli -h", "ping "],
+        "execution": ["wget", "curl", "python", "node ", "bash -c", "sh -c",
+                     "chmod +x", "./", "eval"],
+    }
+    for c in commands:
+        cmd = (c.get("command", "") or "").lower()
+        if not cmd:
+            continue
+        for cat, keys in patterns.items():
+            if any(k in cmd for k in keys):
+                cats[cat].append(c.get("command", ""))
+    return {k: v for k, v in cats.items() if v}
+
+
+def _assess_data_at_risk(commands: list) -> list:
+    """Identify which sensitive assets the attacker touched — the heart of the
+    'so what' analysis a SOC analyst needs."""
+    assets = []
+    seen = set()
+    markers = [
+        (".aws/credentials", "AWS IAM access keys (cloud account takeover risk)"),
+        ("aws_access_key", "AWS IAM access keys (cloud account takeover risk)"),
+        ("security-credentials", "AWS instance-role credentials via IMDS (cloud pivot)"),
+        ("stripe", "Stripe live API key (payment fraud / financial loss)"),
+        (".env", "Application secrets file (.env)"),
+        ("config.json", "Application configuration with DB credentials"),
+        ("/etc/shadow", "Password hashes (offline cracking)"),
+        ("/etc/passwd", "System account enumeration"),
+        ("id_rsa", "SSH private key (lateral movement)"),
+        (".ssh/", "SSH key material / known_hosts"),
+        ("payments.db", "Customer payment database (PII + card data)"),
+        ("webhook_secret", "Webhook signing secrets (transaction forgery)"),
+        ("api_token", "API tokens (authenticated API abuse)"),
+        (".git-credentials", "Git credentials (source code access)"),
+        ("jwt_private", "JWT signing key (auth bypass / token forgery)"),
+    ]
+    for c in commands:
+        cmd = (c.get("command", "") or "").lower()
+        for marker, desc in markers:
+            if marker in cmd and desc not in seen:
+                seen.add(desc)
+                assets.append(desc)
+    return assets
 
 
 def _deterministic_report(payload: dict) -> dict:
@@ -65,6 +141,18 @@ def _deterministic_report(payload: dict) -> dict:
         tactic_counts[tac] = tactic_counts.get(tac, 0) + 1
     top_tactics = sorted(tactic_counts.items(), key=lambda x: -x[1])
     tactic_str = ", ".join(t for t, _ in top_tactics[:3]) if top_tactics else "no specific tactics"
+
+    # Behavioural analysis from the raw commands
+    categories = _categorize_commands(commands)
+    data_at_risk = _assess_data_at_risk(commands)
+    cat_labels = {
+        "recon": "system reconnaissance", "credential_access": "credential access",
+        "discovery": "discovery/enumeration", "persistence": "persistence",
+        "exfiltration": "data exfiltration", "defense_evasion": "defense evasion",
+        "lateral_movement": "lateral movement", "execution": "code execution",
+    }
+    observed_behaviours = [cat_labels[k] for k in categories]
+    behaviour_str = ", ".join(observed_behaviours) if observed_behaviours else "basic interaction"
 
     # Extract TI highlights
     vt = ti.get("virustotal") or {}
@@ -109,45 +197,90 @@ def _deterministic_report(payload: dict) -> dict:
         actions.append(f"PRIORITY: Block source IP {src_ip} at perimeter firewall — confirmed known-malicious by threat intelligence.")
     else:
         actions.append(f"Block source IP {src_ip} at perimeter firewall.")
+    if "credential_access" in categories:
+        actions.append("Rotate ALL credentials the attacker may have viewed: AWS access keys, "
+                       "Stripe API keys, database passwords, JWT signing keys, and SSH keys.")
+    if any("security-credentials" in (c.get("command", "")) or "169.254.169.254" in (c.get("command", "")) for c in commands):
+        actions.append("Rotate the EC2 instance IAM role credentials and audit CloudTrail for use of the exposed role.")
     if any("shadow" in (c.get("command", "")) for c in commands):
-        actions.append("Rotate all system credentials — attacker attempted to read /etc/shadow.")
-    if any("wget" in (c.get("command", "")) or "curl" in (c.get("command", "")) for c in commands):
-        actions.append("Review outbound HTTP/S connections for exfiltration from this host.")
-    if any("crontab" in (c.get("command", "")) or "bashrc" in (c.get("command", "")) for c in commands):
-        actions.append("Audit cron jobs and shell startup files for persistence mechanisms.")
+        actions.append("Force a password reset for all local accounts — attacker attempted to read /etc/shadow.")
+    if "exfiltration" in categories:
+        actions.append("Review outbound network logs for data exfiltration; check for large transfers from this host.")
+    if "execution" in categories and any("wget" in (c.get("command", "")) or "curl" in (c.get("command", "")) for c in commands):
+        actions.append("Analyse any downloaded payloads in the Malware Analysis panel (VirusTotal + sandbox).")
+    if "persistence" in categories:
+        actions.append("Audit cron jobs, systemd units, authorized_keys, and shell startup files for persistence.")
     if abuse.get("isp"):
         actions.append(f"Submit abuse report to ISP '{abuse['isp']}' with session evidence.")
     actions.append("Review this session in full via SessionPlayback and export for forensic records.")
 
-    # Severity justification includes TI
+    # Severity justification includes TI + behavioural evidence
     sev_ti = ""
     if vt_malicious:
         sev_ti += f" VirusTotal flagged this IP as malicious by {vt_malicious} vendor(s)."
     if abuse_score:
         sev_ti += f" AbuseIPDB reports a confidence score of {abuse_score}/100."
+    sev_evidence = ""
+    if "credential_access" in categories:
+        sev_evidence += f" Attacker accessed {len(categories['credential_access'])} credential-bearing resource(s)."
+    if data_at_risk:
+        sev_evidence += f" Sensitive assets exposed: {len(data_at_risk)}."
+
+    # Richer attacker-objective narrative grounded in what they actually did
+    if "credential_access" in categories or data_at_risk:
+        objective = (
+            "The attacker pursued credential theft: after reconnaissance, they targeted high-value "
+            "secrets (cloud keys, payment API keys, database credentials). This is consistent with "
+            "financially-motivated access-broker or ransomware-precursor activity."
+        )
+    elif "persistence" in categories:
+        objective = ("The attacker sought to establish persistence on the host, indicating intent to "
+                     "maintain long-term access rather than a smash-and-grab.")
+    elif "exfiltration" in categories:
+        objective = "The attacker attempted to stage or exfiltrate data from the environment."
+    elif observed_behaviours:
+        objective = (f"The attacker performed {behaviour_str}, mapping the environment for valuable "
+                     "data and follow-on attack opportunities.")
+    else:
+        objective = ("The attacker performed light interaction with the host, likely automated "
+                     "scanning or an early-stage foothold check.")
+
+    # Data-at-risk surfaced as notable IOCs too
+    for desc in data_at_risk[:6]:
+        notable.append({"type": "asset", "value": desc.split(" (")[0], "significance": desc})
+
+    exec_behaviour = (
+        f" Observed behaviours: {behaviour_str}." if observed_behaviours else ""
+    )
+    data_risk_line = (
+        f" Sensitive data exposed to the attacker includes: {'; '.join(data_at_risk)}."
+        if data_at_risk else ""
+    )
 
     return {
         "executive_summary": (
             f"A {risk.lower()}-risk SSH session was recorded from {src_ip} ({country})."
             f"{ti_summary} "
-            f"The attacker executed {len(commands)} command(s) and triggered {len(techniques)} MITRE technique(s) "
-            f"across {len(tactic_counts)} tactic(s) ({tactic_str}). "
-            f"This report was generated from structured data (AI narrative unavailable)."
+            f"The attacker executed {len(commands)} command(s) spanning {len(tactic_counts)} MITRE "
+            f"tactic(s) ({tactic_str})."
+            f"{exec_behaviour}"
+            f"{data_risk_line}"
         ),
-        "attacker_objective": (
-            f"Based on observed tactics ({tactic_str}), the attacker appears to have been performing "
-            "reconnaissance and exploring the environment for valuable data or persistence opportunities."
-        ),
+        "attacker_objective": objective,
         "kill_chain": kill_chain,
         "notable_iocs": notable,
         "severity_justification": (
             f"Risk assessed as {risk}."
-            f"{sev_ti} "
-            f"{len(techniques)} MITRE technique(s) detected; "
-            f"{len(iocs)} IOC(s) extracted. "
-            "See full session commands for detailed evidence."
+            f"{sev_ti}"
+            f"{sev_evidence} "
+            f"{len(techniques)} MITRE technique(s) and {len(iocs)} IOC(s) were observed across "
+            f"{len(commands)} command(s)."
         ),
         "recommended_actions": actions,
+        "behavioural_analysis": {
+            cat_labels[k]: v[:8] for k, v in categories.items()
+        },
+        "data_at_risk": data_at_risk,
         "source": "deterministic",
     }
 
