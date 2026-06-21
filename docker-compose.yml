@@ -159,16 +159,19 @@ services:
         condition: service_started
 
   dashboard-frontend:
-    build: ./dashboard-frontend
+    build:
+      context: ./dashboard-frontend
+      args:
+        # NEXT_PUBLIC_* values are inlined at build time, so pass it as a build arg
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8003}
     container_name: soc-dashboard
     ports:
       - "3000:3000"
     networks:
       - prod-internal
       - dmz
-    volumes:
-      - ./dashboard-frontend:/app
-      - /app/node_modules # Don't overwrite node_modules with host ones
+    # NOTE: no source bind-mount on purpose — the container serves the compiled
+    # production build baked into the image, never stale host files.
     environment:
       - NODE_ENV=production
       - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:?Set DASHBOARD_PASSWORD in .env}

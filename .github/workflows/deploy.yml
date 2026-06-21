@@ -16,8 +16,14 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
+            set -e
             cd ~/AdaptiveWardens
-            git pull origin main
+            # Force the box to exactly match the (possibly rewritten) remote main.
+            # A plain `git pull` fails on diverged history and silently leaves old code.
+            git fetch origin main
+            git reset --hard origin/main
+            # Free disk so a clean image rebuild doesn't fail on a small instance
+            docker system prune -f || true
             cat > .env << ENVEOF
             GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
             DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }}
@@ -39,6 +45,9 @@ jobs:
             ENABLE_RATE_LIMITING=true
             NEXT_PUBLIC_API_URL=http://18.207.156.94:8003
             ENVEOF
-            docker compose build --no-cache
-            docker compose up -d
+            # With no source bind-mount on the frontend, a normal build picks up
+            # new code via Docker's COPY-layer cache busting (fast, low disk).
+            docker compose build
+            docker compose up -d --remove-orphans --force-recreate
+            docker image prune -f || true
             docker compose ps
