@@ -988,6 +988,50 @@ STATIC_RESPONSES = {
         "[2026-04-29 00:20:11] WARN  rate_limit: 429 returned for IP 185.220.101.45\n"
         "[2026-04-29 00:21:33] INFO  webhook dispatched: merchant m_3xNp4y1234ABCD"
     ),
+    # ── Privilege escalation / capabilities ─────────────────────────────────
+    "getcap -r /": lambda ctx: (
+        "/usr/bin/ping cap_net_raw=ep\n"
+        "/usr/bin/python3.10 cap_setuid,cap_setgid+ep\n"
+        "/usr/bin/node cap_net_bind_service+ep\n"
+        "/usr/sbin/tcpdump cap_net_admin,cap_net_raw=eip"
+    ),
+    "getcap -r / 2>/dev/null": lambda ctx: (
+        "/usr/bin/ping cap_net_raw=ep\n"
+        "/usr/bin/python3.10 cap_setuid,cap_setgid+ep\n"
+        "/usr/bin/node cap_net_bind_service+ep\n"
+        "/usr/sbin/tcpdump cap_net_admin,cap_net_raw=eip"
+    ),
+    # ── File-manipulation — silent success (deception: attacker thinks it worked) ─
+    "chmod 777 /etc/passwd": lambda ctx: "",
+    "chmod 777 /etc/shadow": lambda ctx: "",
+    "chmod +x /tmp/linpeas.sh": lambda ctx: "",
+    "chmod +x /tmp/nc": lambda ctx: "",
+    # ── User management (let attacker believe backdoor was created) ───────────
+    "useradd -m -s /bin/bash -G sudo backdoor": lambda ctx: "",
+    "passwd backdoor": lambda ctx: "Enter new UNIX password: \nRetype new UNIX password: \npasswd: password updated successfully",
+    # ── AWS CLI (installed via user-data bootstrap) ───────────────────────────
+    "aws s3 ls": lambda ctx: (
+        "2026-01-15 08:12:34 nexopay-backups-prod-us-east-1\n"
+        "2026-02-03 14:55:01 nexopay-assets-prod\n"
+        "2026-03-17 09:22:10 nexopay-terraform-state"
+    ),
+    # ── lscpu (sometimes matched by startswith("ls") bug — also add explicit) ─
+    "lscpu": lambda ctx: (
+        "Architecture:            x86_64\n"
+        "CPU op-mode(s):          32-bit, 64-bit\n"
+        "Byte Order:              Little Endian\n"
+        "CPU(s):                  4\n"
+        "On-line CPU(s) list:     0-3\n"
+        "Thread(s) per core:      2\n"
+        "Core(s) per socket:      2\n"
+        "Socket(s):               1\n"
+        "Vendor ID:               GenuineIntel\n"
+        "Model name:              Intel(R) Xeon(R) E5-2686 v4 @ 2.30GHz\n"
+        "CPU MHz:                 2300.000\n"
+        "Virtualization:          VT-x\n"
+        "Hypervisor vendor:       Xen\n"
+        "Virtualization type:     full"
+    ),
 }
 
 # Commands available for Tab completion
@@ -1768,7 +1812,7 @@ class SessionHandler(asyncssh.SSHServerSession):
             self._set_exit(0)
             asyncio.create_task(self._persist_state('cwd', 'cwd', self.current_directory))
             self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
-        elif (cmd.startswith("ls") or cmd.startswith("cat ") or
+        elif (re.match(r'^ls(\s|$)', cmd) or cmd.startswith("cat ") or
               cmd.startswith("touch ") or cmd.startswith("mkdir ")):
             await self._handle_fs_command(cmd)
         elif cmd.startswith("ps"):
@@ -1781,6 +1825,8 @@ class SessionHandler(asyncssh.SSHServerSession):
             await self._handle_ssh_internal(cmd)
         elif re.match(r'^(nc|ncat|netcat|telnet)\s', cmd):
             await self._handle_decoy_service(cmd)
+        elif re.match(r'^(for|while|until|if)\s', cmd):
+            await self._handle_shell_construct(cmd)
         else:
             await self._handle_generic_command(cmd)
 
@@ -2354,7 +2400,28 @@ class SessionHandler(asyncssh.SSHServerSession):
                 return ("root:x:0:\nsudo:x:27:deploy\ndeploy:x:1001:\n"
                         "nexopay:x:1002:\npostgres:x:117:"), "", 0
             if db == "hosts":
-                return "127.0.0.1       localhost", "", 0
+                _hosts_table = {
+                    "localhost":                        "127.0.0.1       localhost",
+                    "api-prod-01":                      "10.0.1.45       api-prod-01.nexopay.internal api-prod-01",
+                    "api-prod-01.nexopay.internal":     "10.0.1.45       api-prod-01.nexopay.internal api-prod-01",
+                    "api-prod-02.nexopay.internal":     "10.0.1.46       api-prod-02.nexopay.internal",
+                    "db-primary":                       "10.0.1.10       db-primary.nexopay.internal db-primary",
+                    "db-primary.nexopay.internal":      "10.0.1.10       db-primary.nexopay.internal db-primary",
+                    "db-replica.nexopay.internal":      "10.0.1.11       db-replica.nexopay.internal",
+                    "cache-01":                         "10.0.1.20       cache-01.nexopay.internal cache-01",
+                    "cache-01.nexopay.internal":        "10.0.1.20       cache-01.nexopay.internal cache-01",
+                    "bastion":                          "10.0.1.5        bastion.nexopay.internal bastion",
+                    "bastion.nexopay.internal":         "10.0.1.5        bastion.nexopay.internal bastion",
+                    "monitoring.nexopay.internal":      "10.0.1.30       monitoring.nexopay.internal",
+                    "ci.nexopay.internal":              "10.0.1.50       ci.nexopay.internal",
+                }
+                query = args[1].lower() if len(args) > 1 else ""
+                if query:
+                    entry = _hosts_table.get(query)
+                    if entry:
+                        return entry, "", 0
+                    return "", "", 2
+                return "\n".join(_hosts_table.values()), "", 0
             return "", "", 2
 
         if base == "ulimit":
@@ -2764,6 +2831,42 @@ class SessionHandler(asyncssh.SSHServerSession):
         self.command_history.append({"command": cmd, "output": output})
         asyncio.create_task(self._record(cmd, output, int((time.monotonic() - t0) * 1000)))
         self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
+
+    async def _handle_shell_construct(self, cmd: str):
+        """Execute a shell loop/conditional by simulating its body output via AI.
+        Handles: for … do … done, while … do … done, if … then … fi"""
+        t0 = time.monotonic()
+        # Common case: `for h in <IPs>; do ping -c1 … && echo ALIVE:$h; done`
+        # Extract the body and simulate execution
+        for_m = re.match(r'^for\s+(\w+)\s+in\s+(.+?);\s*do\s+(.+?);\s*done\s*$', cmd, re.DOTALL)
+        if for_m:
+            var, items_str, body = for_m.group(1), for_m.group(2), for_m.group(3)
+            items = items_str.split()
+            out_lines = []
+            for item in items[:20]:  # cap at 20 iterations
+                local_body = body.replace(f"${var}", item).replace(f"${{{var}}}", item)
+                # ping simulation
+                if "ping" in local_body and "echo" in local_body:
+                    echo_m = re.search(r'echo\s+(.+)', local_body)
+                    label = echo_m.group(1).replace(f"${var}", item) if echo_m else f"ALIVE:{item}"
+                    out_lines.append(f"PING {item}: 1 packet transmitted, 1 received, 0% packet loss")
+                    out_lines.append(label)
+                elif "ping" in local_body:
+                    out_lines.append(f"PING {item}: 1 packet transmitted, 1 received, 0% packet loss")
+                elif "echo" in local_body:
+                    echo_m = re.search(r'echo\s+(.*)', local_body)
+                    out_lines.append(echo_m.group(1) if echo_m else item)
+            output = "\n".join(out_lines)
+            elapsed = time.monotonic() - t0
+            if output:
+                self._write_line(output)
+            self._set_exit(0)
+            await asyncio.sleep(max(0, 0.5 - elapsed))
+            self.chan.write(f"{self.username}@{HOSTNAME}:{self.current_directory}$ ")
+            return
+
+        # Fallback: route complex shell constructs to AI
+        await self._handle_generic_command(cmd)
 
     async def _handle_decoy_service(self, cmd: str):
         t0 = time.monotonic()
