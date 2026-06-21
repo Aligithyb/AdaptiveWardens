@@ -1,6 +1,7 @@
 "use client"
 
-import { Shield, Eye, EyeOff, AlertTriangle, Lock } from 'lucide-react';
+import { Eye, EyeOff, AlertTriangle, Lock } from 'lucide-react';
+import { BrandLogo } from '@/components/BrandLogo';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
@@ -59,8 +60,8 @@ export default function LoginPage() {
           {/* Logo + Title */}
           <div className="text-center mb-10">
             <div className="relative inline-block mb-5">
-              <div className="w-20 h-20 bg-gradient-to-br from-cyan-500 to-blue-700 rounded-2xl flex items-center justify-center shadow-lg shadow-cyan-500/20">
-                <Shield className="w-10 h-10 text-white" />
+              <div className="drop-shadow-[0_0_18px_rgba(6,182,212,0.45)]">
+                <BrandLogo size={80} />
               </div>
               <span className="absolute -bottom-1 -right-1 w-5 h-5 bg-green-500 rounded-full border-2 border-white dark:border-slate-950 flex items-center justify-center">
                 <span className="w-1.5 h-1.5 bg-white rounded-full" />

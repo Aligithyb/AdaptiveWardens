@@ -1,5 +1,6 @@
 import { Activity, Shield, Map, BarChart3, FileText, Layers, Globe2, ShieldAlert, Lock, ShieldCheck, Bug } from 'lucide-react';
 import { SessionUser, canAccess } from '@/lib/auth';
+import { BrandLogo } from './BrandLogo';
 
 interface SidebarProps {
   activeView: string;
@@ -25,12 +26,10 @@ export function Sidebar({ activeView, setActiveView, user }: SidebarProps) {
     <div className="w-64 bg-slate-900 border-r border-slate-800 flex flex-col">
       <div className="p-6 border-b border-slate-800">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-gradient-to-br from-cyan-500 to-blue-600 rounded-lg flex items-center justify-center">
-            <Shield className="w-6 h-6" />
-          </div>
+          <BrandLogo size={40} />
           <div>
-            <h1 className="text-slate-100">AdaptiveWardens</h1>
-            <p className="text-xs text-slate-500">SOC Platform</p>
+            <h1 className="text-slate-100 font-bold text-sm leading-tight">AdaptiveWardens</h1>
+            <p className="text-xs text-cyan-500/70 tracking-wide uppercase" style={{ fontSize: '0.65rem' }}>SOC Platform</p>
           </div>
         </div>
       </div>
