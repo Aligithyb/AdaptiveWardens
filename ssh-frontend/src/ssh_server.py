@@ -607,6 +607,110 @@ STATIC_RESPONSES = {
     "cat /sys/class/dmi/id/board_vendor":   lambda ctx: "Amazon EC2",
     "cat /sys/class/dmi/id/bios_vendor":    lambda ctx: "Amazon EC2",
     "systemd-detect-virt":                  lambda ctx: "none",
+    # ---- Common recon / admin commands (avoid "command not found" tells) ----
+    "top -bn1": lambda ctx: (
+        "top - 04:35:37 up 149 days, 21:46,  1 user,  load average: 2.14, 1.98, 1.87\n"
+        "Tasks: 142 total,   1 running, 141 sleeping,   0 stopped,   0 zombie\n"
+        "%Cpu(s):  3.2 us,  1.1 sy,  0.0 ni, 95.4 id,  0.2 wa,  0.0 hi,  0.1 si,  0.0 st\n"
+        "MiB Mem :  16000.0 total,   3050.0 free,   5110.0 used,   7840.0 buff/cache\n"
+        "MiB Swap:   2048.0 total,   2048.0 free,      0.0 used.  10620.0 avail Mem\n\n"
+        "    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND\n"
+        "   3100 nexopay   20   0  921344 172032  18234 S   2.1   1.1  18:34.12 node\n"
+        "   2150 postgres  20   0  341248  86016  12044 S   0.3   0.5   1:23.04 postgres\n"
+        "    892 root      20   0  144896   6144   4002 S   0.1   0.0   0:05.11 nginx\n"
+        "   2048 redis     20   0  126976  51200   3210 S   0.1   0.3   0:45.02 redis-server\n"
+        "      1 root      20   0   22532   9820   6700 S   0.0   0.1   0:12.00 systemd"
+    ),
+    "vmstat": lambda ctx: (
+        "procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----\n"
+        " r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st\n"
+        " 1  0      0 3123412 204800 8026076    0    0     8    24  102  198  3  1 95  1  0"
+    ),
+    "iostat": lambda ctx: (
+        "Linux 5.15.0-91-generic (api-prod-01) \t06/21/2026 \t_x86_64_\t(4 CPU)\n\n"
+        "avg-cpu:  %user   %nice %system %iowait  %steal   %idle\n"
+        "           3.21    0.00    1.12    0.20    0.00   95.47\n\n"
+        "Device             tps    kB_read/s    kB_wrtn/s    kB_read    kB_wrtn\n"
+        "sda              12.34       210.45       512.88   18923456   46123008\n"
+        "sdb               4.10        88.21       190.04    7934512   17102336"
+    ),
+    "mpstat": lambda ctx: (
+        "Linux 5.15.0-91-generic (api-prod-01) \t06/21/2026 \t_x86_64_\t(4 CPU)\n\n"
+        "04:35:37     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle\n"
+        "04:35:37     all    3.21    0.00    1.12    0.20    0.00    0.10    0.00    0.00    0.00   95.37"
+    ),
+    "dmidecode": lambda ctx: "/dev/mem: Permission denied",
+    "lastlog": lambda ctx: (
+        "Username         Port     From             Latest\n"
+        "root             pts/0    10.0.1.5         Sun Jun 21 04:35:12 +0000 2026\n"
+        "deploy           pts/1    10.0.1.50        Fri Jun 19 18:32:04 +0000 2026\n"
+        "nexopay                                    **Never logged in**\n"
+        "postgres                                   **Never logged in**"
+    ),
+    "users": lambda ctx: "root",
+    "groups": lambda ctx: "root adm sudo",
+    "arch": lambda ctx: "x86_64",
+    "nproc": lambda ctx: "4",
+    "getconf long_bit": lambda ctx: "64",
+    "jobs": lambda ctx: "",
+    "pgrep node": lambda ctx: "3100\n3101",
+    "pgrep nginx": lambda ctx: "892\n893",
+    "pidof sshd": lambda ctx: "134",
+    "pidof nginx": lambda ctx: "893 892",
+    "docker": lambda ctx: (
+        "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. "
+        "Is the docker daemon running?"
+    ),
+    "docker ps": lambda ctx: (
+        "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. "
+        "Is the docker daemon running?"
+    ),
+    "kubectl": lambda ctx: (
+        "The connection to the server localhost:8080 was refused - "
+        "did you specify the right host or port?"
+    ),
+    "service --status-all": lambda ctx: (
+        " [ + ]  cron\n [ + ]  nginx\n [ + ]  postgresql\n [ + ]  redis-server\n"
+        " [ + ]  ssh\n [ - ]  apparmor\n [ + ]  nexopay-api"
+    ),
+    "service nginx status": lambda ctx: " * nginx is running",
+    "service ssh status": lambda ctx: " * sshd is running",
+    "systemctl list-units": lambda ctx: (
+        "UNIT                       LOAD   ACTIVE SUB     DESCRIPTION\n"
+        "cron.service               loaded active running Regular background program processing daemon\n"
+        "nginx.service              loaded active running A high performance web server\n"
+        "nexopay-api.service        loaded active running NexoPay API Server\n"
+        "postgresql.service         loaded active running PostgreSQL RDBMS\n"
+        "redis-server.service       loaded active running Advanced key-value store\n"
+        "ssh.service                loaded active running OpenBSD Secure Shell server\n\n"
+        "LOAD   = Reflects whether the unit definition was properly loaded.\n"
+        "ACTIVE = The high-level unit activation state.\n"
+        "7 loaded units listed."
+    ),
+    "pip list": lambda ctx: (
+        "Package    Version\n---------- -------\n"
+        "pip        22.0.2\nsetuptools 59.6.0\nwheel      0.37.1"
+    ),
+    "pip3 list": lambda ctx: (
+        "Package    Version\n---------- -------\n"
+        "pip        22.0.2\nsetuptools 59.6.0\nwheel      0.37.1"
+    ),
+    "npm ls": lambda ctx: (
+        "nexopay-api@2.14.3 /opt/nexopay/current\n"
+        "├── express@4.18.2\n├── pg@8.11.3\n├── redis@4.6.7\n"
+        "├── stripe@13.5.0\n└── jsonwebtoken@9.0.2"
+    ),
+    "tar --version": lambda ctx: (
+        "tar (GNU tar) 1.34\nCopyright (C) 2021 Free Software Foundation, Inc."
+    ),
+    "gzip --version": lambda ctx: "gzip 1.10\nCopyright (C) 2018 Free Software Foundation, Inc.",
+    "gcc --version": lambda ctx: (
+        "gcc (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\n"
+        "Copyright (C) 2021 Free Software Foundation, Inc."
+    ),
+    "make --version": lambda ctx: "GNU Make 4.3\nBuilt for x86_64-pc-linux-gnu",
+    "sudo -n true": lambda ctx: "",
+    "sudo -n -l": lambda ctx: "User root may run the following commands on api-prod-01:\n    (ALL : ALL) ALL",
     # /proc virtual filesystem
     "cat /proc/version": lambda ctx: (
         "Linux version 5.15.0-91-generic (buildd@lcy02-amd64-013) "
@@ -1605,6 +1709,10 @@ class SessionHandler(asyncssh.SSHServerSession):
         if '*' in cmd or '?' in cmd:
             cmd = await self._expand_globs(cmd)
 
+        # Record any wget/curl malware fetch for the malware-analysis panel
+        if 'wget' in cmd or 'curl' in cmd:
+            asyncio.create_task(self._maybe_record_download(cmd))
+
         if cmd in ["exit", "logout"]:
             self.chan.write("logout\r\n")
             await self._close()
@@ -2127,6 +2235,165 @@ class SessionHandler(asyncssh.SSHServerSession):
         except Exception as e:
             return "", f"ls: error: {e}"
 
+    async def _handle_file_inspect(self, cmd_s: str):
+        """Handle tools that take a file/arg and would otherwise hit 'command not
+        found' (stat, file, md5sum/sha*sum, wc/tail/head on a file, getent,
+        ulimit, getconf, node -e, journalctl). Returns (out, err, code) or None."""
+        import hashlib as _hl
+        parts = cmd_s.split()
+        if not parts:
+            return None
+        base = parts[0]
+        args = [p for p in parts[1:] if not p.startswith('-')]
+        target = args[0] if args else ""
+
+        async def _vfs(path: str):
+            if not path.startswith("/"):
+                path = f"{self.current_directory.rstrip('/')}/{path}"
+            try:
+                r = await self.http_client.get(
+                    f"{SANDBOX_URL}/files/{self.session_id}", params={"path": path})
+                if r.status_code == 200:
+                    return r.json().get("content", "")
+            except Exception:
+                pass
+            return None
+
+        if base == "stat" and target:
+            content = await _vfs(target)
+            if content is None:
+                return "", f"stat: cannot statx '{target}': No such file or directory", 1
+            size = len(content)
+            blocks = (size + 511) // 512
+            return (
+                f"  File: {target}\n  Size: {size}\tBlocks: {blocks}\tIO Block: 4096   regular file\n"
+                f"Device: 801h/2049d\tInode: {abs(hash(target)) % 9000000 + 100000}\tLinks: 1\n"
+                f"Access: (0644/-rw-r--r--)  Uid: (    0/    root)   Gid: (    0/    root)\n"
+                f"Access: 2026-06-21 04:35:12.000000000 +0000\n"
+                f"Modify: 2026-05-29 10:00:00.000000000 +0000\n"
+                f"Change: 2026-05-29 10:00:00.000000000 +0000\n Birth: -"
+            ), "", 0
+
+        if base == "file" and target:
+            low = target.lower()
+            if low.endswith((".sh", ".bash")):
+                desc = "Bourne-Again shell script, ASCII text executable"
+            elif low.endswith(".py"):
+                desc = "Python script, ASCII text executable"
+            elif low.endswith((".json", ".env", ".conf", ".txt", ".log", ".yaml", ".yml")):
+                desc = "ASCII text"
+            elif low.endswith((".db", ".sqlite")):
+                desc = "SQLite 3.x database"
+            elif low.endswith((".gz", ".tgz")):
+                desc = "gzip compressed data"
+            elif low.endswith((".key", ".pem")):
+                desc = "PEM RSA private key"
+            elif target in ("/bin/bash", "/usr/bin/bash") or low.endswith(("/ls", "/cat", "/node")):
+                desc = ("ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), "
+                        "dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, "
+                        "BuildID[sha1]=...e3, for GNU/Linux 3.2.0, stripped")
+            else:
+                desc = "ASCII text"
+            return f"{target}: {desc}", "", 0
+
+        if base in ("md5sum", "sha1sum", "sha256sum", "sha512sum") and target:
+            content = await _vfs(target)
+            if content is None:
+                return "", f"{base}: {target}: No such file or directory", 1
+            algo = {"md5sum": "md5", "sha1sum": "sha1",
+                    "sha256sum": "sha256", "sha512sum": "sha512"}[base]
+            digest = _hl.new(algo, content.encode("utf-8", "replace")).hexdigest()
+            return f"{digest}  {target}", "", 0
+
+        if base == "wc" and target:
+            content = await _vfs(target)
+            if content is None:
+                return "", f"wc: {target}: No such file or directory", 1
+            lines = content.count("\n") + (0 if content.endswith("\n") or not content else 1)
+            words = len(content.split())
+            chars = len(content)
+            flag = parts[1] if len(parts) > 2 and parts[1].startswith('-') else ""
+            if flag == "-l":
+                return f"{lines} {target}", "", 0
+            if flag == "-w":
+                return f"{words} {target}", "", 0
+            if flag in ("-c", "-m"):
+                return f"{chars} {target}", "", 0
+            return f"{lines:>7} {words:>7} {chars:>7} {target}", "", 0
+
+        if base in ("tail", "head") and target:
+            content = await _vfs(target)
+            if content is None:
+                return "", f"{base}: cannot open '{target}' for reading: No such file or directory", 1
+            n = 10
+            m = re.search(r'-n\s*(\d+)', cmd_s) or re.search(r'-(\d+)', cmd_s)
+            if m:
+                n = int(m.group(1))
+            lines = content.split("\n")
+            chosen = lines[-n:] if base == "tail" else lines[:n]
+            return "\n".join(chosen), "", 0
+
+        if base == "getent":
+            db = parts[1] if len(parts) > 1 else ""
+            if db == "passwd":
+                passwd = (
+                    "root:x:0:0:root:/root:/bin/bash\n"
+                    "deploy:x:1001:1001:Deploy:/home/deploy:/bin/bash\n"
+                    "nexopay:x:1002:1002:NexoPay:/opt/nexopay:/bin/bash\n"
+                    "postgres:x:109:117:PostgreSQL:/var/lib/postgresql:/bin/bash\n"
+                    "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin"
+                )
+                if len(args) >= 2:
+                    user = args[1]
+                    for line in passwd.split("\n"):
+                        if line.startswith(user + ":"):
+                            return line, "", 0
+                    return "", "", 2
+                return passwd, "", 0
+            if db == "group":
+                return ("root:x:0:\nsudo:x:27:deploy\ndeploy:x:1001:\n"
+                        "nexopay:x:1002:\npostgres:x:117:"), "", 0
+            if db == "hosts":
+                return "127.0.0.1       localhost", "", 0
+            return "", "", 2
+
+        if base == "ulimit":
+            return (
+                "core file size          (blocks, -c) 0\n"
+                "data seg size           (kbytes, -d) unlimited\n"
+                "scheduling priority             (-e) 0\n"
+                "file size               (blocks, -f) unlimited\n"
+                "max locked memory       (kbytes, -l) 65536\n"
+                "open files                      (-n) 1024\n"
+                "pipe size            (512 bytes, -p) 8\n"
+                "stack size              (kbytes, -s) 8192\n"
+                "max user processes              (-u) 63199\n"
+                "virtual memory          (kbytes, -v) unlimited"
+            ), "", 0
+
+        if base == "getconf" and target:
+            vals = {"LONG_BIT": "64", "PAGE_SIZE": "4096", "PAGESIZE": "4096",
+                    "_NPROCESSORS_ONLN": "4", "ARG_MAX": "2097152"}
+            return vals.get(target.upper(), ""), "", 0
+
+        if base == "node" and "-e" in parts:
+            m = re.search(r"-e\s+['\"](.*)['\"]", cmd_s)
+            if m and "console.log" in m.group(1):
+                inner = re.search(r"console\.log\((.*)\)", m.group(1))
+                if inner:
+                    return inner.group(1).strip().strip('"').strip("'"), "", 0
+            return "", "", 0
+
+        if base == "journalctl" and "-u" not in parts:
+            return (
+                "-- Logs begin at Mon 2026-01-22 00:00:01 UTC, end at Sun 2026-06-21 04:35:30 UTC. --\n"
+                "Jun 21 04:30:01 api-prod-01 systemd[1]: Started Regular background program processing daemon.\n"
+                "Jun 21 04:32:14 api-prod-01 nexopay-api[3100]: [info] processed 142 webhook events\n"
+                "Jun 21 04:35:02 api-prod-01 sshd[134]: Accepted password for root from 10.0.1.5 port 51244 ssh2"
+            ), "", 0
+
+        return None
+
     async def _run_source_command(self, cmd: str, stdin: str = "") -> tuple:
         """Run a non-filter command; return (stdout, stderr, exit_code)."""
         cmd_s = cmd.strip()
@@ -2181,6 +2448,11 @@ class SessionHandler(asyncssh.SSHServerSession):
         if cmd_s in ("date",) or cmd_s.startswith("date "):
             from datetime import datetime as _dt
             return _dt.utcnow().strftime("%a %b %d %H:%M:%S UTC %Y"), "", 0
+
+        # File-inspection + misc tools that take an argument (stat/file/hash/wc/getent…)
+        fi = await self._handle_file_inspect(cmd_s)
+        if fi is not None:
+            return fi
 
         # echo
         if cmd_s.startswith("echo "):
@@ -2345,6 +2617,11 @@ class SessionHandler(asyncssh.SSHServerSession):
                 if cmd_lower == pattern or cmd_lower.startswith(pattern + " "):
                     output = handler(self.context)
                     break
+            if output is None:
+                fi = await self._handle_file_inspect(cmd.strip())
+                if fi is not None:
+                    fi_out, fi_err, _ = fi
+                    output = fi_out if fi_out else (fi_err or "")
             if output is None and AI_ENGINE_URL:
                 output = await self._get_ai_response(cmd)
             if output is None:
@@ -2837,6 +3114,33 @@ class SessionHandler(asyncssh.SSHServerSession):
                       "context": "AI extracted from command/response"})
         except Exception as e:
             logger.error(f"Failed to report IOC: {e}")
+
+    async def _maybe_record_download(self, cmd: str):
+        """Detect wget/curl downloads in a command and record each fetched URL
+        so the malware-analysis panel can enrich it with VirusTotal + sandbox."""
+        if not re.search(r'\b(wget|curl)\b', cmd):
+            return
+        # Pull every http(s) URL the command references (handles pipes/chains)
+        urls = re.findall(r'https?://[^\s\'"|;>&]+', cmd)
+        if not urls:
+            return
+        # Explicit output filename from -O/-o, else basename of the first URL
+        fname = ""
+        m = re.search(r'-[oO]\s+([^\s\'";|&]+)', cmd)
+        if m:
+            fname = m.group(1)
+        for url in urls:
+            # Skip benign metadata/localhost probes — those aren't malware fetches
+            if "169.254.169.254" in url or "127.0.0.1" in url or "localhost" in url:
+                continue
+            derived = fname or url.rstrip('/').split('/')[-1] or "index.html"
+            try:
+                await self.http_client.post(
+                    f"{SANDBOX_URL}/malware/downloads/{self.session_id}",
+                    json={"source_ip": self.source_ip, "url": url,
+                          "filename": derived, "command": cmd})
+            except Exception as e:
+                logger.debug(f"malware download record failed for {url[:60]}: {e}")
 
     async def _record_mitre_for_command(self, cmd: str):
         """Fire-and-forget: call AI Engine's MITRE matcher for ANY command."""
